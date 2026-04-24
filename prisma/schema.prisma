@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionStatus {
+  PENDING
+  LIVE
+  EXPIRED
+  COMPLETED
+}
+
+enum RoundStatus {
+  UPCOMING
+  OPEN
+  CLOSED
+  SKIPPED
+}
+
+enum PositionSide {
+  A
+  B
+}
+
+enum RewardKind {
+  NFT
+  MERCH
+  GIFT_CARD
+  VOUCHER
+}
+
+enum RewardStatus {
+  ASSIGNED
+  CLAIMABLE
+  CLAIMED
+}
+
+enum ReferralStatus {
+  PENDING
+  CLAIMABLE
+  CLAIMED
+}
+
+model FaultLinePair {
+  id              String         @id @default(cuid())
+  slug            String         @unique
+  category        String
+  sideA           String
+  sideB           String
+  defaultSideAPct Int
+  defaultSideBPct Int
+  crowdLabel      String
+  active          Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  rounds          SessionRound[]
+}
+
+model Session {
+  id                        String              @id @default(cuid())
+  slug                      String              @unique
+  title                     String
+  seasonLabel               String
+  status                    SessionStatus       @default(PENDING)
+  launchIso                 DateTime
+  startsAt                  DateTime
+  endsAt                    DateTime
+  activatedAt               DateTime?
+  completedAt               DateTime?
+  roundCount                Int
+  roundDurationSeconds      Int
+  buyInLamports             BigInt
+  roundStakeLamports        BigInt
+  protocolFeeBps            Int
+  referralCutBps            Int
+  minWallets                Int
+  minTotalLamports          BigInt
+  joinedWallets             Int                 @default(0)
+  totalEscrowLamports       BigInt              @default(0)
+  protocolFeeAccruedLamports BigInt             @default(0)
+  cardRewardSlots           Int
+  payoutCadenceDays         Int
+  chainSessionNumber        BigInt?             @unique
+  chainSessionAddress       String?             @unique
+  chainDeployTxSignature    String?
+  rounds                    SessionRound[]
+  participants              SessionParticipant[]
+  referralAccruals          ReferralAccrual[]
+  referralRelationships     ReferralRelationship[]
+  rewards                   RewardInventory[]
+  transactions              TransactionLog[]
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+}
+
+model SessionRound {
+  id                  String          @id @default(cuid())
+  sessionId           String
+  pairId              String
+  roundIndex          Int
+  status              RoundStatus     @default(UPCOMING)
+  opensAt             DateTime?
+  closesAt            DateTime?
+  settledAt           DateTime?
+  sideAProbabilityPct Int
+  sideBProbabilityPct Int
+  sideATotalEntries   Int             @default(0)
+  sideBTotalEntries   Int             @default(0)
+  sideATotalShares    BigInt          @default(0)
+  sideBTotalShares    BigInt          @default(0)
+  sideATotalNetLamports BigInt        @default(0)
+  sideBTotalNetLamports BigInt        @default(0)
+  sideARewardPerShare BigInt          @default(0)
+  sideBRewardPerShare BigInt          @default(0)
+  totalVolumeLamports BigInt          @default(0)
+  session             Session         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  pair                FaultLinePair   @relation(fields: [pairId], references: [id], onDelete: Restrict)
+  positions           RoundPosition[]
+  referralAccruals    ReferralAccrual[]
+
+  @@unique([sessionId, roundIndex])
+}
+
+model SessionParticipant {
+  id                     String          @id @default(cuid())
+  sessionId              String
+  walletAddress          String
+  displayName            String?
+  joinedAt               DateTime        @default(now())
+  totalEscrowLamports    BigInt
+  remainingEscrowLamports BigInt
+  referredByWallet       String?
+  chainJoinTxSignature   String?         @unique
+  chainPlayerSessionAddress String?      @unique
+  session                Session         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  positions              RoundPosition[]
+  rewards                RewardInventory[]
+
+  @@unique([sessionId, walletAddress])
+}
+
+model RoundPosition {
+  id                String          @id @default(cuid())
+  roundId           String
+  participantId     String
+  walletAddress     String
+  side              PositionSide
+  submittedAt       DateTime        @default(now())
+  stakeLamports     BigInt
+  feeLamports       BigInt
+  netStakeLamports  BigInt
+  shares            BigInt
+  rewardDebtLamports BigInt
+  claimedLamports   BigInt          @default(0)
+  claimedAt         DateTime?
+  round             SessionRound    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  participant       SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, participantId])
+}
+
+model ReferralAccrual {
+  id             String         @id @default(cuid())
+  sessionId      String
+  roundId        String?
+  relationshipId String?
+  payoutBatchId  String?
+  referrerWallet String
+  refereeWallet  String
+  amountLamports BigInt
+  status         ReferralStatus @default(PENDING)
+  createdAt      DateTime       @default(now())
+  claimableAt    DateTime?
+  claimedAt      DateTime?
+  session        Session        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  round          SessionRound?  @relation(fields: [roundId], references: [id], onDelete: SetNull)
+  relationship   ReferralRelationship? @relation(fields: [relationshipId], references: [id], onDelete: SetNull)
+  payoutBatch    ReferralPayoutBatch? @relation(fields: [payoutBatchId], references: [id], onDelete: SetNull)
+
+  @@index([referrerWallet, status])
+  @@index([refereeWallet])
+  @@index([sessionId, status])
+}
+
+model ReferralRelationship {
+  id             String            @id @default(cuid())
+  referrerWallet String
+  refereeWallet  String            @unique
+  sourceSessionId String?
+  createdAt      DateTime          @default(now())
+  sourceSession  Session?          @relation(fields: [sourceSessionId], references: [id], onDelete: SetNull)
+  accruals       ReferralAccrual[]
+
+  @@index([referrerWallet])
+}
+
+model ReferralPayoutBatch {
+  id                String            @id @default(cuid())
+  referrerWallet    String
+  adminWalletAddress String
+  totalLamports     BigInt
+  referralCount     Int
+  paidAt            DateTime          @default(now())
+  createdAt         DateTime          @default(now())
+  metadataJson      String?
+  accruals          ReferralAccrual[]
+
+  @@index([referrerWallet, paidAt])
+}
+
+model RewardInventory {
+  id            String          @id @default(cuid())
+  participantId String
+  walletAddress String
+  sessionId     String?
+  kind          RewardKind
+  title         String
+  subtitle      String
+  status        RewardStatus    @default(ASSIGNED)
+  assignedAt    DateTime        @default(now())
+  claimedAt     DateTime?
+  participant   SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  session       Session?        @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+}
+
+model TransactionLog {
+  id             String    @id @default(cuid())
+  sessionId      String?
+  walletAddress  String?
+  kind           String
+  amountLamports BigInt?
+  metadataJson   String?
+  createdAt      DateTime  @default(now())
+  session        Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+}

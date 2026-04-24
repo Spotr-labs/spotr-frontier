@@ -1,0 +1,31 @@
+[toolchain]
+anchor_version = "0.32.1"
+solana_version = "2.3.0"
+
+[features]
+resolution = true
+skip-lint = false
+
+[test]
+startup_wait = 10000
+
+[test.validator]
+bind_address = "127.0.0.1"
+rpc_port = 18999
+faucet_port = 19900
+
+[programs.devnet]
+spotr_markets = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk"
+
+[programs.localnet]
+spotr_markets = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"

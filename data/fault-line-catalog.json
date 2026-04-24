@@ -1,0 +1,65 @@
+[
+  {
+    "slug": "relationships-paperwork",
+    "category": "Relationships",
+    "sideA": "feelings don't need paperwork to be real",
+    "sideB": "if it's not on paper, it's not protected",
+    "sideAPct": 62,
+    "sideBPct": 38,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "identity-online-self",
+    "category": "Identity",
+    "sideA": "your online self is your real self now",
+    "sideB": "the feed is a costume. the mirror is the truth.",
+    "sideAPct": 54,
+    "sideBPct": 46,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "money-rent-life",
+    "category": "Money",
+    "sideA": "owning things is a tax on the unimaginative",
+    "sideB": "you don't own it, you rent your life",
+    "sideAPct": 41,
+    "sideBPct": 59,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "work-loyalty",
+    "category": "Work",
+    "sideA": "loyalty to a company is loyalty to a stranger",
+    "sideB": "quitting every 18 months is how you stay poor",
+    "sideAPct": 71,
+    "sideBPct": 29,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "culture-nostalgia",
+    "category": "Culture",
+    "sideA": "nostalgia is the last thing still selling",
+    "sideB": "the past is a hostage situation, let it go",
+    "sideAPct": 58,
+    "sideBPct": 42,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "ambition-rest",
+    "category": "Ambition",
+    "sideA": "soft life is a marketing campaign",
+    "sideB": "rest is the new flex. grinding is cosplay.",
+    "sideAPct": 48,
+    "sideBPct": 52,
+    "crowdLabel": "of players spotted this take"
+  },
+  {
+    "slug": "trust-cynicism",
+    "category": "Trust",
+    "sideA": "institutions don't fail you, they reveal themselves",
+    "sideB": "cynicism is just a subscription to being right",
+    "sideAPct": 66,
+    "sideBPct": 34,
+    "crowdLabel": "of players spotted this take"
+  }
+]
