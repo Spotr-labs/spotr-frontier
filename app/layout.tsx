@@ -1,7 +1,18 @@
 import type { Metadata } from "next";
+import { JetBrains_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./components/providers";
 import { publicSpotrConfig } from "./lib/spotr-config/public";
+
+const sans = Manrope({
+  subsets: ["latin"],
+  variable: "--font-sans",
+});
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+});
 
 export const metadata: Metadata = {
   title: `${publicSpotrConfig.appName} • ${publicSpotrConfig.seasonLabel}`,
@@ -20,7 +31,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="antialiased">
+      <body className={`${sans.variable} ${mono.variable} antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

@@ -182,9 +182,12 @@ function getDefaultCrowdLabel() {
   return launchFaultLineSeeds[0]?.crowdLabel ?? "of players spotted this take";
 }
 
-async function syncFaultLineSeeds(tx: Tx) {
+let faultLineSeedsSynced = false;
+
+async function syncFaultLineSeeds() {
+  if (faultLineSeedsSynced) return;
   for (const pair of launchFaultLineSeeds) {
-    await tx.faultLinePair.upsert({
+    await prisma.faultLinePair.upsert({
       where: { slug: pair.slug },
       update: {
         category: pair.category,
@@ -206,8 +209,7 @@ async function syncFaultLineSeeds(tx: Tx) {
       },
     });
   }
-
-  return tx.faultLinePair.findMany({ orderBy: { createdAt: "asc" } });
+  faultLineSeedsSynced = true;
 }
 
 async function rebuildSessionRounds(tx: Tx, sessionId: string, pairIds: string[]) {
@@ -290,7 +292,7 @@ async function createSessionWithPairs(
 }
 
 async function ensureLaunchSession(tx: Tx, config: SpotrPublicConfig) {
-  await syncFaultLineSeeds(tx);
+  await syncFaultLineSeeds();
   const sessionCount = await tx.session.count();
   if (sessionCount > 0) {
     return;
@@ -1162,6 +1164,7 @@ async function getEligibleReferralShareLamports(
 }
 
 export async function getSpotrDashboardPayload(walletAddress?: string | null) {
+  await syncFaultLineSeeds();
   return prisma.$transaction((tx) =>
     buildDashboardPayload(tx, normalizeWalletAddress(walletAddress))
   );
@@ -1727,9 +1730,9 @@ export async function deployAdminSession(input: {
     );
   }
 
+  await syncFaultLineSeeds();
   return prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
-    await syncFaultLineSeeds(tx);
 
     const unsettledSessionCount = await tx.session.count({
       where: {

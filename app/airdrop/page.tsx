@@ -1,11 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { useWallet } from "../lib/wallet/context";
 import { useCluster } from "../components/cluster-context";
 import { WalletButton } from "../components/wallet-button";
 import { publicSpotrConfig } from "../lib/spotr-config/public";
+import { Button } from "../components/ui/button";
+import {
+  AppHeader,
+  AppPage,
+  NoticeBanner,
+  SurfaceCard,
+} from "../components/spotr-ui/system";
 
 type AirdropStatus = "idle" | "pending" | "ok" | "err";
 
@@ -63,7 +69,7 @@ function AirdropCard({
   const [amount, setAmount] = useState(defaultAmount);
 
   return (
-    <div className="rounded-[1.75rem] border border-white/8 bg-card/80 p-5 backdrop-blur-xl">
+    <SurfaceCard>
       <div className="mb-4 flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-sm font-bold text-primary">
           {symbol}
@@ -78,7 +84,7 @@ function AirdropCard({
 
       <p className="mb-4 text-xs leading-relaxed text-muted">{description}</p>
 
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <input
           type="number"
           min={0.001}
@@ -86,28 +92,32 @@ function AirdropCard({
           step={symbol === "SOL" ? 0.5 : 100}
           value={amount}
           onChange={(e) => setAmount(Number(e.target.value))}
-          className="w-28 rounded-xl border border-white/10 bg-secondary/60 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+          className="focus-ring w-full rounded-[1rem] border border-white/12 bg-black/20 px-3 py-2 text-sm text-foreground focus:border-primary/50 sm:w-28"
         />
-        <span className="text-xs text-muted">{symbol} (max {max})</span>
+        <span className="text-xs text-muted">
+          {symbol} (max {max})
+        </span>
       </div>
 
-      <button
+      <Button
+        type="button"
+        variant="gold"
+        size="sm"
         disabled={disabled || status === "pending"}
         onClick={() => onRequest(amount)}
-        className="inline-flex min-h-10 items-center rounded-full border border-primary/40 bg-primary/10 px-5 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-primary transition-[background-color,opacity] duration-150 hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {status === "pending" ? "Requesting…" : `Request ${symbol}`}
-      </button>
+      </Button>
 
-      {status === "ok" && sig && (
-        <p className="mt-3 break-all text-[11px] text-primary">
+      {status === "ok" && sig ? (
+        <p className="mt-3 break-all text-[11px] text-success">
           ✓ Signature: <span className="font-mono">{sig.slice(0, 20)}…</span>
         </p>
-      )}
-      {status === "err" && err && (
+      ) : null}
+      {status === "err" && err ? (
         <p className="mt-3 text-[11px] text-destructive">{err}</p>
-      )}
-    </div>
+      ) : null}
+    </SurfaceCard>
   );
 }
 
@@ -123,135 +133,93 @@ export default function AirdropPage() {
   const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT_ADDRESS ?? null;
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background: [
-            "radial-gradient(circle at 20% 0%, rgba(245,200,0,0.10), transparent 22%)",
-            "radial-gradient(circle at 78% 10%, rgba(27,79,140,0.16), transparent 22%)",
-          ].join(", "),
-        }}
-      />
-      <div className="relative mx-auto flex min-h-screen w-full max-w-[1200px] flex-col px-4 pb-8 pt-4 sm:px-6">
-        {/* header */}
-        <header className="mb-6 flex items-center justify-between gap-3 rounded-[1.35rem] border border-white/8 bg-black/18 px-4 py-3 backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-black">
-              ◎
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                {publicSpotrConfig.seasonLabel}
-              </p>
-              <p className="text-sm font-semibold text-foreground">Dev Faucet</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="hidden items-center gap-2 md:flex">
-              {(["/" , "/profile", "/admin"] as const).map((href) => (
-                <Link
-                  key={href}
-                  href={href}
-                  className="inline-flex min-h-9 items-center rounded-full border border-white/10 bg-secondary/40 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-foreground transition hover:border-primary/40 hover:bg-secondary/80"
-                >
-                  {href === "/" ? "Play" : href.slice(1).charAt(0).toUpperCase() + href.slice(2)}
-                </Link>
-              ))}
-            </div>
-            <WalletButton />
-          </div>
-        </header>
+    <AppPage
+      header={
+        <AppHeader
+          title="Dev Faucet"
+          eyebrow={`${publicSpotrConfig.seasonLabel} · Faucet`}
+        />
+      }
+    >
+      <div className="mx-auto w-full max-w-2xl space-y-6">
+        <SurfaceCard>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+            Localnet only
+          </p>
+          <h2 className="mt-2 font-display text-[1.5rem] font-extrabold tracking-[-0.03em] text-foreground sm:text-[1.85rem]">
+            Dev Faucet
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
+            Request SOL and mock USDC for local testing. Only works when running{" "}
+            <code className="rounded bg-white/8 px-1 py-0.5 font-mono text-[11px]">
+              npm run dev:local
+            </code>
+            .
+          </p>
+        </SurfaceCard>
 
-        <main className="mx-auto w-full max-w-2xl space-y-6">
-          {/* banner */}
-          <div className="rounded-[1.75rem] border border-primary/20 bg-primary/8 px-5 py-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-primary">
-              Localnet only
-            </p>
-            <h1 className="mt-1 text-2xl font-bold text-foreground">Dev Faucet</h1>
-            <p className="mt-1 text-xs text-muted">
-              Request SOL and mock USDC for local testing. Only works when running{" "}
-              <code className="rounded bg-white/8 px-1 py-0.5 font-mono text-[11px]">
-                npm run dev:local
-              </code>
-              .
-            </p>
-          </div>
+        {!isLocalnet ? (
+          <NoticeBanner tone="error">
+            Faucet is disabled on <strong>{cluster}</strong>. Switch to localnet to use it.
+          </NoticeBanner>
+        ) : null}
 
-          {/* cluster guard */}
-          {!isLocalnet && (
-            <div className="rounded-[1.5rem] border border-destructive/25 bg-destructive/10 px-5 py-4">
-              <p className="text-sm font-medium text-destructive">
-                Faucet is disabled on <strong>{cluster}</strong>. Switch to localnet to use it.
-              </p>
-            </div>
-          )}
-
-          {/* wallet guard */}
-          {isLocalnet && !connected && (
-            <div className="rounded-[1.5rem] border border-white/8 bg-card/60 px-5 py-6 text-center">
-              <p className="mb-4 text-sm text-muted">Connect a wallet to request tokens.</p>
+        {isLocalnet && !connected ? (
+          <SurfaceCard className="text-center">
+            <p className="mb-4 text-sm text-muted">Connect a wallet to request tokens.</p>
+            <div className="flex justify-center">
               <WalletButton />
             </div>
-          )}
+          </SurfaceCard>
+        ) : null}
 
-          {/* mint address info */}
-          {isLocalnet && usdcMint && (
-            <div className="rounded-[1.35rem] border border-white/8 bg-secondary/30 px-4 py-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
-                Mock USDC mint
-              </p>
-              <p className="mt-0.5 break-all font-mono text-xs text-foreground">
-                {usdcMint}
-              </p>
-            </div>
-          )}
+        {isLocalnet && usdcMint ? (
+          <SurfaceCard>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
+              Mock USDC mint
+            </p>
+            <p className="mt-1 break-all font-mono text-xs text-foreground">{usdcMint}</p>
+          </SurfaceCard>
+        ) : null}
 
-          {/* airdrop cards */}
-          {isLocalnet && connected && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <AirdropCard
-                label="Solana"
-                symbol="SOL"
-                defaultAmount={2}
-                max={10}
-                description="Native SOL for transaction fees and program interactions."
-                disabled={!connected}
-                onRequest={(amt) => sol.request(walletAddr!, amt)}
-                status={sol.status}
-                sig={sol.sig}
-                err={sol.err}
-              />
-              <AirdropCard
-                label="Mock USDC"
-                symbol="USDC"
-                defaultAmount={1000}
-                max={10000}
-                description="SPL token mimicking USDC with 6 decimals. Localnet only — no real value."
-                disabled={!connected || !usdcMint}
-                onRequest={(amt) => usdc.request(walletAddr!, amt)}
-                status={usdc.status}
-                sig={usdc.sig}
-                err={usdc.err}
-              />
-            </div>
-          )}
+        {isLocalnet && connected ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <AirdropCard
+              label="Solana"
+              symbol="SOL"
+              defaultAmount={2}
+              max={10}
+              description="Native SOL for transaction fees and program interactions."
+              disabled={!connected}
+              onRequest={(amt) => sol.request(walletAddr!, amt)}
+              status={sol.status}
+              sig={sol.sig}
+              err={sol.err}
+            />
+            <AirdropCard
+              label="Mock USDC"
+              symbol="USDC"
+              defaultAmount={1000}
+              max={10000}
+              description="SPL token mimicking USDC with 6 decimals. Localnet only — no real value."
+              disabled={!connected || !usdcMint}
+              onRequest={(amt) => usdc.request(walletAddr!, amt)}
+              status={usdc.status}
+              sig={usdc.sig}
+              err={usdc.err}
+            />
+          </div>
+        ) : null}
 
-          {/* wallet address */}
-          {connected && (
-            <div className="rounded-[1.35rem] border border-white/8 bg-secondary/30 px-4 py-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
-                Receiving wallet
-              </p>
-              <p className="mt-0.5 break-all font-mono text-xs text-foreground">
-                {walletAddr}
-              </p>
-            </div>
-          )}
-        </main>
+        {connected ? (
+          <SurfaceCard>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
+              Receiving wallet
+            </p>
+            <p className="mt-1 break-all font-mono text-xs text-foreground">{walletAddr}</p>
+          </SurfaceCard>
+        ) : null}
       </div>
-    </div>
+    </AppPage>
   );
 }
