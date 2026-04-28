@@ -27,6 +27,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "generate:public-config": "node scripts/generate-public-config.mjs",
+    "postinstall": "prisma generate",
     "lint": "eslint",
     "setup": "npm run db:push && npm run db:seed && npm run anchor-build && npm run codama:js",
     "start": "next start",
