@@ -64,15 +64,15 @@ export type Session = {
   status: SessionStatus;
   roundCount: number;
   roundDurationSeconds: bigint;
-  buyInLamports: bigint;
-  roundStakeLamports: bigint;
+  buyInUsdcUnits: bigint;
+  roundStakeUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
-  minTotalLamports: bigint;
+  minTotalUsdcUnits: bigint;
   joinedWallets: number;
-  totalEscrowedLamports: bigint;
-  protocolFeeAccruedLamports: bigint;
+  totalEscrowedUsdcUnits: bigint;
+  protocolFeeAccruedUsdcUnits: bigint;
   roundsClosed: number;
   startTs: bigint;
   endTs: bigint;
@@ -85,15 +85,15 @@ export type SessionArgs = {
   status: SessionStatusArgs;
   roundCount: number;
   roundDurationSeconds: number | bigint;
-  buyInLamports: number | bigint;
-  roundStakeLamports: number | bigint;
+  buyInUsdcUnits: number | bigint;
+  roundStakeUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
-  minTotalLamports: number | bigint;
+  minTotalUsdcUnits: number | bigint;
   joinedWallets: number;
-  totalEscrowedLamports: number | bigint;
-  protocolFeeAccruedLamports: number | bigint;
+  totalEscrowedUsdcUnits: number | bigint;
+  protocolFeeAccruedUsdcUnits: number | bigint;
   roundsClosed: number;
   startTs: number | bigint;
   endTs: number | bigint;
@@ -110,15 +110,15 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
       ["status", getSessionStatusEncoder()],
       ["roundCount", getU8Encoder()],
       ["roundDurationSeconds", getI64Encoder()],
-      ["buyInLamports", getU64Encoder()],
-      ["roundStakeLamports", getU64Encoder()],
+      ["buyInUsdcUnits", getU64Encoder()],
+      ["roundStakeUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
       ["minWallets", getU16Encoder()],
-      ["minTotalLamports", getU64Encoder()],
+      ["minTotalUsdcUnits", getU64Encoder()],
       ["joinedWallets", getU16Encoder()],
-      ["totalEscrowedLamports", getU64Encoder()],
-      ["protocolFeeAccruedLamports", getU64Encoder()],
+      ["totalEscrowedUsdcUnits", getU64Encoder()],
+      ["protocolFeeAccruedUsdcUnits", getU64Encoder()],
       ["roundsClosed", getU8Encoder()],
       ["startTs", getI64Encoder()],
       ["endTs", getI64Encoder()],
@@ -137,15 +137,15 @@ export function getSessionDecoder(): FixedSizeDecoder<Session> {
     ["status", getSessionStatusDecoder()],
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
-    ["buyInLamports", getU64Decoder()],
-    ["roundStakeLamports", getU64Decoder()],
+    ["buyInUsdcUnits", getU64Decoder()],
+    ["roundStakeUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["minWallets", getU16Decoder()],
-    ["minTotalLamports", getU64Decoder()],
+    ["minTotalUsdcUnits", getU64Decoder()],
     ["joinedWallets", getU16Decoder()],
-    ["totalEscrowedLamports", getU64Decoder()],
-    ["protocolFeeAccruedLamports", getU64Decoder()],
+    ["totalEscrowedUsdcUnits", getU64Decoder()],
+    ["protocolFeeAccruedUsdcUnits", getU64Decoder()],
     ["roundsClosed", getU8Decoder()],
     ["startTs", getI64Decoder()],
     ["endTs", getI64Decoder()],

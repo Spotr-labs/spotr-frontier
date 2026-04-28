@@ -5,11 +5,22 @@ export type SpotrSignedActionName =
   | "claim-session-balance"
   | "admin-import-pairs"
   | "admin-toggle-pair"
+  | "admin-toggle-pair-bulk"
+  | "admin-edit-pair"
   | "admin-deploy-session"
   | "admin-chain-deploy-session"
   | "admin-payout-referrals"
+  | "admin-payout-referrals-bulk"
   | "admin-assign-reward"
-  | "admin-update-reward-status";
+  | "admin-assign-reward-bulk"
+  | "admin-update-reward-status"
+  | "admin-expire-session"
+  | "admin-finalize-session"
+  | "admin-close-round"
+  | "admin-sweep-orphans"
+  | "admin-withdraw-protocol-fees"
+  | "admin-assign-card-pack"
+  | "admin-sync-sessions";
 
 type JsonValue =
   | string

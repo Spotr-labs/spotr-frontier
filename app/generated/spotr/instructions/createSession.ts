@@ -38,7 +38,11 @@ import {
   type WritableAccount,
   type WritableSignerAccount,
 } from "@solana/kit";
-import { findConfigPda, findSessionTreasuryPda } from "../pdas";
+import {
+  findConfigPda,
+  findSessionTreasuryPda,
+  findSessionTreasuryTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
   expectAddress,
@@ -62,8 +66,14 @@ export type CreateSessionInstruction<
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
+  TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountUsdcMint extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     "11111111111111111111111111111111",
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  TAccountRent extends string | AccountMeta<string> =
+    "SysvarRent111111111111111111111111111111111",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -82,9 +92,21 @@ export type CreateSessionInstruction<
       TAccountSessionTreasury extends string
         ? WritableAccount<TAccountSessionTreasury>
         : TAccountSessionTreasury,
+      TAccountSessionTreasuryTokens extends string
+        ? WritableAccount<TAccountSessionTreasuryTokens>
+        : TAccountSessionTreasuryTokens,
+      TAccountUsdcMint extends string
+        ? ReadonlyAccount<TAccountUsdcMint>
+        : TAccountUsdcMint,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
+      TAccountRent extends string
+        ? ReadonlyAccount<TAccountRent>
+        : TAccountRent,
       ...TRemainingAccounts,
     ]
   >;
@@ -94,12 +116,12 @@ export type CreateSessionInstructionData = {
   sessionNumber: bigint;
   roundCount: number;
   roundDurationSeconds: bigint;
-  buyInLamports: bigint;
-  roundStakeLamports: bigint;
+  buyInUsdcUnits: bigint;
+  roundStakeUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
-  minTotalLamports: bigint;
+  minTotalUsdcUnits: bigint;
   startTs: bigint;
   endTs: bigint;
 };
@@ -108,12 +130,12 @@ export type CreateSessionInstructionDataArgs = {
   sessionNumber: number | bigint;
   roundCount: number;
   roundDurationSeconds: number | bigint;
-  buyInLamports: number | bigint;
-  roundStakeLamports: number | bigint;
+  buyInUsdcUnits: number | bigint;
+  roundStakeUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
-  minTotalLamports: number | bigint;
+  minTotalUsdcUnits: number | bigint;
   startTs: number | bigint;
   endTs: number | bigint;
 };
@@ -125,12 +147,12 @@ export function getCreateSessionInstructionDataEncoder(): FixedSizeEncoder<Creat
       ["sessionNumber", getU64Encoder()],
       ["roundCount", getU8Encoder()],
       ["roundDurationSeconds", getI64Encoder()],
-      ["buyInLamports", getU64Encoder()],
-      ["roundStakeLamports", getU64Encoder()],
+      ["buyInUsdcUnits", getU64Encoder()],
+      ["roundStakeUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
       ["minWallets", getU16Encoder()],
-      ["minTotalLamports", getU64Encoder()],
+      ["minTotalUsdcUnits", getU64Encoder()],
       ["startTs", getI64Encoder()],
       ["endTs", getI64Encoder()],
     ]),
@@ -144,12 +166,12 @@ export function getCreateSessionInstructionDataDecoder(): FixedSizeDecoder<Creat
     ["sessionNumber", getU64Decoder()],
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
-    ["buyInLamports", getU64Decoder()],
-    ["roundStakeLamports", getU64Decoder()],
+    ["buyInUsdcUnits", getU64Decoder()],
+    ["roundStakeUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["minWallets", getU16Decoder()],
-    ["minTotalLamports", getU64Decoder()],
+    ["minTotalUsdcUnits", getU64Decoder()],
     ["startTs", getI64Decoder()],
     ["endTs", getI64Decoder()],
   ]);
@@ -170,22 +192,30 @@ export type CreateSessionAsyncInput<
   TAccountConfig extends string = string,
   TAccountSession extends string = string,
   TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountUsdcMint extends string = string,
   TAccountSystemProgram extends string = string,
+  TAccountTokenProgram extends string = string,
+  TAccountRent extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
   session: Address<TAccountSession>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
+  usdcMint: Address<TAccountUsdcMint>;
   systemProgram?: Address<TAccountSystemProgram>;
+  tokenProgram?: Address<TAccountTokenProgram>;
+  rent?: Address<TAccountRent>;
   sessionNumber: CreateSessionInstructionDataArgs["sessionNumber"];
   roundCount: CreateSessionInstructionDataArgs["roundCount"];
   roundDurationSeconds: CreateSessionInstructionDataArgs["roundDurationSeconds"];
-  buyInLamports: CreateSessionInstructionDataArgs["buyInLamports"];
-  roundStakeLamports: CreateSessionInstructionDataArgs["roundStakeLamports"];
+  buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
+  roundStakeUsdcUnits: CreateSessionInstructionDataArgs["roundStakeUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   minWallets: CreateSessionInstructionDataArgs["minWallets"];
-  minTotalLamports: CreateSessionInstructionDataArgs["minTotalLamports"];
+  minTotalUsdcUnits: CreateSessionInstructionDataArgs["minTotalUsdcUnits"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
 };
@@ -195,7 +225,11 @@ export async function getCreateSessionInstructionAsync<
   TAccountConfig extends string,
   TAccountSession extends string,
   TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountUsdcMint extends string,
   TAccountSystemProgram extends string,
+  TAccountTokenProgram extends string,
+  TAccountRent extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: CreateSessionAsyncInput<
@@ -203,7 +237,11 @@ export async function getCreateSessionInstructionAsync<
     TAccountConfig,
     TAccountSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
@@ -213,7 +251,11 @@ export async function getCreateSessionInstructionAsync<
     TAccountConfig,
     TAccountSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >
 > {
   // Program address.
@@ -226,7 +268,14 @@ export async function getCreateSessionInstructionAsync<
     config: { value: input.config ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
     sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    usdcMint: { value: input.usdcMint ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
+    rent: { value: input.rent ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -245,9 +294,22 @@ export async function getCreateSessionInstructionAsync<
       session: expectAddress(accounts.session.value),
     });
   }
+  if (!accounts.sessionTreasuryTokens.value) {
+    accounts.sessionTreasuryTokens.value = await findSessionTreasuryTokensPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
+  if (!accounts.rent.value) {
+    accounts.rent.value =
+      "SysvarRent111111111111111111111111111111111" as Address<"SysvarRent111111111111111111111111111111111">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -257,7 +319,11 @@ export async function getCreateSessionInstructionAsync<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.usdcMint),
       getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.tokenProgram),
+      getAccountMeta(accounts.rent),
     ],
     data: getCreateSessionInstructionDataEncoder().encode(
       args as CreateSessionInstructionDataArgs,
@@ -269,7 +335,11 @@ export async function getCreateSessionInstructionAsync<
     TAccountConfig,
     TAccountSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >);
 }
 
@@ -278,22 +348,30 @@ export type CreateSessionInput<
   TAccountConfig extends string = string,
   TAccountSession extends string = string,
   TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountUsdcMint extends string = string,
   TAccountSystemProgram extends string = string,
+  TAccountTokenProgram extends string = string,
+  TAccountRent extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
   session: Address<TAccountSession>;
   sessionTreasury: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
+  usdcMint: Address<TAccountUsdcMint>;
   systemProgram?: Address<TAccountSystemProgram>;
+  tokenProgram?: Address<TAccountTokenProgram>;
+  rent?: Address<TAccountRent>;
   sessionNumber: CreateSessionInstructionDataArgs["sessionNumber"];
   roundCount: CreateSessionInstructionDataArgs["roundCount"];
   roundDurationSeconds: CreateSessionInstructionDataArgs["roundDurationSeconds"];
-  buyInLamports: CreateSessionInstructionDataArgs["buyInLamports"];
-  roundStakeLamports: CreateSessionInstructionDataArgs["roundStakeLamports"];
+  buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
+  roundStakeUsdcUnits: CreateSessionInstructionDataArgs["roundStakeUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   minWallets: CreateSessionInstructionDataArgs["minWallets"];
-  minTotalLamports: CreateSessionInstructionDataArgs["minTotalLamports"];
+  minTotalUsdcUnits: CreateSessionInstructionDataArgs["minTotalUsdcUnits"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
 };
@@ -303,7 +381,11 @@ export function getCreateSessionInstruction<
   TAccountConfig extends string,
   TAccountSession extends string,
   TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountUsdcMint extends string,
   TAccountSystemProgram extends string,
+  TAccountTokenProgram extends string,
+  TAccountRent extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: CreateSessionInput<
@@ -311,7 +393,11 @@ export function getCreateSessionInstruction<
     TAccountConfig,
     TAccountSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >,
   config?: { programAddress?: TProgramAddress },
 ): CreateSessionInstruction<
@@ -320,7 +406,11 @@ export function getCreateSessionInstruction<
   TAccountConfig,
   TAccountSession,
   TAccountSessionTreasury,
-  TAccountSystemProgram
+  TAccountSessionTreasuryTokens,
+  TAccountUsdcMint,
+  TAccountSystemProgram,
+  TAccountTokenProgram,
+  TAccountRent
 > {
   // Program address.
   const programAddress =
@@ -332,7 +422,14 @@ export function getCreateSessionInstruction<
     config: { value: input.config ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
     sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    usdcMint: { value: input.usdcMint ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
+    rent: { value: input.rent ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -347,6 +444,14 @@ export function getCreateSessionInstruction<
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
   }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
+  if (!accounts.rent.value) {
+    accounts.rent.value =
+      "SysvarRent111111111111111111111111111111111" as Address<"SysvarRent111111111111111111111111111111111">;
+  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
@@ -355,7 +460,11 @@ export function getCreateSessionInstruction<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.usdcMint),
       getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.tokenProgram),
+      getAccountMeta(accounts.rent),
     ],
     data: getCreateSessionInstructionDataEncoder().encode(
       args as CreateSessionInstructionDataArgs,
@@ -367,7 +476,11 @@ export function getCreateSessionInstruction<
     TAccountConfig,
     TAccountSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >);
 }
 
@@ -381,7 +494,11 @@ export type ParsedCreateSessionInstruction<
     config: TAccountMetas[1];
     session: TAccountMetas[2];
     sessionTreasury: TAccountMetas[3];
-    systemProgram: TAccountMetas[4];
+    sessionTreasuryTokens: TAccountMetas[4];
+    usdcMint: TAccountMetas[5];
+    systemProgram: TAccountMetas[6];
+    tokenProgram: TAccountMetas[7];
+    rent: TAccountMetas[8];
   };
   data: CreateSessionInstructionData;
 };
@@ -394,7 +511,7 @@ export function parseCreateSessionInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedCreateSessionInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 5) {
+  if (instruction.accounts.length < 9) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -411,7 +528,11 @@ export function parseCreateSessionInstruction<
       config: getNextAccount(),
       session: getNextAccount(),
       sessionTreasury: getNextAccount(),
+      sessionTreasuryTokens: getNextAccount(),
+      usdcMint: getNextAccount(),
       systemProgram: getNextAccount(),
+      tokenProgram: getNextAccount(),
+      rent: getNextAccount(),
     },
     data: getCreateSessionInstructionDataDecoder().decode(instruction.data),
   };

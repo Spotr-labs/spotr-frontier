@@ -52,14 +52,16 @@ export function getProtocolTreasuryDiscriminatorBytes() {
 export type ProtocolTreasury = {
   discriminator: ReadonlyUint8Array;
   authority: Address;
-  totalCollectedLamports: bigint;
+  totalCollectedUsdcUnits: bigint;
   bump: number;
+  tokenBump: number;
 };
 
 export type ProtocolTreasuryArgs = {
   authority: Address;
-  totalCollectedLamports: number | bigint;
+  totalCollectedUsdcUnits: number | bigint;
   bump: number;
+  tokenBump: number;
 };
 
 /** Gets the encoder for {@link ProtocolTreasuryArgs} account data. */
@@ -68,8 +70,9 @@ export function getProtocolTreasuryEncoder(): FixedSizeEncoder<ProtocolTreasuryA
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
       ["authority", getAddressEncoder()],
-      ["totalCollectedLamports", getU64Encoder()],
+      ["totalCollectedUsdcUnits", getU64Encoder()],
       ["bump", getU8Encoder()],
+      ["tokenBump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: PROTOCOL_TREASURY_DISCRIMINATOR }),
   );
@@ -80,8 +83,9 @@ export function getProtocolTreasuryDecoder(): FixedSizeDecoder<ProtocolTreasury>
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
     ["authority", getAddressDecoder()],
-    ["totalCollectedLamports", getU64Decoder()],
+    ["totalCollectedUsdcUnits", getU64Decoder()],
     ["bump", getU8Decoder()],
+    ["tokenBump", getU8Decoder()],
   ]);
 }
 
@@ -160,5 +164,5 @@ export async function fetchAllMaybeProtocolTreasury(
 }
 
 export function getProtocolTreasurySize(): number {
-  return 49;
+  return 50;
 }

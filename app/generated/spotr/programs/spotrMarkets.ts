@@ -22,24 +22,30 @@ import {
   parseCloseRoundInstruction,
   parseCreateRoundInstruction,
   parseCreateSessionInstruction,
+  parseDepositToVaultInstruction,
   parseEnterPositionInstruction,
   parseFinalizeSessionInstruction,
   parseInitializeConfigInstruction,
+  parseInitUserVaultInstruction,
   parseJoinSessionInstruction,
   parseSweepOrphansInstruction,
   parseUpdateConfigInstruction,
+  parseWithdrawFromVaultInstruction,
   parseWithdrawProtocolFeesInstruction,
   type ParsedClaimRoundInstruction,
   type ParsedClaimSessionBalanceInstruction,
   type ParsedCloseRoundInstruction,
   type ParsedCreateRoundInstruction,
   type ParsedCreateSessionInstruction,
+  type ParsedDepositToVaultInstruction,
   type ParsedEnterPositionInstruction,
   type ParsedFinalizeSessionInstruction,
   type ParsedInitializeConfigInstruction,
+  type ParsedInitUserVaultInstruction,
   type ParsedJoinSessionInstruction,
   type ParsedSweepOrphansInstruction,
   type ParsedUpdateConfigInstruction,
+  type ParsedWithdrawFromVaultInstruction,
   type ParsedWithdrawProtocolFeesInstruction,
 } from "../instructions";
 
@@ -54,6 +60,7 @@ export enum SpotrMarketsAccount {
   Session,
   SessionTreasury,
   SpotrConfig,
+  UserVault,
 }
 
 export function identifySpotrMarketsAccount(
@@ -137,6 +144,17 @@ export function identifySpotrMarketsAccount(
   ) {
     return SpotrMarketsAccount.SpotrConfig;
   }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([23, 76, 96, 159, 210, 10, 5, 22]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsAccount.UserVault;
+  }
   throw new Error(
     "The provided account could not be identified as a spotrMarkets account.",
   );
@@ -148,12 +166,15 @@ export enum SpotrMarketsInstruction {
   CloseRound,
   CreateRound,
   CreateSession,
+  DepositToVault,
   EnterPosition,
   FinalizeSession,
+  InitUserVault,
   InitializeConfig,
   JoinSession,
   SweepOrphans,
   UpdateConfig,
+  WithdrawFromVault,
   WithdrawProtocolFees,
 }
 
@@ -220,6 +241,17 @@ export function identifySpotrMarketsInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([18, 62, 110, 8, 26, 106, 248, 151]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.DepositToVault;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([155, 188, 11, 3, 25, 152, 183, 147]),
       ),
       0,
@@ -237,6 +269,17 @@ export function identifySpotrMarketsInstruction(
     )
   ) {
     return SpotrMarketsInstruction.FinalizeSession;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([144, 193, 26, 93, 68, 219, 32, 180]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.InitUserVault;
   }
   if (
     containsBytes(
@@ -286,6 +329,17 @@ export function identifySpotrMarketsInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([180, 34, 37, 46, 156, 0, 211, 238]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.WithdrawFromVault;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([11, 68, 165, 98, 18, 208, 134, 73]),
       ),
       0,
@@ -317,11 +371,17 @@ export type ParsedSpotrMarketsInstruction<
       instructionType: SpotrMarketsInstruction.CreateSession;
     } & ParsedCreateSessionInstruction<TProgram>)
   | ({
+      instructionType: SpotrMarketsInstruction.DepositToVault;
+    } & ParsedDepositToVaultInstruction<TProgram>)
+  | ({
       instructionType: SpotrMarketsInstruction.EnterPosition;
     } & ParsedEnterPositionInstruction<TProgram>)
   | ({
       instructionType: SpotrMarketsInstruction.FinalizeSession;
     } & ParsedFinalizeSessionInstruction<TProgram>)
+  | ({
+      instructionType: SpotrMarketsInstruction.InitUserVault;
+    } & ParsedInitUserVaultInstruction<TProgram>)
   | ({
       instructionType: SpotrMarketsInstruction.InitializeConfig;
     } & ParsedInitializeConfigInstruction<TProgram>)
@@ -334,6 +394,9 @@ export type ParsedSpotrMarketsInstruction<
   | ({
       instructionType: SpotrMarketsInstruction.UpdateConfig;
     } & ParsedUpdateConfigInstruction<TProgram>)
+  | ({
+      instructionType: SpotrMarketsInstruction.WithdrawFromVault;
+    } & ParsedWithdrawFromVaultInstruction<TProgram>)
   | ({
       instructionType: SpotrMarketsInstruction.WithdrawProtocolFees;
     } & ParsedWithdrawProtocolFeesInstruction<TProgram>);
@@ -378,6 +441,13 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
         ...parseCreateSessionInstruction(instruction),
       };
     }
+    case SpotrMarketsInstruction.DepositToVault: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.DepositToVault,
+        ...parseDepositToVaultInstruction(instruction),
+      };
+    }
     case SpotrMarketsInstruction.EnterPosition: {
       assertIsInstructionWithAccounts(instruction);
       return {
@@ -390,6 +460,13 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
       return {
         instructionType: SpotrMarketsInstruction.FinalizeSession,
         ...parseFinalizeSessionInstruction(instruction),
+      };
+    }
+    case SpotrMarketsInstruction.InitUserVault: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.InitUserVault,
+        ...parseInitUserVaultInstruction(instruction),
       };
     }
     case SpotrMarketsInstruction.InitializeConfig: {
@@ -418,6 +495,13 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
       return {
         instructionType: SpotrMarketsInstruction.UpdateConfig,
         ...parseUpdateConfigInstruction(instruction),
+      };
+    }
+    case SpotrMarketsInstruction.WithdrawFromVault: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.WithdrawFromVault,
+        ...parseWithdrawFromVaultInstruction(instruction),
       };
     }
     case SpotrMarketsInstruction.WithdrawProtocolFees: {

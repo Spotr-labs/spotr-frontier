@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { address } from "@solana/kit";
 import { useWallet } from "../lib/wallet/context";
 import { useCluster } from "../components/cluster-context";
 import { WalletButton } from "../components/wallet-button";
@@ -12,6 +13,10 @@ import {
   NoticeBanner,
   SurfaceCard,
 } from "../components/spotr-ui/system";
+import { useBalance } from "../lib/hooks/use-balance";
+import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
+import { lamportsToSol } from "../lib/format";
+import { microUsdcToDisplay } from "../lib/usdc";
 
 type AirdropStatus = "idle" | "pending" | "ok" | "err";
 
@@ -132,6 +137,17 @@ export default function AirdropPage() {
   const connected = walletStatus === "connected" && !!walletAddr;
   const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT_ADDRESS ?? null;
 
+  const solBalance = useBalance(walletAddr ? address(walletAddr) : undefined);
+  const usdcBalance = useUsdcBalance(walletAddr);
+
+  useEffect(() => {
+    if (sol.status === "ok") void solBalance.mutate();
+  }, [sol.status]);
+
+  useEffect(() => {
+    if (usdc.status === "ok") void usdcBalance.mutate();
+  }, [usdc.status]);
+
   return (
     <AppPage
       header={
@@ -173,6 +189,46 @@ export default function AirdropPage() {
           </SurfaceCard>
         ) : null}
 
+        {connected ? (
+          <SurfaceCard>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+              Balances
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+                  SOL
+                </p>
+                <p className="mt-2 font-mono text-lg font-semibold tabular-nums text-foreground">
+                  {solBalance.isLoading
+                    ? "—"
+                    : solBalance.lamports != null
+                      ? lamportsToSol(Number(solBalance.lamports))
+                      : "0.000"}
+                </p>
+              </div>
+              <div className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+                  USDC
+                </p>
+                <p className="mt-2 font-mono text-lg font-semibold tabular-nums text-foreground">
+                  {usdcBalance.isLoading
+                    ? "—"
+                    : usdcBalance.microUsdc != null
+                      ? microUsdcToDisplay(Number(usdcBalance.microUsdc))
+                      : "0.00"}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 border-t border-white/8 pt-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
+                Receiving wallet
+              </p>
+              <p className="mt-1 break-all font-mono text-xs text-foreground">{walletAddr}</p>
+            </div>
+          </SurfaceCard>
+        ) : null}
+
         {isLocalnet && usdcMint ? (
           <SurfaceCard>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
@@ -209,15 +265,6 @@ export default function AirdropPage() {
               err={usdc.err}
             />
           </div>
-        ) : null}
-
-        {connected ? (
-          <SurfaceCard>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
-              Receiving wallet
-            </p>
-            <p className="mt-1 break-all font-mono text-xs text-foreground">{walletAddr}</p>
-          </SurfaceCard>
         ) : null}
       </div>
     </AppPage>

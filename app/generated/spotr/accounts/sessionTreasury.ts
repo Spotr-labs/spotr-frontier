@@ -51,9 +51,14 @@ export type SessionTreasury = {
   discriminator: ReadonlyUint8Array;
   session: Address;
   bump: number;
+  tokenBump: number;
 };
 
-export type SessionTreasuryArgs = { session: Address; bump: number };
+export type SessionTreasuryArgs = {
+  session: Address;
+  bump: number;
+  tokenBump: number;
+};
 
 /** Gets the encoder for {@link SessionTreasuryArgs} account data. */
 export function getSessionTreasuryEncoder(): FixedSizeEncoder<SessionTreasuryArgs> {
@@ -62,6 +67,7 @@ export function getSessionTreasuryEncoder(): FixedSizeEncoder<SessionTreasuryArg
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
       ["session", getAddressEncoder()],
       ["bump", getU8Encoder()],
+      ["tokenBump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: SESSION_TREASURY_DISCRIMINATOR }),
   );
@@ -73,6 +79,7 @@ export function getSessionTreasuryDecoder(): FixedSizeDecoder<SessionTreasury> {
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
     ["session", getAddressDecoder()],
     ["bump", getU8Decoder()],
+    ["tokenBump", getU8Decoder()],
   ]);
 }
 
@@ -148,5 +155,5 @@ export async function fetchAllMaybeSessionTreasury(
 }
 
 export function getSessionTreasurySize(): number {
-  return 41;
+  return 42;
 }

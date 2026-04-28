@@ -1,12 +1,22 @@
 "use client";
 
-import { type Address, type TransactionSigner } from "@solana/kit";
+import { address, type Address, type TransactionSigner } from "@solana/kit";
 import { createClient } from "@solana/kit-client-rpc";
 import {
   getCreateSessionInstructionAsync,
   getInitializeConfigInstructionAsync,
 } from "../../generated/spotr/instructions";
 import { findConfigPda } from "../../generated/spotr/pdas";
+
+const USDC_MINT_ADDRESS = process.env.NEXT_PUBLIC_USDC_MINT_ADDRESS ?? null;
+function requireUsdcMint(): Address {
+  if (!USDC_MINT_ADDRESS) {
+    throw new Error(
+      "NEXT_PUBLIC_USDC_MINT_ADDRESS is not set; cannot deploy session without USDC mint."
+    );
+  }
+  return address(USDC_MINT_ADDRESS);
+}
 import { getClusterUrl, getClusterWsConfig } from "../solana-client";
 import { publicSpotrConfig } from "../spotr-config/public";
 import { findSpotrSessionPda } from "./session-pda";
@@ -69,16 +79,19 @@ export async function submitDeploySessionOnChain(
     ReturnType<typeof getCreateSessionInstructionAsync>
   >[];
 
+  const usdcMint = requireUsdcMint();
+
   if (!alreadyInitialized) {
     const initIx = await getInitializeConfigInstructionAsync({
       authority: params.admin,
+      usdcMint,
       input: {
         protocolFeeBps: publicSpotrConfig.protocolFeeBps,
         referralCutBps: publicSpotrConfig.referralCutBps,
         roundCount: publicSpotrConfig.roundCount,
         roundDurationSeconds: BigInt(publicSpotrConfig.roundDurationSeconds),
-        buyInLamports: BigInt(publicSpotrConfig.sessionBuyInLamports),
-        roundStakeLamports: BigInt(publicSpotrConfig.roundMinStakeLamports),
+        buyInUsdcUnits: BigInt(publicSpotrConfig.sessionBuyInLamports),
+        roundStakeUsdcUnits: BigInt(publicSpotrConfig.roundMinStakeLamports),
       },
     });
     instructions.push(
@@ -91,15 +104,16 @@ export async function submitDeploySessionOnChain(
   const createIx = await getCreateSessionInstructionAsync({
     authority: params.admin,
     session: sessionAddress,
+    usdcMint,
     sessionNumber: params.sessionNumber,
     roundCount: publicSpotrConfig.roundCount,
     roundDurationSeconds: BigInt(publicSpotrConfig.roundDurationSeconds),
-    buyInLamports: BigInt(publicSpotrConfig.sessionBuyInLamports),
-    roundStakeLamports: BigInt(publicSpotrConfig.roundMinStakeLamports),
+    buyInUsdcUnits: BigInt(publicSpotrConfig.sessionBuyInLamports),
+    roundStakeUsdcUnits: BigInt(publicSpotrConfig.roundMinStakeLamports),
     protocolFeeBps: publicSpotrConfig.protocolFeeBps,
     referralCutBps: publicSpotrConfig.referralCutBps,
     minWallets: publicSpotrConfig.sessionMinWallets,
-    minTotalLamports: BigInt(publicSpotrConfig.sessionMinTotalLamports),
+    minTotalUsdcUnits: BigInt(publicSpotrConfig.sessionMinTotalLamports),
     startTs: params.startTsSeconds,
     endTs: params.endTsSeconds,
   });

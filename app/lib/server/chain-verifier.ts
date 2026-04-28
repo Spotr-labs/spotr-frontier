@@ -6,6 +6,7 @@ import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../../generated/spotr/programs";
 import { JOIN_SESSION_DISCRIMINATOR } from "../../generated/spotr/instructions/joinSession";
 import { CREATE_SESSION_DISCRIMINATOR } from "../../generated/spotr/instructions/createSession";
 import { findSpotrSessionPda } from "../chain/session-pda";
+import { findPlayerSessionPda } from "../../generated/spotr/pdas/playerSession";
 
 const base58 = getBase58Codec();
 
@@ -230,4 +231,36 @@ function getDefaultRpcUrl(cluster: ClusterMoniker) {
     default:
       return "https://api.devnet.solana.com";
   }
+}
+
+/**
+ * Verifies that the PlayerSession PDA for the given player + session exists
+ * on-chain. Used when the client detected the account already existed before
+ * sending a new join_session tx (e.g. a prior attempt succeeded on-chain but
+ * the backend step failed). Returns the resolved session PDA address.
+ */
+export async function verifyPlayerSessionExists(params: {
+  cluster: ClusterMoniker;
+  expectedPlayer: string;
+  expectedSessionNumber: bigint;
+}): Promise<{ sessionAddress: string }> {
+  const rpcUrl = getDefaultRpcUrl(params.cluster);
+  const [sessionAddress] = await findSpotrSessionPda(params.expectedSessionNumber);
+  const [playerSessionPda] = await findPlayerSessionPda({
+    session: sessionAddress,
+    player: params.expectedPlayer as import("@solana/kit").Address,
+  });
+
+  type AccountInfoResult = { value: unknown } | null;
+  const result = await rpcCall<AccountInfoResult>(rpcUrl, "getAccountInfo", [
+    String(playerSessionPda),
+    { encoding: "base64" },
+  ]);
+  if (!result?.value) {
+    throw new ChainVerificationError(
+      "PlayerSession account does not exist on-chain. The player has not joined this session."
+    );
+  }
+
+  return { sessionAddress: String(sessionAddress) };
 }

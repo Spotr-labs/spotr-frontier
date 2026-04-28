@@ -69,7 +69,7 @@ export type Round = {
   closesAt: bigint;
   sideA: SideState;
   sideB: SideState;
-  totalVolumeLamports: bigint;
+  totalVolumeUsdcUnits: bigint;
   bump: number;
 };
 
@@ -82,7 +82,7 @@ export type RoundArgs = {
   closesAt: number | bigint;
   sideA: SideStateArgs;
   sideB: SideStateArgs;
-  totalVolumeLamports: number | bigint;
+  totalVolumeUsdcUnits: number | bigint;
   bump: number;
 };
 
@@ -99,7 +99,7 @@ export function getRoundEncoder(): Encoder<RoundArgs> {
       ["closesAt", getI64Encoder()],
       ["sideA", getSideStateEncoder()],
       ["sideB", getSideStateEncoder()],
-      ["totalVolumeLamports", getU64Encoder()],
+      ["totalVolumeUsdcUnits", getU64Encoder()],
       ["bump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: ROUND_DISCRIMINATOR }),
@@ -118,7 +118,7 @@ export function getRoundDecoder(): Decoder<Round> {
     ["closesAt", getI64Decoder()],
     ["sideA", getSideStateDecoder()],
     ["sideB", getSideStateDecoder()],
-    ["totalVolumeLamports", getU64Decoder()],
+    ["totalVolumeUsdcUnits", getU64Decoder()],
     ["bump", getU8Decoder()],
   ]);
 }

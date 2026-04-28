@@ -27,6 +27,7 @@ export async function POST(request: Request) {
       walletAddress: signedPayload.walletAddress,
       referrerWallet: signedPayload.referrerWallet,
       chainTxSignature: signedPayload.chainTxSignature,
+      sessionId: signedPayload.sessionId,
     });
 
     return NextResponse.json(responsePayload);

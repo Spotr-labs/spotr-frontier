@@ -3,10 +3,11 @@
 import Image from "next/image";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useWallet } from "../lib/wallet/context";
-import { useBalance } from "../lib/hooks/use-balance";
-import { lamportsToSolString } from "../lib/lamports";
+import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
+import { microUsdcToString } from "../lib/usdc";
 import { ellipsify } from "../lib/explorer";
-import { useCluster } from "./cluster-context";
+import { cn } from "../lib/utils";
+import { useCluster, CLUSTERS } from "./cluster-context";
 import {
   EPHEMERAL_ID,
   prepareEphemeralWallet,
@@ -17,11 +18,45 @@ import { PRIVY_ID } from "../lib/wallet/privy-bridge";
 
 type CreateStep = "idle" | "confirming";
 
+function ClusterSelector({
+  cluster,
+  setCluster,
+}: {
+  cluster: string;
+  setCluster: (c: typeof CLUSTERS[number]) => void;
+}) {
+  return (
+    <div className="mt-3">
+      <div className="border-t border-border-low" />
+      <p className="mb-2 mt-3 text-xs font-semibold uppercase tracking-[0.24em] text-muted">
+        Network
+      </p>
+      <div className="flex gap-1.5">
+        {CLUSTERS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => setCluster(c)}
+            className={cn(
+              "flex-1 rounded-xl py-2 text-[11px] font-semibold capitalize tracking-[0.08em] transition",
+              cluster === c
+                ? "bg-primary text-primary-foreground"
+                : "border border-border-low text-muted hover:text-foreground"
+            )}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function WalletButton() {
   const { connectors, connect, cancelConnect, disconnect, wallet, status, error } =
     useWallet();
 
-  const { getExplorerUrl } = useCluster();
+  const { cluster, setCluster, getExplorerUrl } = useCluster();
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [createStep, setCreateStep] = useState<CreateStep>("idle");
@@ -30,7 +65,7 @@ export function WalletButton() {
   const ref = useRef<HTMLDivElement>(null);
 
   const address = wallet?.account.address;
-  const balance = useBalance(address);
+  const balance = useUsdcBalance(address);
 
   const open = () => setIsOpen(true);
   const close = useCallback(() => {
@@ -267,6 +302,7 @@ export function WalletButton() {
                     </button>
                   </div>
                 )}
+                <ClusterSelector cluster={cluster} setCluster={setCluster} />
               </>
             )}
           </div>
@@ -292,10 +328,10 @@ export function WalletButton() {
               Wallet
             </p>
             <p className="mt-2 text-lg font-bold tabular-nums">
-              {balance.lamports != null
-                ? lamportsToSolString(balance.lamports)
+              {balance.microUsdc != null
+                ? microUsdcToString(balance.microUsdc)
                 : "—"}{" "}
-              <span className="text-sm font-normal text-muted">SOL</span>
+              <span className="text-sm font-normal text-muted">USDC</span>
             </p>
           </div>
 
@@ -319,6 +355,8 @@ export function WalletButton() {
               Explorer
             </a>
           </div>
+
+          <ClusterSelector cluster={cluster} setCluster={setCluster} />
 
           <button
             onClick={() => {

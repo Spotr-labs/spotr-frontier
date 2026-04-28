@@ -56,23 +56,25 @@ export function getSpotrConfigDiscriminatorBytes() {
 export type SpotrConfig = {
   discriminator: ReadonlyUint8Array;
   authority: Address;
+  usdcMint: Address;
   protocolFeeBps: number;
   referralCutBps: number;
   defaultRoundCount: number;
   defaultRoundDurationSeconds: bigint;
-  defaultBuyInLamports: bigint;
-  defaultRoundStakeLamports: bigint;
+  defaultBuyInUsdcUnits: bigint;
+  defaultRoundStakeUsdcUnits: bigint;
   bump: number;
 };
 
 export type SpotrConfigArgs = {
   authority: Address;
+  usdcMint: Address;
   protocolFeeBps: number;
   referralCutBps: number;
   defaultRoundCount: number;
   defaultRoundDurationSeconds: number | bigint;
-  defaultBuyInLamports: number | bigint;
-  defaultRoundStakeLamports: number | bigint;
+  defaultBuyInUsdcUnits: number | bigint;
+  defaultRoundStakeUsdcUnits: number | bigint;
   bump: number;
 };
 
@@ -82,12 +84,13 @@ export function getSpotrConfigEncoder(): FixedSizeEncoder<SpotrConfigArgs> {
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
       ["authority", getAddressEncoder()],
+      ["usdcMint", getAddressEncoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
       ["defaultRoundCount", getU8Encoder()],
       ["defaultRoundDurationSeconds", getI64Encoder()],
-      ["defaultBuyInLamports", getU64Encoder()],
-      ["defaultRoundStakeLamports", getU64Encoder()],
+      ["defaultBuyInUsdcUnits", getU64Encoder()],
+      ["defaultRoundStakeUsdcUnits", getU64Encoder()],
       ["bump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: SPOTR_CONFIG_DISCRIMINATOR }),
@@ -99,12 +102,13 @@ export function getSpotrConfigDecoder(): FixedSizeDecoder<SpotrConfig> {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
     ["authority", getAddressDecoder()],
+    ["usdcMint", getAddressDecoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["defaultRoundCount", getU8Decoder()],
     ["defaultRoundDurationSeconds", getI64Decoder()],
-    ["defaultBuyInLamports", getU64Decoder()],
-    ["defaultRoundStakeLamports", getU64Decoder()],
+    ["defaultBuyInUsdcUnits", getU64Decoder()],
+    ["defaultRoundStakeUsdcUnits", getU64Decoder()],
     ["bump", getU8Decoder()],
   ]);
 }
@@ -171,5 +175,5 @@ export async function fetchAllMaybeSpotrConfig(
 }
 
 export function getSpotrConfigSize(): number {
-  return 70;
+  return 102;
 }

@@ -1,31 +1,39 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useEffectEvent,
   useMemo,
   useRef,
   useState,
   useTransition,
-  type FormEvent,
+  type ReactNode,
 } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { Gift, Target, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { WalletButton } from "./wallet-button";
 import { useCluster } from "./cluster-context";
 import { useWallet } from "../lib/wallet/context";
 import { createSignedActionRequest } from "../lib/wallet/signed-request";
-import { useBalance } from "../lib/hooks/use-balance";
+import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
 import { submitJoinSessionOnChain } from "../lib/chain/spotr-join-session";
-import { submitDeploySessionOnChain } from "../lib/chain/spotr-deploy-session";
-import { ellipsify } from "../lib/explorer";
 import { cn } from "../lib/utils";
+import { ellipsify } from "../lib/explorer";
 import {
+  formatSignedMicroUsdc,
   lamportsToSol,
-  formatSignedLamports,
-  formatUtc,
 } from "../lib/format";
+import { microUsdcToDisplay } from "../lib/usdc";
+import { toPng } from "html-to-image";
 import type {
+  AdminSessionCard,
+  FaultLinePair,
+  LiveSessionSnapshot,
+  ProfileSummary,
+  SessionPublicResults,
   SpotrDashboardPayload,
   SpotrPublicConfig,
   SpotrSide,
@@ -33,8 +41,6 @@ import type {
 import type { SpotrSignedActionName } from "../lib/spotr-signed-action";
 import { Button } from "./ui/button";
 import {
-  AppHeader,
-  AppPage,
   MetricCard,
   NoticeBanner,
   SpotrLogo,
@@ -85,28 +91,13 @@ type Notice =
     }
   | null;
 
-type RewardFormState = {
-  targetWalletAddress: string;
-  title: string;
-  subtitle: string;
-  kind: "nft" | "merch" | "gift-card" | "voucher";
-};
-
-type PairImportFormState = {
-  csv: string;
-};
-
-type SessionDeployFormState = {
-  title: string;
-  pairIds: string[];
-};
-
 type PlayerScreen =
   | "splash"
   | "howto"
   | "entry"
   | "checking"
   | "topup"
+  | "sessions"
   | "confirming"
   | "live"
   | "pnl"
@@ -130,37 +121,15 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   }));
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [notice, setNotice] = useState<Notice>(null);
-  const [rewardForm, setRewardForm] = useState<RewardFormState>(() => ({
-    targetWalletAddress: initialData.admin.participants[0]?.walletAddress ?? "",
-    title: "",
-    subtitle: "",
-    kind: "nft",
-  }));
-  const [pairImportForm, setPairImportForm] = useState<PairImportFormState>({
-    csv: "",
-  });
-  const [sessionDeployForm, setSessionDeployForm] = useState<SessionDeployFormState>(
-    () => ({
-      title: "",
-      pairIds: initialData.admin.pairLibrary
-        .filter((pair) => pair.active && !pair.assigned)
-        .slice(0, config.roundCount)
-        .map((pair) => pair.id),
-    })
-  );
   const [isPending, startTransition] = useTransition();
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   const walletAddress = wallet?.account.address ?? null;
   const canSignActions = Boolean(wallet?.signMessage);
   const { session, profile, admin, faultLines } = data;
-  const deployablePairs = useMemo(
-    () => admin.pairLibrary.filter((pair) => pair.active && !pair.assigned),
-    [admin.pairLibrary]
-  );
-  const selectedDeployPairIds = useMemo(() => {
-    const deployablePairIds = new Set(deployablePairs.map((pair) => pair.id));
-    return sessionDeployForm.pairIds.filter((pairId) => deployablePairIds.has(pairId));
-  }, [deployablePairs, sessionDeployForm.pairIds]);
+
+  const selectedSession =
+    admin.sessionHistory.find((s) => s.id === selectedSessionId) ?? null;
 
   const activeRound =
     session.rounds.find((round) => round.status === "open") ??
@@ -181,12 +150,6 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     });
     const payload = await readJson<SpotrDashboardPayload>(response);
     setData(payload);
-    if (!rewardForm.targetWalletAddress && payload.admin.participants.length > 0) {
-      setRewardForm((current) => ({
-        ...current,
-        targetWalletAddress: payload.admin.participants[0]?.walletAddress ?? "",
-      }));
-    }
   });
 
   useEffect(() => {
@@ -305,7 +268,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       });
       return;
     }
-    if (!data.session.chainSessionNumber) {
+    const activeChainSessionNumber =
+      selectedSession?.chainSessionNumber ?? data.session.chainSessionNumber;
+    if (!activeChainSessionNumber) {
       setNotice({
         tone: "error",
         message: "This session has not been deployed on-chain yet.",
@@ -322,8 +287,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
           });
           const { signature } = await submitJoinSessionOnChain({
             cluster,
-            sessionNumber: BigInt(data.session.chainSessionNumber!),
+            sessionNumber: BigInt(activeChainSessionNumber),
             player: signer,
+            buyInAmount: BigInt(config.sessionBuyInLamports),
           });
           setNotice({
             tone: "info",
@@ -332,12 +298,18 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
           const nextData = await submitSignedAction(
             "/api/session/join",
             "join-session",
-            { walletAddress, chainTxSignature: signature }
+            {
+              walletAddress,
+              referrerWallet: null,
+              chainTxSignature: signature,
+              sessionId: selectedSession?.id ?? data.session.id,
+            }
           );
           setData(nextData);
           setNotice({ tone: "success", message: "Session joined." });
           toast.success("Session joined.");
         } catch (error) {
+          console.error("[SPOTR] join session failed:", error);
           const message =
             error instanceof Error ? error.message : "Could not join session.";
           setNotice({ tone: "error", message });
@@ -389,185 +361,23 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     );
   };
 
-  const handleAssignReward = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!walletAddress) return;
 
-    runSignedAction(
-      "/api/admin/rewards/assign",
-      "admin-assign-reward",
-      {
-        adminWalletAddress: walletAddress,
-        targetWalletAddress: rewardForm.targetWalletAddress,
-        title: rewardForm.title,
-        subtitle: rewardForm.subtitle,
-        kind: rewardForm.kind,
-        sessionId: session.id,
-      },
-      "Reward assigned."
-    );
-
-    setRewardForm((current) => ({
-      ...current,
-      title: "",
-      subtitle: "",
-    }));
-  };
-
-  const handleRewardStatusUpdate = (
-    rewardId: string,
-    nextStatus: "assigned" | "claimable" | "claimed"
-  ) => {
-    if (!walletAddress) return;
-    runSignedAction(
-      "/api/admin/rewards/status",
-      "admin-update-reward-status",
-      {
-        adminWalletAddress: walletAddress,
-        rewardId,
-        status: nextStatus,
-      },
-      "Reward status updated."
-    );
-  };
-
-  const handleImportPairs = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!walletAddress) return;
-
-    runSignedAction(
-      "/api/admin/pairs/import",
-      "admin-import-pairs",
-      {
-        adminWalletAddress: walletAddress,
-        csv: pairImportForm.csv,
-      },
-      "Pair library imported.",
-      () => {
-        setPairImportForm({ csv: "" });
-      }
-    );
-  };
-
-  const handleTogglePair = (pairId: string, active: boolean) => {
-    if (!walletAddress) return;
-
-    runSignedAction(
-      "/api/admin/pairs/toggle",
-      "admin-toggle-pair",
-      {
-        adminWalletAddress: walletAddress,
-        pairId,
-        active,
-      },
-      active ? "Pair activated." : "Pair deactivated."
-    );
-  };
-
-  const handleDeploySession = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!walletAddress) return;
-
-    runSignedAction(
-      "/api/admin/sessions/deploy",
-      "admin-deploy-session",
-      {
-        adminWalletAddress: walletAddress,
-        title: sessionDeployForm.title || null,
-        pairIds: selectedDeployPairIds,
-      },
-      "Session deployed.",
-      (nextData) => {
-        setSessionDeployForm({
-          title: "",
-          pairIds: nextData.admin.pairLibrary
-            .filter((pair) => pair.active && !pair.assigned)
-            .slice(0, config.roundCount)
-            .map((pair) => pair.id),
-        });
-      }
-    );
-  };
-
-  const handleChainDeploy = (session: {
-    id: string;
-    title: string;
-    startsAtIso: string;
-    endsAtIso: string;
-    createdAtIso: string;
-  }) => {
-    if (!walletAddress || !signer) {
-      setNotice({
-        tone: "error",
-        message: "Connect your admin wallet to deploy on-chain.",
-      });
-      return;
-    }
-
-    const chainSessionNumber = BigInt(new Date(session.createdAtIso).getTime());
-    const startTsSeconds = BigInt(
-      Math.floor(new Date(session.startsAtIso).getTime() / 1000)
-    );
-    const endTsSeconds = BigInt(
-      Math.floor(new Date(session.endsAtIso).getTime() / 1000)
-    );
-
+  const refresh = useCallback(() => {
     startTransition(() => {
       void (async () => {
         try {
-          setNotice({
-            tone: "info",
-            message: `Sign the deploy tx for "${session.title}" in your wallet…`,
-          });
-          const { signature } = await submitDeploySessionOnChain({
-            cluster,
-            admin: signer,
-            sessionNumber: chainSessionNumber,
-            startTsSeconds,
-            endTsSeconds,
-          });
-          setNotice({
-            tone: "info",
-            message: "Deploy confirmed on-chain. Finalising record…",
-          });
-          const nextData = await submitSignedAction(
-            "/api/admin/sessions/chain-deploy",
-            "admin-chain-deploy-session",
-            {
-              adminWalletAddress: walletAddress,
-              sessionId: session.id,
-              chainTxSignature: signature,
-              chainSessionNumber: chainSessionNumber.toString(),
-            }
-          );
-          setData(nextData);
-          setNotice({ tone: "success", message: "Session deployed on-chain." });
-          toast.success("Session deployed on-chain.");
-        } catch (error) {
-          const message =
-            error instanceof Error
-              ? error.message
-              : "Could not deploy session on-chain.";
-          setNotice({ tone: "error", message });
-          toast.error(message);
+          const query = walletAddress
+            ? `?wallet=${encodeURIComponent(walletAddress)}`
+            : "";
+          const response = await fetch(`/api/bootstrap${query}`, { cache: "no-store" });
+          const payload = await readJson<SpotrDashboardPayload>(response);
+          setData(payload);
+        } catch {
+          // silently ignore — UI keeps last good state
         }
       })();
     });
-  };
-
-  const handlePayReferral = (referrerWallet: string) => {
-    if (!walletAddress) return;
-
-    runSignedAction(
-      "/api/admin/referrals/payout",
-      "admin-payout-referrals",
-      {
-        adminWalletAddress: walletAddress,
-        referrerWallet,
-      },
-      "Referral payout batch recorded."
-    );
-  };
+  }, [walletAddress]);
 
   return {
     walletAddress,
@@ -589,25 +399,14 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     isPending,
     flipped,
     setFlipState,
-    rewardForm,
-    setRewardForm,
-    pairImportForm,
-    setPairImportForm,
-    sessionDeployForm,
-    setSessionDeployForm,
-    deployablePairs,
-    selectedDeployPairIds,
+    selectedSessionId,
+    selectedSession,
+    setSelectedSessionId,
     handleJoin,
     handleEnter,
     handleClaimRounds,
     handleClaimSessionBalance,
-    handleAssignReward,
-    handleRewardStatusUpdate,
-    handleImportPairs,
-    handleTogglePair,
-    handleDeploySession,
-    handleChainDeploy,
-    handlePayReferral,
+    refresh,
   };
 }
 
@@ -615,24 +414,46 @@ function triggerUnavailable(message: string) {
   toast.error(message);
 }
 
-function PageShell({
-  title,
-  eyebrow,
-  children,
-  notice,
-}: {
-  title: string;
-  eyebrow: string;
-  children: React.ReactNode;
-  notice: Notice;
-}) {
+function GameNavBar() {
+  const pathname = usePathname();
   return (
-    <AppPage header={<AppHeader title={title} eyebrow={eyebrow} />}>
-      {notice ? (
-        <NoticeBanner tone={notice.tone}>{notice.message}</NoticeBanner>
-      ) : null}
-      {children}
-    </AppPage>
+    <div className="flex items-center justify-between px-4 pt-4 pb-2">
+      <div className="flex gap-1">
+        {[{ href: "/play", label: "Play" }, { href: "/profile", label: "Profile" }, { href: "/admin", label: "Admin" }].map((link) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            className={cn(
+              "rounded-full px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition",
+              (pathname === link.href || (link.href === "/play" && pathname.startsWith("/play")))
+                ? "bg-white/15 text-white"
+                : "text-white/50 hover:text-white/80"
+            )}
+          >
+            {link.label}
+          </Link>
+        ))}
+      </div>
+      <WalletButton />
+    </div>
+  );
+}
+
+function NarrowPageShell({ children, notice }: { children: ReactNode; notice: Notice }) {
+  return (
+    <div className="stage-canvas min-h-[100dvh]">
+      <div className="mx-auto flex min-h-[100dvh] w-full max-w-[1366px]">
+        <div className="hidden flex-1 bg-[#09172c] md:block" />
+        <div className="stage-shell stage-shell-onboard relative mx-auto flex min-h-[100dvh] w-full max-w-[446px] flex-col">
+          <GameNavBar />
+          {notice && <NoticeBanner tone={notice.tone}>{notice.message}</NoticeBanner>}
+          <div className="flex-1 overflow-y-auto space-y-4 px-4 py-4 pb-8">
+            {children}
+          </div>
+        </div>
+        <div className="hidden flex-1 bg-[#09172c] md:block" />
+      </div>
+    </div>
   );
 }
 
@@ -760,9 +581,19 @@ function WalletDataRow({
   );
 }
 
+function Redirect({ to }: { to: string }) {
+  const router = useRouter();
+  useEffect(() => { router.push(to); }, [router, to]);
+  return (
+    <StageScaffold surface="navy">
+      <GameNavBar />
+    </StageScaffold>
+  );
+}
+
 export function SpotrShell({ config, initialData }: SpotrShellProps) {
   const state = useSpotrDashboard(config, initialData);
-  const balance = useBalance(state.walletAddress ?? undefined);
+  const balance = useUsdcBalance(state.walletAddress);
   const [introSeen, setIntroSeen] = useState(() => {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem("spotr-player-intro-v1") === "seen";
@@ -773,6 +604,7 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
   });
   const [settledRound, setSettledRound] = useState<typeof state.activeRound>(null);
   const [showPnl, setShowPnl] = useState(false);
+  const pnlShownRoundRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!showSplash) return;
@@ -783,21 +615,28 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
   }, [showSplash]);
 
   useEffect(() => {
+    const roundId = state.activeRound?.id;
     if (
       state.countdown === 0 &&
       state.activeRound?.status === "open" &&
-      !showPnl
+      !showPnl &&
+      roundId !== undefined &&
+      pnlShownRoundRef.current !== roundId
     ) {
+      pnlShownRoundRef.current = roundId;
       setSettledRound(state.activeRound);
       setShowPnl(true);
-      const t = window.setTimeout(() => setShowPnl(false), 5000);
+      const t = window.setTimeout(() => {
+        setShowPnl(false);
+        state.refresh();
+      }, 5000);
       return () => window.clearTimeout(t);
     }
-  }, [state.countdown, state.activeRound, showPnl]);
+  }, [state.countdown, state.activeRound, showPnl, state.refresh]);
 
   const rewardList = state.profile?.rewards ?? [];
   let screen: PlayerScreen =
-    state.session.status === "completed"
+    state.session.status === "completed" && state.session.joined
       ? "season"
       : state.session.joined
         ? "live"
@@ -805,15 +644,7 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
           ? "splash"
           : !introSeen
             ? "howto"
-            : !state.walletAddress
-              ? "entry"
-              : balance.isLoading
-                ? "checking"
-                : balance.error
-                  ? "entry"
-                  : (balance.lamports ?? 0n) < BigInt(config.sessionBuyInLamports)
-                    ? "topup"
-                    : "confirming";
+            : "entry";
 
   if (showPnl && settledRound) screen = "pnl";
 
@@ -832,42 +663,21 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     );
   }
   if (screen === "entry") return <EntryScreen />;
-  if (screen === "checking") {
-    return (
-      <BalanceCheckScreen
-        buyInLamports={config.sessionBuyInLamports}
-        balanceLamports={balance.lamports}
-        isLoading={balance.isLoading}
-      />
-    );
-  }
-  if (screen === "topup") {
-    return <TopUpScreen config={config} balanceLamports={balance.lamports} />;
-  }
-  if (screen === "confirming") {
-    return <ConfirmSessionScreen state={state} />;
-  }
   if (screen === "pnl" && settledRound) {
     return (
       <PnlScreen
         round={settledRound}
         totalRounds={config.roundCount}
         activeFaultLine={state.activeFaultLine}
-        onContinue={() => setShowPnl(false)}
+        onContinue={() => { setShowPnl(false); state.refresh(); }}
       />
     );
   }
   if (screen === "season") {
-    return (
-      <SeasonScreen
-        profile={state.profile}
-        rewards={rewardList}
-        onUnavailable={triggerUnavailable}
-      />
-    );
+    return <Redirect to={`/play/${state.session.id}/recap`} />;
   }
   return (
-    <LiveGameScreen config={config} state={state} balanceLamports={balance.lamports} />
+    <LiveGameScreen config={config} state={state} balanceMicro={balance.microUsdc} />
   );
 }
 
@@ -931,12 +741,20 @@ function HowItWorksScreen({ onContinue }: { onContinue: () => void }) {
 function EntryScreen() {
   return (
     <StageScaffold surface="onboard">
+      <GameNavBar />
       <CenteredHero
         logo={<EyeBrand size={40} />}
         title="What do you actually think?"
-        body="Connect a Solana wallet with at least 0.035 SOL to start a session."
-        action={<WalletButton />}
-        footer="All positions settle on Solana mainnet. · SPOTR.TV never has custody of your funds."
+        body="Browse open sessions and join with a Solana wallet."
+        action={
+          <Link
+            href="/play"
+            className="inline-flex items-center justify-center rounded-full bg-primary px-6 py-3 text-sm font-bold uppercase tracking-[0.1em] text-black transition hover:bg-primary/90"
+          >
+            Browse Sessions
+          </Link>
+        }
+        footer="All positions settle on Solana. · SPOTR.TV never has custody of your funds."
       />
     </StageScaffold>
   );
@@ -944,11 +762,11 @@ function EntryScreen() {
 
 function BalanceCheckScreen({
   buyInLamports,
-  balanceLamports,
+  balanceMicro,
   isLoading,
 }: {
   buyInLamports: number;
-  balanceLamports: bigint | number | null;
+  balanceMicro: bigint | null;
   isLoading: boolean;
 }) {
   const [phase, setPhase] = useState<"checking" | "success" | "low">("checking");
@@ -959,26 +777,27 @@ function BalanceCheckScreen({
       return;
     }
     const t = window.setTimeout(() => {
-      if (balanceLamports == null) {
+      if (balanceMicro == null) {
         setPhase("checking");
         return;
       }
-      const bal = Number(balanceLamports);
+      const bal = Number(balanceMicro);
       setPhase(bal >= buyInLamports ? "success" : "low");
     }, 1600);
     return () => window.clearTimeout(t);
-  }, [isLoading, balanceLamports, buyInLamports]);
+  }, [isLoading, balanceMicro, buyInLamports]);
 
-  const balSol = balanceLamports != null ? lamportsToSol(Number(balanceLamports)) : "0";
-  const minSol = lamportsToSol(buyInLamports);
+  const balUsdc = balanceMicro != null ? microUsdcToDisplay(Number(balanceMicro)) : "0";
+  const minUsdc = microUsdcToDisplay(buyInLamports);
 
   if (phase === "checking") {
     return (
       <StageScaffold surface="navy">
+        <GameNavBar />
         <CenteredHero
           logo={<EyeBrand size={40} />}
           title="Checking your wallet balance…"
-          body={`Minimum entry: ${minSol} SOL`}
+          body={`Minimum entry: ${minUsdc} USDC`}
         />
       </StageScaffold>
     );
@@ -987,9 +806,10 @@ function BalanceCheckScreen({
   if (phase === "success") {
     return (
       <StageScaffold surface="navy">
+        <GameNavBar />
         <CenteredHero
           logo={<StatusIcon tone="success" />}
-          title={`Balance: ${balSol} SOL`}
+          title={`Balance: ${balUsdc} USDC`}
           body="You're cleared to play."
         />
       </StageScaffold>
@@ -998,10 +818,11 @@ function BalanceCheckScreen({
 
   return (
     <StageScaffold surface="navy">
+      <GameNavBar />
       <CenteredHero
         logo={<StatusIcon tone="error" />}
         title="Balance too low"
-        body={`You have ${balSol} SOL. Top up to at least ${minSol} SOL to play.`}
+        body={`You have ${balUsdc} USDC. Top up to at least ${minUsdc} USDC to play.`}
       />
     </StageScaffold>
   );
@@ -1009,41 +830,42 @@ function BalanceCheckScreen({
 
 function TopUpScreen({
   config,
-  balanceLamports,
+  balanceMicro,
 }: {
   config: SpotrPublicConfig;
-  balanceLamports: bigint | number | null;
+  balanceMicro: bigint | null;
 }) {
-  const balSol = Number(balanceLamports ?? 0n) / 1_000_000_000;
-  const minSol = config.sessionBuyInLamports / 1_000_000_000;
-  const shortfall = Math.max(0, minSol - balSol);
+  const balUsdc = Number(balanceMicro ?? 0n) / 1_000_000;
+  const minUsdc = config.sessionBuyInLamports / 1_000_000;
+  const shortfall = Math.max(0, minUsdc - balUsdc);
   const [amount, setAmount] = useState(
-    parseFloat(shortfall.toFixed(3)) || 0.05
+    parseFloat(shortfall.toFixed(2)) || 5
   );
-  const presets = [0.05, 0.1, 0.25];
+  const presets = [5, 10, 25];
 
   return (
     <StageScaffold surface="onboard">
-      <div className="flex flex-1 flex-col px-6 pb-6 pt-10">
+      <GameNavBar />
+      <div className="flex flex-1 flex-col px-6 pb-6 pt-4">
         <div className="mb-6">
           <EyeBrand size={32} />
         </div>
 
         <h2 className="mb-3 text-[28px] font-bold text-white">Top up to play.</h2>
         <p className="mb-6 text-[15px] leading-relaxed text-white/70">
-          Your wallet has {balSol.toFixed(3)} SOL. You need at least{" "}
-          {minSol.toFixed(3)} SOL to start a session.
+          Your wallet has {balUsdc.toFixed(2)} USDC. You need at least{" "}
+          {minUsdc.toFixed(2)} USDC to start a session.
         </p>
 
         <div className="space-y-4">
-          <BalanceStatusRow currentSol={balSol} shortfallSol={shortfall} />
-          <AmountStepper valueSol={amount} onChange={setAmount} step={0.01} min={0.001} />
+          <BalanceStatusRow currentUsdc={balUsdc} shortfallUsdc={shortfall} />
+          <AmountStepper valueUsdc={amount} onChange={setAmount} step={1} min={0.5} />
           <QuickAmountChips
             options={presets}
             selected={amount}
             onSelect={setAmount}
           />
-          <ConversionLine newBalanceSol={balSol + amount} />
+          <ConversionLine newBalanceUsdc={balUsdc + amount} />
         </div>
 
         <BottomAction
@@ -1055,7 +877,7 @@ function TopUpScreen({
               disabled={amount < shortfall}
               onClick={() => toast.error("Top-up requires external wallet flow")}
             >
-              Add {amount.toFixed(3)} SOL to Wallet
+              Add {amount.toFixed(2)} USDC to Wallet
             </Button>
           }
           note="Funds stay in your wallet. SPOTR never has custody."
@@ -1065,17 +887,134 @@ function TopUpScreen({
   );
 }
 
+function SessionListScreen({
+  sessions,
+  config,
+  onSelect,
+}: {
+  sessions: AdminSessionCard[];
+  config: SpotrPublicConfig;
+  onSelect: (id: string) => void;
+}) {
+  const joinable = sessions.filter(
+    (s) => s.status === "pending" || s.status === "live"
+  );
+  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
+
+  return (
+    <StageScaffold surface="onboard">
+      <GameNavBar />
+      <div className="flex flex-1 flex-col px-4 pb-6 pt-2">
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-primary">
+            Available sessions
+          </p>
+          <h2 className="mt-1 text-[22px] font-bold text-white">Join a session</h2>
+        </div>
+
+        {joinable.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-center text-sm text-white/50">
+              No sessions open right now. Check back soon.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {joinable.map((session) => (
+              <SessionCard
+                key={session.id}
+                session={session}
+                buyInUsdc={buyInUsdc}
+                onJoin={() => onSelect(session.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </StageScaffold>
+  );
+}
+
+function SessionCard({
+  session,
+  buyInUsdc,
+  onJoin,
+}: {
+  session: AdminSessionCard;
+  buyInUsdc: string;
+  onJoin: () => void;
+}) {
+  const isLive = session.status === "live";
+  const startDate = new Date(session.startsAtIso);
+  const endDate = new Date(session.endsAtIso);
+  const timeRange = `${startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${startDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })} – ${endDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`;
+
+  return (
+    <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="truncate text-sm font-semibold text-white">{session.title}</p>
+          <p className="mt-0.5 text-[11px] text-white/50">{timeRange}</p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
+            isLive
+              ? "bg-success/20 text-success"
+              : "bg-primary/20 text-primary"
+          )}
+        >
+          {isLive ? "Live" : "Open"}
+        </span>
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <div className="rounded-xl bg-black/20 px-3 py-2">
+          <p className="text-[10px] text-white/40 uppercase tracking-[0.2em]">Wallets</p>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+            {session.walletsJoined}
+          </p>
+        </div>
+        <div className="rounded-xl bg-black/20 px-3 py-2">
+          <p className="text-[10px] text-white/40 uppercase tracking-[0.2em]">Buy-in</p>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+            {buyInUsdc} USDC
+          </p>
+        </div>
+      </div>
+
+      <Button
+        type="button"
+        variant="gold"
+        size="sm"
+        className="w-full"
+        onClick={onJoin}
+        disabled={!session.chainSessionNumber}
+      >
+        {session.chainSessionNumber ? "Join Session" : "Not deployed yet"}
+      </Button>
+    </div>
+  );
+}
+
 function ConfirmSessionScreen({
   state,
+  onBack,
 }: {
   state: ReturnType<typeof useSpotrDashboard>;
+  onBack: () => void;
 }) {
+  const activeSession = state.selectedSession ?? null;
   const done = state.session.joined;
-  const onChain = Boolean(state.session.chainSessionNumber);
+  const onChain = Boolean(
+    activeSession?.chainSessionNumber ?? state.session.chainSessionNumber
+  );
+  const sessionTitle = activeSession?.title ?? state.session.title;
 
   if (done) {
     return (
       <StageScaffold surface="navy">
+        <GameNavBar />
         <CenteredHero
           logo={<StatusIcon tone="success" />}
           title="You're in. Session starts now."
@@ -1088,10 +1027,16 @@ function ConfirmSessionScreen({
   if (!onChain) {
     return (
       <StageScaffold surface="navy">
+        <GameNavBar />
         <CenteredHero
           logo={<EyeBrand size={44} />}
           title="Session not yet on-chain"
           body="The session hasn't been deployed on-chain yet. Check back soon."
+          action={
+            <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+              ← Back to sessions
+            </Button>
+          }
         />
       </StageScaffold>
     );
@@ -1099,9 +1044,10 @@ function ConfirmSessionScreen({
 
   return (
     <StageScaffold surface="navy">
+      <GameNavBar />
       <CenteredHero
         logo={<EyeBrand size={44} />}
-        title={state.isPending ? "Confirming on Solana…" : "Ready to play"}
+        title={state.isPending ? "Confirming on Solana…" : sessionTitle}
         body={
           state.isPending
             ? "Sign the transaction in your wallet."
@@ -1109,15 +1055,20 @@ function ConfirmSessionScreen({
         }
         action={
           !state.isPending ? (
-            <Button
-              type="button"
-              variant="gold"
-              size="block"
-              onClick={state.handleJoin}
-              disabled={!state.canSignActions}
-            >
-              Join Session
-            </Button>
+            <div className="flex w-full flex-col gap-2">
+              <Button
+                type="button"
+                variant="gold"
+                size="block"
+                onClick={state.handleJoin}
+                disabled={!state.canSignActions}
+              >
+                Join Session
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+                ← Back to sessions
+              </Button>
+            </div>
           ) : undefined
         }
       />
@@ -1152,11 +1103,11 @@ function WaitingRoomScreen({
 function LiveGameScreen({
   config,
   state,
-  balanceLamports,
+  balanceMicro,
 }: {
   config: SpotrPublicConfig;
   state: ReturnType<typeof useSpotrDashboard>;
-  balanceLamports: bigint | number | null;
+  balanceMicro: bigint | null;
 }) {
   const [buyFlash, setBuyFlash] = useState(false);
 
@@ -1186,7 +1137,7 @@ function LiveGameScreen({
             index={state.activeRound.index ?? config.roundCount}
             total={config.roundCount}
           />
-          <BalancePill balanceLamports={balanceLamports} />
+          <BalancePill balanceLamports={balanceMicro} />
         </div>
 
         <div className="mt-3 h-[3px] w-full bg-white/10">
@@ -1202,13 +1153,13 @@ function LiveGameScreen({
         </div>
 
         <div className="flex flex-1 flex-col px-4 pt-4">
-          {state.activeFaultLine && state.activeDisplay ? (
+          {state.activeFaultLine && state.activeRound ? (
             <FaultLineCard
               category={state.activeFaultLine.category}
-              side={state.activeDisplay.side as SpotrSide}
-              copy={state.activeDisplay.copy}
-              pct={state.activeDisplay.pct}
-              opposingPct={state.activeDisplay.opposingPct}
+              sideA={state.activeFaultLine.sideA}
+              sideB={state.activeFaultLine.sideB}
+              sideAPct={state.activeRound.sideAProbabilityPct}
+              sideBPct={state.activeRound.sideBProbabilityPct}
               flipped={state.flipped}
               onFlip={() =>
                 state.setFlipState((current) => ({
@@ -1220,6 +1171,7 @@ function LiveGameScreen({
                 }))
               }
               locked={isLocked}
+              lockedSide={(state.activeRound.lockedSide as SpotrSide) ?? null}
             />
           ) : (
             <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-white/50">
@@ -1371,7 +1323,251 @@ function PnlScreen({
   );
 }
 
-function SeasonScreen({
+export function SessionEndedScreen({
+  session,
+  profile,
+  faultLines,
+  config,
+}: {
+  session: LiveSessionSnapshot;
+  profile: ProfileSummary | null;
+  faultLines: FaultLinePair[];
+  config: SpotrPublicConfig;
+}) {
+  const cumPnl = profile?.cumulativePnlLamports ?? 0;
+  const pnlTone = cumPnl > 0 ? "text-[#22c55e]" : cumPnl < 0 ? "text-[#ef4444]" : "text-white";
+
+  // Show last 6 chars of chain number so long integers don't overflow
+  const sessionNum = session.chainSessionNumber
+    ? String(session.chainSessionNumber).slice(-6).padStart(6, "0")
+    : session.id.slice(-6).toUpperCase();
+
+  const walletShort = profile?.walletAddress
+    ? ellipsify(profile.walletAddress, 4)
+    : "—";
+
+  // "28 APR 2026" format matching reference
+  const dateStr = new Date()
+    .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    .toUpperCase();
+
+  const settledCount = session.rounds.filter((r) => r.status === "closed").length;
+  const roundCount = settledCount || config.roundCount;
+
+  const roundPnls = session.rounds.map((r) => {
+    // include already-claimed winnings so claimed rounds show green, not red
+    const pnl = (r.claimableLamports + r.claimedLamports) - (r.stakeLamports ?? 0);
+    const faultLine = faultLines.find((f) => f.roundId === r.id);
+    return { round: r, pnl, category: faultLine?.category ?? "" };
+  });
+
+  const entered = roundPnls.filter((r) => r.round.lockedSide);
+  const sorted = [...entered].sort((a, b) => b.pnl - a.pnl);
+  const best = sorted[0] ?? null;
+  const worst = sorted[sorted.length - 1] ?? null;
+  const rawMax = Math.max(...roundPnls.map((r) => Math.abs(r.pnl)));
+  // hasData = at least one round has a non-zero PnL
+  const hasData = rawMax > 0;
+  const maxAbs = hasData ? rawMax : 1;
+
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  async function handleDownload() {
+    if (!cardRef.current) return;
+    try {
+      const dataUrl = await toPng(cardRef.current, { pixelRatio: 3 });
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `spotr-conviction-${sessionNum}.png`;
+      a.click();
+    } catch {
+      toast.error("Could not export card");
+    }
+  }
+
+  return (
+    <StageScaffold surface="navy">
+      {/* Hero — top */}
+      <div className="flex flex-col items-center pt-12 pb-0">
+        <EyeBrand size={28} />
+        <p className={cn("mt-5 font-mono text-[40px] font-bold tabular-nums tracking-[-0.02em] leading-none", pnlTone)}>
+          {formatSignedMicroUsdc(cumPnl).replace(" USDC", "")}
+        </p>
+        <p className="mt-2 text-[12px] text-white/50">
+          Season 1 · {roundCount} round{roundCount !== 1 ? "s" : ""} settled
+        </p>
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Conviction Card */}
+      <div className="px-4">
+        <div ref={cardRef} className="overflow-hidden rounded-[14px] shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+
+          {/* Card header */}
+          <div className="flex items-center justify-between bg-[#0f1a2e] px-4 py-3">
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-white">
+              SPOTR · CONVICTION CARD
+            </span>
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-white/60">
+              SEASON 1
+            </span>
+          </div>
+
+          {/* Card body — cream */}
+          <div className="bg-[#f5f0e8] px-4 pt-3 pb-4 space-y-3">
+
+            {/* Session / Wallet / Date row */}
+            <div className="flex gap-6">
+              {[
+                { label: "SESSION", value: `#${sessionNum}` },
+                { label: "WALLET", value: walletShort },
+                { label: "DATE", value: dateStr },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[7px] font-semibold uppercase tracking-[0.22em] text-[#8a7f6e]">
+                    {label}
+                  </span>
+                  <span className="font-mono text-[10px] font-bold text-[#1a1628]">
+                    {value}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-dashed border-[#c8bfae]" />
+
+            {/* Net PnL */}
+            <div>
+              <p className="font-mono text-[7px] font-semibold uppercase tracking-[0.28em] text-[#8a7f6e]">
+                NET PnL · USDC
+              </p>
+              <p className={cn("mt-0.5 font-mono text-[40px] font-bold tabular-nums leading-none tracking-[-0.03em]",
+                cumPnl > 0 ? "text-[#15803d]" : cumPnl < 0 ? "text-[#b91c1c]" : "text-[#1a1628]"
+              )}>
+                {cumPnl > 0 ? "+" : ""}{microUsdcToDisplay(Math.abs(cumPnl))}
+              </p>
+              <p className="mt-0.5 font-mono text-[10px] text-[#8a7f6e]">
+                = ${microUsdcToDisplay(Math.abs(cumPnl))} USD
+              </p>
+            </div>
+
+            <div className="border-t border-dashed border-[#c8bfae]" />
+
+            {/* Best / Worst */}
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: "BEST ROUND", data: best },
+                { label: "WORST ROUND", data: worst },
+              ].map(({ label, data }) => (
+                <div key={label}>
+                  <p className="font-mono text-[7px] font-semibold uppercase tracking-[0.22em] text-[#8a7f6e]">
+                    {label}
+                  </p>
+                  {data ? (
+                    <>
+                      <p className={cn("mt-0.5 font-mono text-[18px] font-bold tabular-nums leading-none",
+                        data.pnl > 0 ? "text-[#15803d]" : data.pnl < 0 ? "text-[#b91c1c]" : "text-[#1a1628]"
+                      )}>
+                        {data.pnl > 0 ? "+" : ""}{microUsdcToDisplay(data.pnl)}
+                      </p>
+                      <p className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.1em] text-[#8a7f6e]">
+                        R{data.round.index}{data.category ? ` · ${data.category}` : ""}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-0.5 font-mono text-[16px] text-[#8a7f6e]">—</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-dashed border-[#c8bfae]" />
+
+            {/* Bar chart */}
+            <div>
+              <p className="font-mono text-[7px] font-semibold uppercase tracking-[0.28em] text-[#8a7f6e] mb-2">
+                {roundCount} ROUNDS
+              </p>
+              {/* two-sided chart: gains grow up from baseline, losses grow down */}
+              <div className="relative flex gap-1" style={{ height: 57 }}>
+                <div className="absolute left-0 right-0 h-px bg-[#c8bfae]" style={{ top: 28 }} />
+                {session.rounds.map((r) => {
+                  const entry = roundPnls.find((x) => x.round.id === r.id);
+                  const pnl = entry?.pnl ?? 0;
+                  const isSkipped = r.status === "skipped" || r.status === "upcoming";
+                  const didEnter = r.stakeLamports !== null;
+                  const noData = !hasData || isSkipped || !didEnter;
+                  const barPx = noData
+                    ? 3
+                    : Math.max(4, Math.round((Math.abs(pnl) / maxAbs) * 26));
+                  const barStyle = noData
+                    ? { height: barPx, top: 27 }
+                    : pnl > 0
+                    ? { height: barPx, top: 28 - barPx }
+                    : { height: barPx, top: 29 };
+                  return (
+                    <div key={r.id} className="relative flex-1">
+                      <div
+                        className={cn("absolute left-0 right-0 rounded-[2px]",
+                          noData ? "bg-[#c8bfae]" : pnl > 0 ? "bg-[#15803d]" : "bg-[#b91c1c]"
+                        )}
+                        style={barStyle}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              {/* labels */}
+              <div className="flex gap-1 mt-1">
+                {session.rounds.map((r) => (
+                  <span key={r.id} className="flex-1 text-center font-mono text-[6px] text-[#8a7f6e]">
+                    R{r.index}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Card footer */}
+          <div className="flex items-center justify-between bg-[#0f1a2e] px-4 py-3">
+            <span className="font-mono text-[8px] font-semibold uppercase tracking-[0.25em] text-white/50">
+              SPOTR.TV
+            </span>
+            <EyeBrand size={16} />
+            <span className="font-mono text-[8px] font-semibold uppercase tracking-[0.25em] text-white/50">
+              BACKED BY BELIEF
+            </span>
+          </div>
+
+        </div>
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Buttons — bottom */}
+      <div className="flex flex-col gap-2 px-4 pb-10">
+        <Link
+          href="/profile"
+          className="flex items-center justify-center rounded-full bg-primary px-6 py-4 text-sm font-bold uppercase tracking-[0.1em] text-black transition hover:bg-primary/90"
+        >
+          View Profile
+        </Link>
+        <button
+          type="button"
+          onClick={() => void handleDownload()}
+          className="py-2 text-center text-[12px] text-white/40 underline underline-offset-2 transition hover:text-white/70"
+        >
+          Download conviction card
+        </button>
+      </div>
+    </StageScaffold>
+  );
+}
+
+export function SeasonScreen({
   profile,
   rewards,
   onUnavailable,
@@ -1409,10 +1605,38 @@ function SeasonScreen({
     }
   }
 
+  async function handleShareHaul() {
+    const pnlSign = cumPnl >= 0 ? "+" : "-";
+    const pnlStr = `${pnlSign}${lamportsToSol(Math.abs(cumPnl))} SOL`;
+    const prizeLines = prizeList.map((p) => `• ${p.title}`).join("\n");
+    const sessionWord = roundsSettled === 1 ? "session" : "sessions";
+    const text = [
+      "I just cracked my SPOTR haul 🎯",
+      "",
+      prizeLines,
+      "",
+      `PnL: ${pnlStr} across ${roundsSettled} ${sessionWord}`,
+      "Play at spotrmarkets.xyz",
+    ].join("\n");
+
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ text });
+        return;
+      } catch {
+        // user cancelled or API failed — fall through to clipboard
+      }
+    }
+
+    await navigator.clipboard.writeText(text);
+    toast.success("Haul copied to clipboard");
+  }
+
   const pnlTone = cumPnl >= 0 ? "text-success" : "text-destructive";
 
   return (
     <StageScaffold surface="onboard">
+      <GameNavBar />
       <div className="flex flex-1 flex-col items-center overflow-hidden px-6 pb-6 pt-9">
         <div className="mb-6">
           <EyeBrand size={40} />
@@ -1425,8 +1649,8 @@ function SeasonScreen({
           )}
         >
           <CountUp
-            value={cumPnl / 1_000_000_000}
-            format={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(3)} SOL`}
+            value={cumPnl / 1_000_000}
+            format={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)} USDC`}
           />
         </p>
         <p className="mb-8 text-[13px] text-white/60">
@@ -1502,7 +1726,7 @@ function SeasonScreen({
             </Button>
             <button
               type="button"
-              onClick={() => onUnavailable("Sharing haul is not implemented yet.")}
+              onClick={handleShareHaul}
               className="focus-ring w-full rounded-[14px] border-[1.5px] border-white/40 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-white/10"
             >
               Share my haul
@@ -1518,46 +1742,34 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
   const state = useSpotrDashboard(config, initialData);
 
   return (
-    <PageShell
-      title="Wallet profile"
-      eyebrow={`${config.seasonLabel} · Profile`}
-      notice={state.notice}
-    >
+    <NarrowPageShell notice={state.notice}>
       {!state.walletAddress ? (
-        <div className="grid gap-6 lg:grid-cols-[1.08fr_0.92fr]">
+        <div className="space-y-4">
           <SurfaceCard>
-            <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-              <div className="space-y-5">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                  Wallet dossier
-                </p>
-                <h2 className="font-display text-[2rem] font-extrabold leading-tight tracking-[-0.04em] text-balance text-foreground sm:text-[2.4rem]">
-                  Connect a wallet to open your SPOTR ledger.
-                </h2>
-                <p className="max-w-lg text-sm leading-relaxed text-muted">
-                  Claims, referral balances, assigned rewards, and paid-session history
-                  are wallet-scoped and read from persisted backend state.
-                </p>
-              </div>
-              <div className="rounded-[1rem] border border-white/12 bg-black/16 p-5">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                  What unlocks
-                </p>
-                <div className="mt-4 space-y-4">
-                  <WalletDataRow
-                    label="Claims"
-                    value="Round proceeds and returned escrow"
-                  />
-                  <WalletDataRow
-                    label="Referrals"
-                    value="Pending balances and payout history"
-                  />
-                  <WalletDataRow
-                    label="Rewards"
-                    value="Assigned inventory only"
-                    subvalue="Unimplemented claim execution remains unavailable."
-                  />
-                </div>
+            <div className="space-y-5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+                Wallet dossier
+              </p>
+              <h2 className="font-display text-[2rem] font-extrabold leading-tight tracking-[-0.04em] text-balance text-foreground">
+                Connect a wallet to open your SPOTR ledger.
+              </h2>
+              <p className="text-sm leading-relaxed text-muted">
+                Claims, referral balances, assigned rewards, and paid-session history
+                are wallet-scoped and read from persisted backend state.
+              </p>
+            </div>
+            <div className="mt-6 rounded-[1rem] border border-white/12 bg-black/16 p-5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+                What unlocks
+              </p>
+              <div className="mt-4 space-y-4">
+                <WalletDataRow label="Claims" value="Round proceeds and returned escrow" />
+                <WalletDataRow label="Referrals" value="Pending balances and payout history" />
+                <WalletDataRow
+                  label="Rewards"
+                  value="Assigned inventory only"
+                  subvalue="Unimplemented claim execution remains unavailable."
+                />
               </div>
             </div>
           </SurfaceCard>
@@ -1576,14 +1788,14 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
           </SurfaceCard>
         </div>
       ) : !state.profile ? (
-        <div className="grid gap-6 lg:grid-cols-[1.08fr_0.92fr]">
+        <div className="space-y-4">
           <SurfaceCard>
             <SectionHeading
               eyebrow="Wallet dossier"
               title="No SPOTR profile has been written for this wallet yet."
               description="The wallet is connected, but there is no persisted profile record to read from sessions, referrals, rewards, or claims."
             />
-            <div className="mt-8 grid gap-3 sm:grid-cols-3">
+            <div className="mt-8 grid gap-3 grid-cols-3">
               <MetricCard label="Wallet" value="Connected" accent />
               <MetricCard label="Profile" value="Missing" />
               <MetricCard label="Claims" value="Unavailable" />
@@ -1599,27 +1811,27 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
           </SurfaceCard>
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[0.88fr_1.12fr]">
+        <div className="space-y-4">
           <SurfaceCard>
-            <div className="grid gap-8">
-              <div className="space-y-4">
+            <div className="space-y-4">
+              <div className="space-y-3">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
                   Wallet
                 </p>
                 <p className="font-mono text-base tabular-nums break-all text-foreground">
                   {state.profile.walletAddress}
                 </p>
-                <p className="max-w-lg text-sm leading-relaxed text-muted">
+                <p className="text-sm leading-relaxed text-muted">
                   Referral balances, claimable value, and reward inventory are read from
                   the persisted SPOTR backend for this wallet.
                 </p>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 grid-cols-2">
                 <LedgerPill label="Paid sessions" value={String(state.profile.paidSessions)} />
                 <LedgerPill
                   label="Cumulative PnL"
-                  value={formatSignedLamports(state.profile.cumulativePnlLamports)}
+                  value={formatSignedMicroUsdc(state.profile.cumulativePnlLamports)}
                   tone="accent"
                 />
                 <LedgerPill
@@ -1628,7 +1840,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
                 />
                 <LedgerPill
                   label="Referral pending"
-                  value={`${lamportsToSol(state.profile.referralPendingLamports)} SOL`}
+                  value={`${microUsdcToDisplay(state.profile.referralPendingLamports)} USDC`}
                 />
               </div>
 
@@ -1639,11 +1851,11 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
                 <div className="mt-4">
                   <WalletDataRow
                     label="Round proceeds"
-                    value={`${lamportsToSol(state.profile.claimableRoundLamports)} SOL`}
+                    value={`${microUsdcToDisplay(state.profile.claimableRoundLamports)} USDC`}
                   />
                   <WalletDataRow
                     label="Returned escrow"
-                    value={`${lamportsToSol(state.profile.claimableSessionBalanceLamports)} SOL`}
+                    value={`${microUsdcToDisplay(state.profile.claimableSessionBalanceLamports)} USDC`}
                   />
                 </div>
               </div>
@@ -1651,7 +1863,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
               <div className="space-y-3">
                 <ClaimRow
                   label="Round proceeds"
-                  value={`${lamportsToSol(state.profile.claimableRoundLamports)} SOL`}
+                  value={`${microUsdcToDisplay(state.profile.claimableRoundLamports)} USDC`}
                   buttonLabel={state.isPending ? "Working..." : "Claim rounds"}
                   disabled={
                     !state.canSignActions ||
@@ -1662,7 +1874,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
                 />
                 <ClaimRow
                   label="Returned escrow"
-                  value={`${lamportsToSol(state.profile.claimableSessionBalanceLamports)} SOL`}
+                  value={`${microUsdcToDisplay(state.profile.claimableSessionBalanceLamports)} USDC`}
                   buttonLabel={state.isPending ? "Working..." : "Claim escrow"}
                   disabled={
                     !state.canSignActions ||
@@ -1675,307 +1887,44 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
             </div>
           </SurfaceCard>
 
-          <div className="grid gap-6">
-            <SurfaceCard>
-              <div className="grid gap-6 lg:grid-cols-[1.08fr_0.92fr] lg:items-start">
-                <div>
-                  <SectionHeading
-                    eyebrow="Referral ledger"
-                    title="Wallet breakdown"
-                    description="Admin payout batches settle referral balances; this view shows what is still due by referred wallet."
-                  />
-                </div>
-                <div className="rounded-[1rem] border border-primary/25 bg-primary/10 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                    Pending total
-                  </p>
-                  <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
-                    {lamportsToSol(state.profile.referralPendingLamports)} SOL
-                  </p>
-                </div>
-              </div>
-              <div className="mt-6 space-y-3">
-                {state.profile.referredWalletBreakdown.length === 0 ? (
-                  <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                    No referral relationships have generated fees yet.
-                  </p>
-                ) : (
-                  state.profile.referredWalletBreakdown.map((wallet) => (
-                    <div
-                      key={wallet.walletAddress}
-                      className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4"
-                    >
-                      <div className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr] lg:items-start">
-                        <div>
-                          <p className="font-mono text-sm tabular-nums text-foreground break-all">
-                            {wallet.walletAddress}
-                          </p>
-                          <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
-                            Referral relationship
-                          </p>
-                        </div>
-                        <div className="grid gap-2 text-xs text-muted sm:grid-cols-3 lg:grid-cols-1">
-                          <div>Due: {lamportsToSol(wallet.balanceDueLamports)} SOL</div>
-                          <div>Earned: {lamportsToSol(wallet.totalEarnedLamports)} SOL</div>
-                          <div>Paid: {lamportsToSol(wallet.paidOutLamports)} SOL</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </SurfaceCard>
-
-            <SurfaceCard>
-              <SectionHeading
-                eyebrow="Rewards"
-                title="Assigned inventory"
-                description="Wallet-visible reward state only. Claim execution remains unavailable until implemented."
-              />
-              <div className="mt-6 grid gap-3 md:grid-cols-2">
-                {state.profile.rewards.length === 0 ? (
-                  <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted md:col-span-2">
-                    No rewards assigned yet.
-                  </p>
-                ) : (
-                  state.profile.rewards.map((reward) => (
-                    <div
-                      key={reward.id}
-                      className="rounded-[1rem] border border-white/12 bg-black/16 p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-base font-semibold text-foreground">{reward.title}</p>
-                          <p className="mt-2 text-sm leading-relaxed text-muted">
-                            {reward.subtitle}
-                          </p>
-                        </div>
-                        <StatusBadge label={reward.status} tone="accent" />
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </SurfaceCard>
-          </div>
-        </div>
-      )}
-    </PageShell>
-  );
-}
-
-export function SpotrAdminShell({ config, initialData }: SpotrShellProps) {
-  const state = useSpotrDashboard(config, initialData);
-  const canWrite = state.admin.authorized && state.canSignActions;
-
-  return (
-    <PageShell
-      title="Admin operations"
-      eyebrow={`${config.seasonLabel} · Admin`}
-      notice={state.notice}
-    >
-      <div className="space-y-6">
-        <SurfaceCard>
-          <div className="grid gap-8 lg:grid-cols-[0.88fr_1.12fr] lg:items-end">
-            <div className="space-y-5">
+          <SurfaceCard>
+            <SectionHeading
+              eyebrow="Referral ledger"
+              title="Wallet breakdown"
+              description="Admin payout batches settle referral balances; this view shows what is still due by referred wallet."
+            />
+            <div className="mt-4 rounded-[1rem] border border-primary/25 bg-primary/10 p-4">
               <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                Control room
+                Pending total
               </p>
-              <h2 className="font-display text-[2rem] font-extrabold leading-tight tracking-[-0.04em] text-balance text-foreground sm:text-[2.4rem]">
-                Operator surfaces with real writes, not decorative admin UI.
-              </h2>
-              <p className="max-w-lg text-sm leading-relaxed text-muted">
-                Pair library, reward inventory, referral payout batches, and session
-                deployment all hit real Prisma-backed route handlers.
+              <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
+                {microUsdcToDisplay(state.profile.referralPendingLamports)} USDC
               </p>
-              <div className="flex flex-wrap gap-3">
-                <LedgerPill label="Write access" value={canWrite ? "Enabled" : "Restricted"} tone="accent" />
-                <LedgerPill label="Low-pair threshold" value={String(config.lowPairAlertThreshold)} />
-              </div>
             </div>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <MetricCard label="Live sessions" value={String(state.admin.liveSessions)} />
-              <MetricCard label="Pending sessions" value={String(state.admin.pendingSessions)} />
-              <MetricCard label="Active pairs" value={String(state.admin.activePairs)} />
-              <MetricCard label="Available pairs" value={String(state.admin.availablePairs)} />
-              <MetricCard
-                label="Protocol fees"
-                value={`${lamportsToSol(state.admin.protocolFeesLamports)} SOL`}
-              />
-              <MetricCard
-                label="Referral pending"
-                value={`${lamportsToSol(state.admin.pendingReferralLamports)} SOL`}
-              />
-              <MetricCard
-                label="Assigned rewards"
-                value={String(state.admin.assignedRewards)}
-              />
-              <MetricCard
-                label="Claimable rewards"
-                value={String(state.admin.claimableRewards)}
-              />
-            </div>
-          </div>
-
-          {state.admin.lowPairAlert ? (
-            <div className="mt-6 rounded-[1rem] border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-              Active pair inventory is below the env threshold of{" "}
-              {config.lowPairAlertThreshold}.
-            </div>
-          ) : null}
-        </SurfaceCard>
-
-        {!state.admin.authorized ? (
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Write access"
-              title="This wallet is read-only"
-              description="Admin write actions remain locked unless the connected wallet is listed in SPOTR_ADMIN_WALLETS."
-            />
-          </SurfaceCard>
-        ) : !state.canSignActions ? (
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Write access"
-              title="This wallet cannot sign admin requests"
-              description="Use a wallet that supports message signing."
-            />
-          </SurfaceCard>
-        ) : null}
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Deploy session"
-              title="Publish a live fault-line set"
-              description="Session economics remain env-driven. Admin only chooses the pair set and optional title."
-            />
-            <form onSubmit={state.handleDeploySession} className="mt-6 space-y-4">
-              <LabeledInput label="Session title">
-                <input
-                  value={state.sessionDeployForm.title}
-                  onChange={(event) =>
-                    state.setSessionDeployForm((current) => ({
-                      ...current,
-                      title: event.target.value,
-                    }))
-                  }
-                  autoComplete="off"
-                  className="focus-ring min-h-11 w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-                />
-              </LabeledInput>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
-                    Pair selection
-                  </span>
-                  <span className="text-xs text-muted">
-                    {state.selectedDeployPairIds.length}/{config.roundCount}
-                  </span>
-                </div>
-
-                <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-                  {state.deployablePairs.map((pair) => {
-                    const checked = state.selectedDeployPairIds.includes(pair.id);
-                    return (
-                      <label
-                        key={pair.id}
-                        className="flex cursor-pointer items-start gap-3 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            state.setSessionDeployForm((current) => ({
-                              ...current,
-                              pairIds: checked
-                                ? current.pairIds.filter((pairId) => pairId !== pair.id)
-                                : [...current.pairIds, pair.id].slice(0, config.roundCount),
-                            }))
-                          }
-                          className="mt-1 h-4 w-4 rounded border-border"
-                        />
-                        <div className="min-w-0 flex-1 break-words">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                            {pair.category}
-                          </p>
-                          <p className="mt-1 text-sm text-foreground">{pair.sideA}</p>
-                          <p className="mt-1 text-sm text-muted">{pair.sideB}</p>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <Button variant="gold" size="lg"
-                type="submit"
-                disabled={state.isPending || state.selectedDeployPairIds.length !== config.roundCount || !canWrite}
-                className="w-full"
-              >
-                {state.isPending ? "Deploying..." : "Deploy session"}
-              </Button>
-            </form>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="On-chain"
-              title="Deploy sessions on-chain"
-              description="Each Postgres session must be bound to an on-chain session account before players can join. This tx pays the rent for the Session + SessionTreasury PDAs, and initializes the Config PDA once per program."
-            />
-            <div className="mt-5 space-y-3">
-              {state.admin.sessionHistory.length === 0 ? (
+            <div className="mt-4 space-y-3">
+              {state.profile.referredWalletBreakdown.length === 0 ? (
                 <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No sessions created yet.
+                  No referral relationships have generated fees yet.
                 </p>
               ) : (
-                state.admin.sessionHistory.map((sessionCard) => {
-                  const deployed = sessionCard.chainSessionNumber != null;
-                  return (
-                    <div
-                      key={sessionCard.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-foreground">
-                          {sessionCard.title}
-                        </p>
-                        <p className="mt-0.5 text-[11px] text-muted">
-                          {new Date(sessionCard.startsAtIso).toLocaleString()} →
-                          {" "}
-                          {new Date(sessionCard.endsAtIso).toLocaleString()}
-                        </p>
-                        <p className="mt-1 font-mono text-[11px] tabular-nums text-muted">
-                          {deployed ? (
-                            <>
-                              <span className="text-success">on-chain</span>
-                              {" · #"}
-                              {sessionCard.chainSessionNumber}
-                              {" · "}
-                              {ellipsify(sessionCard.chainSessionAddress ?? "", 6)}
-                            </>
-                          ) : (
-                            <span className="text-destructive">
-                              not deployed on-chain
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="gold"
-                        size="sm"
-                        disabled={deployed || state.isPending || !canWrite}
-                        onClick={() => state.handleChainDeploy(sessionCard)}
-                      >
-                        {deployed ? "Deployed" : state.isPending ? "Working…" : "Deploy on-chain"}
-                      </Button>
+                state.profile.referredWalletBreakdown.map((wallet) => (
+                  <div
+                    key={wallet.walletAddress}
+                    className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4"
+                  >
+                    <p className="font-mono text-sm tabular-nums text-foreground break-all">
+                      {wallet.walletAddress}
+                    </p>
+                    <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+                      Referral relationship
+                    </p>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted">
+                      <div>Due: {microUsdcToDisplay(wallet.balanceDueLamports)} USDC</div>
+                      <div>Earned: {microUsdcToDisplay(wallet.totalEarnedLamports)} USDC</div>
+                      <div>Paid: {microUsdcToDisplay(wallet.paidOutLamports)} USDC</div>
                     </div>
-                  );
-                })
+                  </div>
+                ))
               )}
             </div>
           </SurfaceCard>
@@ -1983,254 +1932,26 @@ export function SpotrAdminShell({ config, initialData }: SpotrShellProps) {
           <SurfaceCard>
             <SectionHeading
               eyebrow="Rewards"
-              title="Assign and update inventory"
-              description="Rewards are persisted backend records, not prototype-only reveal cards."
-            />
-            <form onSubmit={state.handleAssignReward} className="mt-6 space-y-4">
-              <LabeledInput label="Target wallet">
-                <input
-                  value={state.rewardForm.targetWalletAddress}
-                  onChange={(event) =>
-                    state.setRewardForm((current) => ({
-                      ...current,
-                      targetWalletAddress: event.target.value,
-                    }))
-                  }
-                  autoComplete="off"
-                  className="focus-ring min-h-11 w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-                />
-              </LabeledInput>
-              <LabeledInput label="Reward title">
-                <input
-                  value={state.rewardForm.title}
-                  onChange={(event) =>
-                    state.setRewardForm((current) => ({
-                      ...current,
-                      title: event.target.value,
-                    }))
-                  }
-                  autoComplete="off"
-                  className="focus-ring min-h-11 w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-                />
-              </LabeledInput>
-              <LabeledInput label="Reward subtitle">
-                <input
-                  value={state.rewardForm.subtitle}
-                  onChange={(event) =>
-                    state.setRewardForm((current) => ({
-                      ...current,
-                      subtitle: event.target.value,
-                    }))
-                  }
-                  autoComplete="off"
-                  className="focus-ring min-h-11 w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-                />
-              </LabeledInput>
-              <LabeledInput label="Reward kind">
-                <select
-                  value={state.rewardForm.kind}
-                  onChange={(event) =>
-                    state.setRewardForm((current) => ({
-                      ...current,
-                      kind: event.target.value as RewardFormState["kind"],
-                    }))
-                  }
-                  className="focus-ring min-h-11 w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-                >
-                  <option value="nft">NFT</option>
-                  <option value="merch">Merch</option>
-                  <option value="gift-card">Gift card</option>
-                  <option value="voucher">Voucher</option>
-                </select>
-              </LabeledInput>
-              <Button variant="gold" size="lg" type="submit" disabled={state.isPending || !canWrite} className="w-full">
-                {state.isPending ? "Saving..." : "Assign reward"}
-              </Button>
-            </form>
-          </SurfaceCard>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Import pairs"
-              title="CSV ingestion"
-              description="Use the persisted pair library import route. No in-memory pair catalog."
-            />
-            <form onSubmit={state.handleImportPairs} className="mt-6 space-y-4">
-              <textarea
-                value={state.pairImportForm.csv}
-                onChange={(event) =>
-                  state.setPairImportForm({
-                    csv: event.target.value,
-                  })
-                }
-                rows={7}
-                className="focus-ring w-full rounded-[1rem] border border-white/12 bg-black/20 px-4 py-3 text-sm text-foreground focus:border-primary/50"
-              />
-              <Button variant="gold" size="lg"
-                type="submit"
-                disabled={state.isPending || state.pairImportForm.csv.trim().length === 0 || !canWrite}
-                className="w-full"
-              >
-                {state.isPending ? "Importing..." : "Import pairs"}
-              </Button>
-            </form>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Referral payouts"
-              title="Outstanding balances"
-              description="Payout batches are recorded through the admin route."
+              title="Assigned inventory"
+              description="Wallet-visible reward state only. Claim execution remains unavailable until implemented."
             />
             <div className="mt-6 space-y-3">
-              {state.admin.referralBalances.length === 0 ? (
+              {state.profile.rewards.length === 0 ? (
                 <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No referral balances recorded yet.
+                  No rewards assigned yet.
                 </p>
               ) : (
-                state.admin.referralBalances.map((referral) => (
-                  <div
-                    key={referral.referrerWallet}
-                    className="rounded-[1rem] border border-white/12 bg-black/16 p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-mono text-sm tabular-nums text-foreground break-all">
-                          {referral.referrerWallet}
-                        </p>
-                        <p className="mt-1 text-xs text-muted">
-                          {referral.referredWallets} referred wallets
-                        </p>
-                      </div>
-                      <p className="font-mono text-xs tabular-nums text-muted">
-                        {lamportsToSol(referral.balanceDueLamports)} SOL due
-                      </p>
-                    </div>
-                    <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3">
-                      <div>Accrued: {lamportsToSol(referral.totalAccruedLamports)} SOL</div>
-                      <div>Paid: {lamportsToSol(referral.paidOutLamports)} SOL</div>
-                      <div>Due: {lamportsToSol(referral.balanceDueLamports)} SOL</div>
-                    </div>
-                    {canWrite ? (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="mt-4"
-                        onClick={() => state.handlePayReferral(referral.referrerWallet)}
-                        disabled={state.isPending || referral.balanceDueLamports <= 0}
-                      >
-                        Mark payout paid
-                      </Button>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
-          </SurfaceCard>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Recent rewards"
-              title="Inventory state changes"
-            />
-            <div className="mt-6 space-y-3">
-              {state.admin.recentRewards.length === 0 ? (
-                <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No rewards recorded yet.
-                </p>
-              ) : (
-                state.admin.recentRewards.map((reward) => (
+                state.profile.rewards.map((reward) => (
                   <div
                     key={reward.id}
                     className="rounded-[1rem] border border-white/12 bg-black/16 p-4"
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-foreground">{reward.title}</p>
-                        <p className="mt-1 font-mono text-xs tabular-nums text-muted break-all">
-                          {reward.walletAddress}
-                        </p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-base font-semibold text-foreground">{reward.title}</p>
+                        <p className="mt-2 text-sm leading-relaxed text-muted">{reward.subtitle}</p>
                       </div>
                       <StatusBadge label={reward.status} tone="accent" />
-                    </div>
-                    <p className="mt-3 text-xs text-muted">
-                      Assigned {formatUtc(reward.assignedAtIso)}
-                    </p>
-                    {canWrite ? (
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => state.handleRewardStatusUpdate(reward.id, "claimable")}
-                          disabled={state.isPending || reward.status !== "assigned"}
-                        >
-                          Mark claimable
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => state.handleRewardStatusUpdate(reward.id, "claimed")}
-                          disabled={state.isPending || reward.status === "claimed"}
-                        >
-                          Mark claimed
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Pair library"
-              title="Toggle active inventory"
-            />
-            <div className="mt-6 space-y-3">
-              {state.admin.pairLibrary.length === 0 ? (
-                <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No pairs in the library yet.
-                </p>
-              ) : (
-                state.admin.pairLibrary.map((pair) => (
-                  <div
-                    key={pair.id}
-                    className="rounded-[1rem] border border-white/12 bg-black/16 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                          {pair.category}
-                        </p>
-                        <p className="mt-1 text-sm text-foreground">{pair.sideA}</p>
-                        <p className="mt-1 text-sm text-muted">{pair.sideB}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs text-muted">
-                          {pair.active ? "active" : "inactive"}
-                          {pair.assigned ? " · assigned" : ""}
-                        </p>
-                        {canWrite ? (
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            className="mt-3"
-                            onClick={() => state.handleTogglePair(pair.id, !pair.active)}
-                            disabled={state.isPending}
-                          >
-                            {pair.active ? "Deactivate" : "Activate"}
-                          </Button>
-                        ) : null}
-                      </div>
                     </div>
                   </div>
                 ))
@@ -2238,7 +1959,419 @@ export function SpotrAdminShell({ config, initialData }: SpotrShellProps) {
             </div>
           </SurfaceCard>
         </div>
+      )}
+    </NarrowPageShell>
+  );
+}
+
+// ─── /play ──────────────────────────────────────────────────────────────────
+
+export function SpotrSessionsListShell({ config, initialData }: SpotrShellProps) {
+  const [allSessions, setAllSessions] = useState<AdminSessionCard[]>(() =>
+    initialData.admin.sessionHistory.filter(
+      (s) => s.status === "pending" || s.status === "live"
+    )
+  );
+  const [nextCursor, setNextCursor] = useState<string | null>(
+    initialData.admin.nextSessionsCursor ?? null
+  );
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
+
+  async function loadMore() {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/play/sessions?cursor=${encodeURIComponent(nextCursor)}`
+      );
+      const data = (await response.json()) as {
+        items: AdminSessionCard[];
+        nextCursor: string | null;
+      };
+      setAllSessions((prev) => [...prev, ...data.items]);
+      setNextCursor(data.nextCursor);
+    } catch {
+      // silently ignore — user can retry by clicking again
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }
+
+  return (
+    <NarrowPageShell notice={null}>
+      <div className="mb-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-primary">
+          Available sessions
+        </p>
+        <h2 className="mt-1 text-[22px] font-bold text-foreground">Browse sessions</h2>
       </div>
-    </PageShell>
+
+      {allSessions.length === 0 ? (
+        <SurfaceCard>
+          <p className="text-center text-sm text-muted">No sessions open right now. Check back soon.</p>
+        </SurfaceCard>
+      ) : (
+        <div className="space-y-3">
+          {allSessions.map((session) => (
+            <Link key={session.id} href={`/play/${session.id}`} className="block">
+              <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 transition hover:border-white/20 hover:bg-white/8">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-foreground">{session.title}</p>
+                    <p className="mt-0.5 text-[11px] text-muted">
+                      {new Date(session.startsAtIso).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                      })}{" "}
+                      · {session.walletsJoined} joined
+                    </p>
+                  </div>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
+                      session.status === "live"
+                        ? "bg-success/20 text-success"
+                        : "bg-primary/20 text-primary"
+                    )}
+                  >
+                    {session.status === "live" ? "Live" : "Open"}
+                  </span>
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <span className="text-xs text-muted">Buy-in: {buyInUsdc} USDC</span>
+                  <span className="text-xs font-semibold text-primary">Join →</span>
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {nextCursor && (
+        <div className="mt-4 flex justify-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isLoadingMore}
+            onClick={() => void loadMore()}
+          >
+            {isLoadingMore ? "Loading…" : "Load more sessions"}
+          </Button>
+        </div>
+      )}
+    </NarrowPageShell>
+  );
+}
+
+// ─── /play/[sessionId] ───────────────────────────────────────────────────────
+
+export function SpotrSessionDetailShell({
+  config,
+  initialData,
+  sessionId,
+}: SpotrShellProps & { sessionId: string }) {
+  const { cluster } = useCluster();
+  const { wallet, signer, status } = useWallet();
+  const walletAddress = wallet?.account.address ?? null;
+  const balance = useUsdcBalance(walletAddress);
+  const [isPending, startTransition] = useTransition();
+  const [notice, setNotice] = useState<Notice>(null);
+  const [showGame, setShowGame] = useState(
+    initialData.session.id === sessionId && initialData.session.joined
+  );
+
+  const session =
+    initialData.admin.sessionHistory.find((s) => s.id === sessionId) ?? null;
+
+  const alreadyJoined =
+    initialData.session.id === sessionId && initialData.session.joined;
+
+  if (showGame) {
+    return <SpotrShell config={config} initialData={initialData} />;
+  }
+
+  const isConnected = status === "connected" && !!walletAddress;
+  const hasBalance =
+    isConnected &&
+    !balance.isLoading &&
+    (balance.microUsdc ?? 0n) >= BigInt(config.sessionBuyInLamports);
+  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
+
+  const handleJoin = () => {
+    if (!walletAddress || !signer || !wallet) {
+      setNotice({ tone: "error", message: "Connect a wallet before joining." });
+      return;
+    }
+    if (!session?.chainSessionNumber) {
+      setNotice({ tone: "error", message: "This session is not yet deployed on-chain." });
+      return;
+    }
+
+    startTransition(() => {
+      void (async () => {
+        try {
+          setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
+          const { signature } = await submitJoinSessionOnChain({
+            cluster,
+            sessionNumber: BigInt(session.chainSessionNumber!),
+            player: signer,
+            buyInAmount: BigInt(config.sessionBuyInLamports),
+          });
+          setNotice({ tone: "info", message: "Transaction confirmed. Registering your seat…" });
+          const signedRequest = await createSignedActionRequest(wallet, "join-session", {
+            walletAddress,
+            referrerWallet: null,
+            chainTxSignature: signature,
+            sessionId,
+          });
+          const response = await fetch("/api/session/join", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(signedRequest),
+          });
+          const body = (await response.json()) as { error?: string };
+          if (!response.ok || body.error) throw new Error(body.error ?? "Join failed.");
+          toast.success("Session joined.");
+          setShowGame(true);
+        } catch (error) {
+          console.error("[SPOTR] session detail join failed:", error);
+          const message = error instanceof Error ? error.message : "Could not join session.";
+          setNotice({ tone: "error", message });
+          toast.error(message);
+        }
+      })();
+    });
+  };
+
+  if (!session) {
+    return (
+      <NarrowPageShell notice={null}>
+        <SurfaceCard>
+          <p className="text-center text-sm text-muted">Session not found.</p>
+          <div className="mt-4 flex justify-center">
+            <Link href="/play" className="text-xs text-primary hover:underline">
+              ← Back to sessions
+            </Link>
+          </div>
+        </SurfaceCard>
+      </NarrowPageShell>
+    );
+  }
+
+  const startDate = new Date(session.startsAtIso);
+  const endDate = new Date(session.endsAtIso);
+
+  return (
+    <NarrowPageShell notice={notice}>
+      <div className="mb-2">
+        <Link href="/play" className="text-[11px] text-muted hover:text-foreground transition">
+          ← Sessions
+        </Link>
+      </div>
+
+      <SurfaceCard>
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="text-lg font-bold text-foreground">{session.title}</h2>
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
+              session.status === "live"
+                ? "bg-success/20 text-success"
+                : "bg-primary/20 text-primary"
+            )}
+          >
+            {session.status === "live" ? "Live" : "Open"}
+          </span>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-black/20 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Wallets</p>
+            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{session.walletsJoined}</p>
+          </div>
+          <div className="rounded-xl bg-black/20 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Buy-in</p>
+            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{buyInUsdc} USDC</p>
+          </div>
+          <div className="col-span-2 rounded-xl bg-black/20 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Window</p>
+            <p className="mt-0.5 text-xs text-foreground">
+              {startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
+              {startDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+              {" – "}
+              {endDate.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+            </p>
+          </div>
+        </div>
+      </SurfaceCard>
+
+      {alreadyJoined ? (
+        <SurfaceCard>
+          <p className="text-sm font-semibold text-success">You&apos;re already in this session.</p>
+          <div className="mt-3">
+            <Button type="button" variant="gold" size="block" onClick={() => setShowGame(true)}>
+              Go to live game →
+            </Button>
+          </div>
+        </SurfaceCard>
+      ) : session.status === "completed" ? (
+        <SurfaceCard>
+          <p className="mb-3 text-sm text-muted">This session has ended.</p>
+          <Link
+            href={`/play/${sessionId}/recap`}
+            className="inline-flex items-center justify-center rounded-full bg-primary px-5 py-2.5 text-sm font-bold uppercase tracking-[0.1em] text-black transition hover:bg-primary/90"
+          >
+            View Recap →
+          </Link>
+        </SurfaceCard>
+      ) : !isConnected ? (
+        <SurfaceCard>
+          <p className="mb-3 text-sm text-muted">Connect a wallet to join this session.</p>
+          <WalletButton />
+        </SurfaceCard>
+      ) : balance.isLoading ? (
+        <SurfaceCard>
+          <p className="text-sm text-muted">Checking your USDC balance…</p>
+        </SurfaceCard>
+      ) : !hasBalance ? (
+        <SurfaceCard>
+          <p className="text-sm text-muted">
+            You need at least {buyInUsdc} USDC to join. Top up your wallet and try again.
+          </p>
+        </SurfaceCard>
+      ) : (
+        <SurfaceCard>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">Ready to join</p>
+          <p className="text-sm text-foreground">
+            Pay {buyInUsdc} USDC buy-in to lock your seat for this session.
+          </p>
+          <div className="mt-4">
+            <Button
+              type="button"
+              variant="gold"
+              size="block"
+              disabled={isPending || !session.chainSessionNumber}
+              onClick={handleJoin}
+            >
+              {isPending ? "Confirming on Solana…" : "Join Session"}
+            </Button>
+          </div>
+          {!session.chainSessionNumber && (
+            <p className="mt-2 text-[11px] text-muted">Session not yet deployed on-chain.</p>
+          )}
+        </SurfaceCard>
+      )}
+    </NarrowPageShell>
+  );
+}
+
+export function SpotrSessionResultsShell({
+  results,
+}: {
+  results: SessionPublicResults;
+}) {
+  const statusLabel =
+    results.status === "completed"
+      ? "Ended"
+      : results.status === "live"
+        ? "Live"
+        : results.status === "expired"
+          ? "Expired"
+          : "Pending";
+  const statusColor =
+    results.status === "completed" || results.status === "expired"
+      ? "bg-white/10 text-white/60"
+      : "bg-success/20 text-success";
+  const totalUsdc = (results.totalEscrowLamports / 1_000_000).toFixed(2);
+
+  return (
+    <NarrowPageShell notice={null}>
+      <div className="mb-2">
+        <Link href="/play" className="text-[11px] text-muted hover:text-foreground transition">
+          ← Sessions
+        </Link>
+      </div>
+
+      <SurfaceCard>
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="text-lg font-bold text-foreground">{results.title}</h2>
+          <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]", statusColor)}>
+            {statusLabel}
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-black/20 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Players</p>
+            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{results.walletsJoined}</p>
+          </div>
+          <div className="rounded-xl bg-black/20 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Total wagered</p>
+            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{totalUsdc} USDC</p>
+          </div>
+        </div>
+      </SurfaceCard>
+
+      <div className="mt-1 flex flex-col gap-3">
+        {results.rounds.map((round) => {
+          const isPending = round.status === "upcoming" || round.status === "open";
+          const isSkipped = round.status === "skipped";
+          const totalEntries = round.sideATotalEntries + round.sideBTotalEntries;
+
+          return (
+            <SurfaceCard key={round.index}>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted">
+                    Round {round.index}
+                  </span>
+                  <span className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-semibold text-white/60">
+                    {round.category}
+                  </span>
+                </div>
+                {isPending ? (
+                  <span className="text-[10px] text-white/40">Not yet settled</span>
+                ) : isSkipped ? (
+                  <span className="text-[10px] text-white/40">Skipped</span>
+                ) : round.winningSide ? (
+                  <span className="rounded-full bg-success/20 px-2 py-0.5 text-[10px] font-semibold text-success">
+                    Side {round.winningSide} won
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-white/40">{totalEntries === 0 ? "No entries" : "Settled"}</span>
+                )}
+              </div>
+
+              <div className={cn("mb-2 rounded-xl p-3", round.winningSide === "A" ? "bg-primary/12 ring-1 ring-primary/30" : "bg-white/5")}>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">Side A</span>
+                  <span className="text-[11px] font-semibold tabular-nums text-foreground/80">
+                    {round.sideAPct}% · {round.sideATotalEntries} {round.sideATotalEntries === 1 ? "entry" : "entries"}
+                  </span>
+                </div>
+                <p className="text-[13px] leading-snug text-foreground">{round.sideA}</p>
+                <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${round.sideAPct}%` }} />
+                </div>
+              </div>
+
+              <div className={cn("rounded-xl p-3", round.winningSide === "B" ? "bg-[#f5c800]/10 ring-1 ring-[#f5c800]/30" : "bg-white/5")}>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#f5c800]">Side B</span>
+                  <span className="text-[11px] font-semibold tabular-nums text-foreground/80">
+                    {round.sideBPct}% · {round.sideBTotalEntries} {round.sideBTotalEntries === 1 ? "entry" : "entries"}
+                  </span>
+                </div>
+                <p className="text-[13px] leading-snug text-foreground">{round.sideB}</p>
+                <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full rounded-full bg-[#f5c800]" style={{ width: `${round.sideBPct}%` }} />
+                </div>
+              </div>
+            </SurfaceCard>
+          );
+        })}
+      </div>
+    </NarrowPageShell>
   );
 }

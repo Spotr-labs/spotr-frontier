@@ -4,12 +4,16 @@ import {
   createContext,
   useContext,
   useCallback,
+  useEffect,
   useMemo,
+  useState,
   type ReactNode,
 } from "react";
 import type { ClusterMoniker } from "../lib/solana-client";
 import { CLUSTERS, DEFAULT_CLUSTER } from "../lib/solana-client";
 import { getExplorerUrl } from "../lib/explorer";
+
+const STORAGE_KEY = "spotr-cluster";
 
 type ClusterContextValue = {
   cluster: ClusterMoniker;
@@ -22,9 +26,18 @@ const ClusterContext = createContext<ClusterContextValue | null>(null);
 export { CLUSTERS };
 
 export function ClusterProvider({ children }: { children: ReactNode }) {
-  const cluster = DEFAULT_CLUSTER;
-  const setCluster: ClusterContextValue["setCluster"] = useCallback(() => {
-    // SPOTR is deployed against a single cluster chosen at build time.
+  const [cluster, setClusterState] = useState<ClusterMoniker>(DEFAULT_CLUSTER);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(STORAGE_KEY) as ClusterMoniker | null;
+    if (stored && (CLUSTERS as string[]).includes(stored)) {
+      setClusterState(stored);
+    }
+  }, []);
+
+  const setCluster = useCallback((next: ClusterMoniker) => {
+    setClusterState(next);
+    localStorage.setItem(STORAGE_KEY, next);
   }, []);
 
   const explorerUrl = useMemo(

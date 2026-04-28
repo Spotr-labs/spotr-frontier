@@ -65,8 +65,8 @@ export type PlayerRoundPosition = {
   player: Address;
   side: SideSelection;
   entryIndex: number;
-  netAmountLamports: bigint;
-  claimedLamports: bigint;
+  netAmountUsdcUnits: bigint;
+  claimedUsdcUnits: bigint;
   claimed: boolean;
   bump: number;
 };
@@ -76,8 +76,8 @@ export type PlayerRoundPositionArgs = {
   player: Address;
   side: SideSelectionArgs;
   entryIndex: number;
-  netAmountLamports: number | bigint;
-  claimedLamports: number | bigint;
+  netAmountUsdcUnits: number | bigint;
+  claimedUsdcUnits: number | bigint;
   claimed: boolean;
   bump: number;
 };
@@ -91,8 +91,8 @@ export function getPlayerRoundPositionEncoder(): FixedSizeEncoder<PlayerRoundPos
       ["player", getAddressEncoder()],
       ["side", getSideSelectionEncoder()],
       ["entryIndex", getU32Encoder()],
-      ["netAmountLamports", getU64Encoder()],
-      ["claimedLamports", getU64Encoder()],
+      ["netAmountUsdcUnits", getU64Encoder()],
+      ["claimedUsdcUnits", getU64Encoder()],
       ["claimed", getBooleanEncoder()],
       ["bump", getU8Encoder()],
     ]),
@@ -111,8 +111,8 @@ export function getPlayerRoundPositionDecoder(): FixedSizeDecoder<PlayerRoundPos
     ["player", getAddressDecoder()],
     ["side", getSideSelectionDecoder()],
     ["entryIndex", getU32Decoder()],
-    ["netAmountLamports", getU64Decoder()],
-    ["claimedLamports", getU64Decoder()],
+    ["netAmountUsdcUnits", getU64Decoder()],
+    ["claimedUsdcUnits", getU64Decoder()],
     ["claimed", getBooleanDecoder()],
     ["bump", getU8Decoder()],
   ]);

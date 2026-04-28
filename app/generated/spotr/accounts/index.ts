@@ -13,3 +13,4 @@ export * from "./round";
 export * from "./session";
 export * from "./sessionTreasury";
 export * from "./spotrConfig";
+export * from "./userVault";

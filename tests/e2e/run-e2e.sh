@@ -72,9 +72,29 @@ solana program deploy \
   --program-id "$PROGRAM_KP" \
   "$PROGRAM_SO" >/dev/null
 
+# ── mock USDC token (persistent keypair, stable address across runs) ─────────
+USDC_AUTH_KP="$ROOT/keys/usdc-mint-authority.json"
+USDC_MINT_KP="$ROOT/keys/usdc-mint.json"
+if [ ! -f "$USDC_AUTH_KP" ] || [ ! -f "$USDC_MINT_KP" ]; then
+  echo "[e2e] missing USDC mint keypair files in $ROOT/keys/; run dev-local.sh once or commit them." >&2
+  exit 1
+fi
+USDC_AUTH_PUBKEY=$(solana-keygen pubkey "$USDC_AUTH_KP")
+USDC_MINT_ADDR=$(solana-keygen pubkey "$USDC_MINT_KP")
+solana airdrop 100 "$USDC_AUTH_PUBKEY" --url "$RPC_URL" --keypair "$PAYER_KP" >/dev/null
+spl-token create-token \
+  --url "$RPC_URL" \
+  --fee-payer "$PAYER_KP" \
+  --mint-authority "$USDC_AUTH_PUBKEY" \
+  --decimals 6 \
+  "$USDC_MINT_KP" >/dev/null
+echo "[e2e] ✓  mock USDC mint: $USDC_MINT_ADDR"
+
 echo "[e2e] running tsx test"
 SPOTR_E2E_RPC_URL="$RPC_URL" \
 SPOTR_E2E_RPC_WS="$RPC_WS" \
+SPOTR_E2E_USDC_MINT="$USDC_MINT_ADDR" \
+SPOTR_E2E_USDC_AUTHORITY_KEYPAIR="$USDC_AUTH_KP" \
 node --import tsx "$HERE/spotr-onchain.test.ts"
 
 echo "[e2e] ✓ PASSED"

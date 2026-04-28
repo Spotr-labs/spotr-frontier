@@ -10,17 +10,53 @@ import {
 import { publicSpotrConfig } from "../spotr-config/public";
 import { serverSpotrConfig } from "../spotr-config/server";
 import type {
+  AdminAnalytics,
+  AdminAuditEntry,
+  AdminAuditListResponse,
+  AdminCardPackTemplate,
+  AdminOpsResponse,
+  AdminOpsRoundRow,
+  AdminOpsSessionRow,
+  AdminOverviewResponse,
   AdminPairLibraryItem,
+  AdminPairListResponse,
+  AdminPairTableRow,
   AdminParticipant,
+  AdminPlayerDetail,
+  AdminPlayerListItem,
+  AdminPlayerListResponse,
+  AdminPlayerPositionRow,
+  AdminPlayerReferralPanel,
+  AdminPlayerReward,
+  AdminPlayerSessionRow,
   AdminReferralBalance,
+  AdminReferralBatch,
+  AdminReferralBatchListResponse,
+  AdminReferralListResponse,
+  AdminReferrerDetail,
+  AdminRewardItem,
+  AdminRewardListResponse,
+  AdminSessionDetail,
+  AdminSessionListItem,
+  AdminSessionListResponse,
+  AdminSessionParticipantDetail,
+  AdminSessionPositionDetail,
+  AdminSessionReferralDetail,
+  AdminSessionRoundDetail,
+  AdminSideDistributionPoint,
   AdminSessionCard,
   AdminSummary,
+  AdminTimePoint,
+  AdminTopReferrer,
+  AdminTransactionDetail,
+  AdminTransactionListResponse,
   FaultLinePair,
   LiveSessionSnapshot,
   ProfileSummary,
   ReferredWalletContribution,
   RecentReward,
   RewardInventoryItem,
+  SessionPublicResults,
   SessionRoundSummary,
   SpotrDashboardPayload,
   SpotrPublicConfig,
@@ -641,12 +677,14 @@ async function buildProfileSummary(
 async function buildAdminSummary(
   tx: Tx,
   sessionId: string,
-  normalizedWalletAddress?: string | null
+  normalizedWalletAddress?: string | null,
+  sessionsCursor?: string | null
 ): Promise<AdminSummary> {
   const authorized =
     normalizedWalletAddress != null &&
     serverSpotrConfig.adminWallets.includes(normalizedWalletAddress);
 
+  const { skip: sessionsSkip } = decodeListCursor(sessionsCursor ?? null);
   const [
     allPairs,
     assignedPairs,
@@ -706,9 +744,13 @@ async function buildAdminSummary(
     }),
     tx.session.findMany({
       orderBy: [{ createdAt: "desc" }],
-      take: 6,
+      take: 21,
+      skip: sessionsSkip,
     }),
   ]);
+
+  const hasMoreSessions = sessionHistory.length > 20;
+  const sessionsPage = hasMoreSessions ? sessionHistory.slice(0, 20) : sessionHistory;
 
   const assignedPairIds = new Set(assignedPairs.map((pair) => pair.pairId));
   const activePairs = allPairs.filter((pair) => pair.active).length;
@@ -793,7 +835,7 @@ async function buildAdminSummary(
       positionsEntered: participant.positions.length,
     })),
     pairLibrary,
-    sessionHistory: sessionHistory.map<AdminSessionCard>((sessionRecord) => ({
+    sessionHistory: sessionsPage.map<AdminSessionCard>((sessionRecord) => ({
       id: sessionRecord.id,
       title: sessionRecord.title,
       status: mapSessionStatus(sessionRecord.status),
@@ -809,12 +851,13 @@ async function buildAdminSummary(
       chainDeployTxSignature: sessionRecord.chainDeployTxSignature ?? null,
       createdAtIso: sessionRecord.createdAt.toISOString(),
     })),
+    nextSessionsCursor: hasMoreSessions ? encodeListCursor(sessionsSkip + 20) : null,
     referralBalances,
   };
 }
 
-async function buildDashboardPayload(tx: Tx, normalizedWalletAddress?: string | null) {
-  const sessionId = await getPrimarySessionId(tx);
+async function buildDashboardPayload(tx: Tx, normalizedWalletAddress?: string | null, overrideSessionId?: string | null) {
+  const sessionId = overrideSessionId ?? await getPrimarySessionId(tx);
   const session = await syncSessionState(tx, sessionId);
   const now = new Date();
 
@@ -1163,10 +1206,10 @@ async function getEligibleReferralShareLamports(
   return (feeLamports * BigInt(session.referralCutBps)) / 10_000n;
 }
 
-export async function getSpotrDashboardPayload(walletAddress?: string | null) {
+export async function getSpotrDashboardPayload(walletAddress?: string | null, sessionId?: string | null) {
   await syncFaultLineSeeds();
   return prisma.$transaction((tx) =>
-    buildDashboardPayload(tx, normalizeWalletAddress(walletAddress))
+    buildDashboardPayload(tx, normalizeWalletAddress(walletAddress), sessionId)
   );
 }
 
@@ -1174,6 +1217,7 @@ export async function joinSpotrSession(input: {
   walletAddress: string;
   referrerWallet?: string | null;
   chainTxSignature: string;
+  sessionId?: string | null;
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1183,7 +1227,9 @@ export async function joinSpotrSession(input: {
     throw new Error("A confirmed on-chain transaction signature is required.");
   }
 
-  const sessionId = await getPrimarySessionId(prisma);
+  const sessionId = input.sessionId?.trim()
+    ? input.sessionId.trim()
+    : await getPrimarySessionId(prisma);
   const sessionForChain = await prisma.session.findUnique({
     where: { id: sessionId },
     select: {
@@ -1201,21 +1247,42 @@ export async function joinSpotrSession(input: {
     );
   }
 
-  const { verifyJoinSessionTx } = await import("./chain-verifier");
-  const verified = await verifyJoinSessionTx({
-    cluster: publicSpotrConfig.cluster,
-    signature: input.chainTxSignature,
-    expectedPlayer: walletAddress,
-    expectedSessionNumber: BigInt(sessionForChain.chainSessionNumber.toString()),
-  });
-  if (verified.sessionAddress !== sessionForChain.chainSessionAddress) {
+  const sessionNumber = BigInt(sessionForChain.chainSessionNumber.toString());
+  const alreadyJoined = input.chainTxSignature === "already-joined";
+
+  const { verifyJoinSessionTx, verifyPlayerSessionExists } = await import("./chain-verifier");
+
+  let verifiedSessionAddress: string;
+  let verifiedSlot: number | null = null;
+
+  if (alreadyJoined) {
+    const result = await verifyPlayerSessionExists({
+      cluster: publicSpotrConfig.cluster,
+      expectedPlayer: walletAddress,
+      expectedSessionNumber: sessionNumber,
+    });
+    verifiedSessionAddress = result.sessionAddress;
+  } else {
+    const result = await verifyJoinSessionTx({
+      cluster: publicSpotrConfig.cluster,
+      signature: input.chainTxSignature,
+      expectedPlayer: walletAddress,
+      expectedSessionNumber: sessionNumber,
+    });
+    verifiedSessionAddress = result.sessionAddress;
+    verifiedSlot = result.slot;
+  }
+
+  if (verifiedSessionAddress !== sessionForChain.chainSessionAddress) {
     throw new Error(
       "On-chain session PDA does not match the deployed session record."
     );
   }
 
+  await syncFaultLineSeeds();
   return prisma.$transaction(async (tx) => {
     const session = await syncSessionState(tx, sessionId);
+
     const now = new Date();
 
     if (session.status === "EXPIRED" || session.status === "COMPLETED") {
@@ -1237,6 +1304,7 @@ export async function joinSpotrSession(input: {
     if (existingParticipant) {
       if (
         existingParticipant.chainJoinTxSignature &&
+        !alreadyJoined &&
         existingParticipant.chainJoinTxSignature !== input.chainTxSignature
       ) {
         throw new Error(
@@ -1276,14 +1344,14 @@ export async function joinSpotrSession(input: {
           metadataJson: JSON.stringify({
             referralCutBps: session.referralCutBps,
             chainTxSignature: input.chainTxSignature,
-            chainSlot: verified.slot,
+            chainSlot: verifiedSlot,
           }),
         },
       });
     }
 
     return buildDashboardPayload(tx, walletAddress);
-  });
+  }, { timeout: 30_000 });
 }
 
 export async function enterSpotrRoundPosition(input: {
@@ -1654,9 +1722,12 @@ export async function importAdminPairs(input: {
     await tx.transactionLog.create({
       data: {
         walletAddress: adminWalletAddress,
-        kind: "import_pairs_csv",
+        kind: "admin_import_pairs",
         metadataJson: JSON.stringify({
           rows: rows.length,
+          payloadSnapshot: {
+            csvLength: csv.length,
+          },
         }),
       },
     });
@@ -1698,10 +1769,11 @@ export async function updateAdminPairState(input: {
     await tx.transactionLog.create({
       data: {
         walletAddress: adminWalletAddress,
-        kind: input.active ? "activate_pair" : "deactivate_pair",
+        kind: input.active ? "admin_activate_pair" : "admin_deactivate_pair",
         metadataJson: JSON.stringify({
           pairId,
           slug: pair.slug,
+          payloadSnapshot: { pairId, active: input.active },
         }),
       },
     });
@@ -1714,6 +1786,13 @@ export async function deployAdminSession(input: {
   adminWalletAddress: string;
   title?: string | null;
   pairIds: string[];
+  overrideStartsAtIso?: string | null;
+  overrideEndsAtIso?: string | null;
+  cardPackItems?: Array<{
+    kind: RewardInventoryItem["kind"];
+    title: string;
+    subtitle: string;
+  }>;
 }) {
   const adminWalletAddress = normalizeWalletAddress(input.adminWalletAddress);
   const title = input.title?.trim() ?? "";
@@ -1730,17 +1809,43 @@ export async function deployAdminSession(input: {
     );
   }
 
+  let overrideStartsAt: Date | null = null;
+  let overrideEndsAt: Date | null = null;
+  if (input.overrideStartsAtIso) {
+    overrideStartsAt = new Date(input.overrideStartsAtIso);
+    if (Number.isNaN(overrideStartsAt.getTime())) {
+      throw new Error("overrideStartsAtIso is not a valid timestamp.");
+    }
+  }
+  if (input.overrideEndsAtIso) {
+    overrideEndsAt = new Date(input.overrideEndsAtIso);
+    if (Number.isNaN(overrideEndsAt.getTime())) {
+      throw new Error("overrideEndsAtIso is not a valid timestamp.");
+    }
+  }
+  if (overrideStartsAt && overrideEndsAt && overrideEndsAt <= overrideStartsAt) {
+    throw new Error("overrideEndsAtIso must be later than overrideStartsAtIso.");
+  }
+
+  const cardPackItems = (input.cardPackItems ?? []).map((item) => ({
+    kind: parseRewardKind(item.kind),
+    title: item.title.trim(),
+    subtitle: item.subtitle.trim(),
+  }));
+  for (const item of cardPackItems) {
+    if (!item.title) throw new Error("Card-pack item title is required.");
+    if (!item.subtitle) throw new Error("Card-pack item subtitle is required.");
+  }
+
   await syncFaultLineSeeds();
   return prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
-    const unsettledSessionCount = await tx.session.count({
-      where: {
-        status: { in: ["PENDING", "LIVE"] },
-      },
+    const liveSessionCount = await tx.session.count({
+      where: { status: "LIVE" },
     });
-    if (unsettledSessionCount > 0) {
-      throw new Error("Complete or expire the current session before deploying another.");
+    if (liveSessionCount > 0) {
+      throw new Error("Complete or expire the live session before deploying another.");
     }
 
     const pairs = await tx.faultLinePair.findMany({
@@ -1754,7 +1859,12 @@ export async function deployAdminSession(input: {
     }
 
     const sessionOrdinal = (await tx.session.count()) + 1;
-    const { startsAt, endsAt } = getNextDeployWindow(publicSpotrConfig);
+    const defaultWindow = getNextDeployWindow(publicSpotrConfig);
+    const startsAt = overrideStartsAt ?? defaultWindow.startsAt;
+    const endsAt = overrideEndsAt ?? defaultWindow.endsAt;
+    if (endsAt <= startsAt) {
+      throw new Error("Session end time must be after the start time.");
+    }
     const sessionTitle =
       title || getSessionTitle(publicSpotrConfig.seasonLabel, sessionOrdinal);
     const sessionId = await createSessionWithPairs(tx, {
@@ -1767,19 +1877,47 @@ export async function deployAdminSession(input: {
       pairIds,
     });
 
+    if (cardPackItems.length > 0) {
+      await tx.sessionCardPackTemplate.createMany({
+        data: cardPackItems.map((item) => ({
+          sessionId,
+          kind: item.kind,
+          title: item.title,
+          subtitle: item.subtitle,
+        })),
+      });
+    }
+
     await tx.transactionLog.create({
       data: {
         sessionId,
         walletAddress: adminWalletAddress,
-        kind: "deploy_session",
+        kind: "admin_deploy_session",
         metadataJson: JSON.stringify({
           pairIds,
           roundCount: pairIds.length,
+          payloadSnapshot: {
+            title: sessionTitle,
+            pairIds,
+            overrideStartsAtIso: overrideStartsAt?.toISOString() ?? null,
+            overrideEndsAtIso: overrideEndsAt?.toISOString() ?? null,
+            cardPackItems: cardPackItems.length,
+          },
         }),
       },
     });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
+    const created = await tx.session.findUniqueOrThrow({
+      where: { id: sessionId },
+      select: { createdAt: true },
+    });
+
+    return {
+      sessionId,
+      createdAtIso: created.createdAt.toISOString(),
+      startsAtIso: startsAt.toISOString(),
+      endsAtIso: endsAt.toISOString(),
+    };
   });
 }
 
@@ -1840,12 +1978,13 @@ export async function payOutAdminReferralBalance(input: {
     await tx.transactionLog.create({
       data: {
         walletAddress: adminWalletAddress,
-        kind: "payout_referrals",
+        kind: "admin_payout_referrals",
         amountLamports: totalLamports,
         metadataJson: JSON.stringify({
           payoutBatchId: payoutBatch.id,
           referrerWallet,
           accrualIds: accruals.map((accrual) => accrual.id),
+          payloadSnapshot: { referrerWallet },
         }),
       },
     });
@@ -1913,12 +2052,19 @@ export async function assignAdminReward(input: {
       data: {
         sessionId,
         walletAddress: adminWalletAddress,
-        kind: "assign_reward",
+        kind: "admin_assign_reward",
         metadataJson: JSON.stringify({
           rewardId: reward.id,
           targetWalletAddress,
           kind: input.kind,
           title,
+          payloadSnapshot: {
+            targetWalletAddress,
+            kind: input.kind,
+            title,
+            subtitle,
+            sessionId,
+          },
         }),
       },
     });
@@ -1965,11 +2111,12 @@ export async function updateAdminRewardStatus(input: {
       data: {
         sessionId: reward.sessionId,
         walletAddress: adminWalletAddress,
-        kind: "update_reward_status",
+        kind: "admin_update_reward_status",
         metadataJson: JSON.stringify({
           rewardId,
           status: input.status,
           targetWalletAddress: reward.walletAddress,
+          payloadSnapshot: { rewardId, status: input.status },
         }),
       },
     });
@@ -2055,12 +2202,17 @@ export async function recordChainDeployedSession(input: {
     data: {
       sessionId,
       walletAddress: adminWalletAddress,
-      kind: "chain_deploy_session",
+      kind: "admin_chain_deploy_session",
       metadataJson: JSON.stringify({
         chainTxSignature,
         chainSessionNumber: chainSessionNumber.toString(),
         chainSessionAddress: verified.sessionAddress,
         chainSlot: verified.slot,
+        payloadSnapshot: {
+          sessionId,
+          chainTxSignature,
+          chainSessionNumber: chainSessionNumber.toString(),
+        },
       }),
     },
   });
@@ -2068,4 +2220,1833 @@ export async function recordChainDeployedSession(input: {
   return prisma.$transaction((tx) =>
     buildDashboardPayload(tx, adminWalletAddress)
   );
+}
+
+export async function getSessionPublicResults(
+  sessionId: string
+): Promise<SessionPublicResults | null> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: {
+      rounds: {
+        include: { pair: true },
+        orderBy: { roundIndex: "asc" },
+      },
+    },
+  });
+
+  if (!session) return null;
+
+  const now = new Date();
+
+  return {
+    id: session.id,
+    title: session.title,
+    status: mapSessionStatus(session.status),
+    startsAtIso: session.startsAt.toISOString(),
+    endsAtIso: session.endsAt.toISOString(),
+    walletsJoined: session.joinedWallets,
+    totalEscrowLamports: Number(session.totalEscrowLamports),
+    rounds: session.rounds.map((round) => {
+      const derivedStatus = deriveRoundStatus(
+        session.status,
+        round.opensAt,
+        round.closesAt,
+        now
+      );
+      const probs = getProbabilities(
+        round.sideATotalNetLamports,
+        round.sideBTotalNetLamports,
+        round.sideAProbabilityPct,
+        round.sideBProbabilityPct
+      );
+      const winningSide: SpotrSide | null =
+        round.sideARewardPerShare > 0n
+          ? "A"
+          : round.sideBRewardPerShare > 0n
+            ? "B"
+            : null;
+      return {
+        index: round.roundIndex,
+        status: mapRoundStatus(derivedStatus),
+        category: round.pair.category,
+        sideA: round.pair.sideA,
+        sideB: round.pair.sideB,
+        sideAPct: probs.sideA,
+        sideBPct: probs.sideB,
+        sideATotalEntries: round.sideATotalEntries,
+        sideBTotalEntries: round.sideBTotalEntries,
+        totalVolumeLamports: Number(round.totalVolumeLamports),
+        winningSide,
+      };
+    }),
+  };
+}
+
+const ADMIN_LIST_PAGE_SIZE = 50;
+const ADMIN_AUDIT_PREFIX = "admin_";
+
+function decodeListCursor(cursor?: string | null): { skip: number } {
+  if (!cursor) return { skip: 0 };
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
+    if (typeof parsed?.skip === "number" && Number.isFinite(parsed.skip)) {
+      return { skip: Math.max(0, Math.floor(parsed.skip)) };
+    }
+  } catch {
+    // ignore
+  }
+  return { skip: 0 };
+}
+
+function encodeListCursor(skip: number): string {
+  return Buffer.from(JSON.stringify({ skip }), "utf8").toString("base64");
+}
+
+function utcDayKey(date: Date): string {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function startOfUtcDay(date: Date): Date {
+  const next = new Date(date);
+  next.setUTCHours(0, 0, 0, 0);
+  return next;
+}
+
+function fillTimeSeries(
+  fromIso: string,
+  toIso: string,
+  values: Map<string, number>
+): AdminTimePoint[] {
+  const out: AdminTimePoint[] = [];
+  const cursor = startOfUtcDay(new Date(fromIso));
+  const end = startOfUtcDay(new Date(toIso));
+  while (cursor <= end) {
+    const key = utcDayKey(cursor);
+    out.push({ dateIso: cursor.toISOString(), value: values.get(key) ?? 0 });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
+}
+
+function defaultAnalyticsRange(now = new Date()): { from: Date; to: Date } {
+  const to = startOfUtcDay(now);
+  to.setUTCDate(to.getUTCDate() + 1);
+  to.setUTCMilliseconds(-1);
+  const from = startOfUtcDay(now);
+  from.setUTCDate(from.getUTCDate() - 13); // 14-day window inclusive
+  return { from, to };
+}
+
+function parseAnalyticsRange(input: { from?: string | null; to?: string | null }) {
+  const fallback = defaultAnalyticsRange();
+  let from = fallback.from;
+  let to = fallback.to;
+  if (input.from) {
+    const parsed = new Date(input.from);
+    if (!Number.isNaN(parsed.getTime())) {
+      from = startOfUtcDay(parsed);
+    }
+  }
+  if (input.to) {
+    const parsed = new Date(input.to);
+    if (!Number.isNaN(parsed.getTime())) {
+      to = startOfUtcDay(parsed);
+      to.setUTCDate(to.getUTCDate() + 1);
+      to.setUTCMilliseconds(-1);
+    }
+  }
+  if (to <= from) {
+    to = new Date(from.getTime() + 24 * 60 * 60 * 1000 - 1);
+  }
+  return { from, to };
+}
+
+function mapAdminTransaction(transaction: {
+  id: string;
+  sessionId: string | null;
+  walletAddress: string | null;
+  kind: string;
+  amountLamports: bigint | null;
+  metadataJson: string | null;
+  createdAt: Date;
+}): AdminTransactionDetail {
+  return {
+    id: transaction.id,
+    sessionId: transaction.sessionId,
+    walletAddress: transaction.walletAddress,
+    kind: transaction.kind,
+    amountLamports:
+      transaction.amountLamports == null
+        ? null
+        : Number(transaction.amountLamports),
+    metadataJson: transaction.metadataJson,
+    createdAtIso: transaction.createdAt.toISOString(),
+  };
+}
+
+export async function getAdminOverview(
+  walletAddress: string
+): Promise<AdminOverviewResponse> {
+  assertAdminWallet(walletAddress);
+  return prisma.$transaction(async (tx) => {
+    const sessionId = await getPrimarySessionId(tx);
+    const summary = await buildAdminSummary(tx, sessionId, walletAddress);
+
+    const range = defaultAnalyticsRange();
+
+    const positions = await tx.roundPosition.findMany({
+      where: { submittedAt: { gte: range.from, lte: range.to } },
+      select: {
+        submittedAt: true,
+        stakeLamports: true,
+        feeLamports: true,
+      },
+    });
+    const joins = await tx.sessionParticipant.findMany({
+      where: { joinedAt: { gte: range.from, lte: range.to } },
+      select: { joinedAt: true },
+    });
+
+    const volumeMap = new Map<string, number>();
+    const feesMap = new Map<string, number>();
+    for (const position of positions) {
+      const key = utcDayKey(position.submittedAt);
+      volumeMap.set(
+        key,
+        (volumeMap.get(key) ?? 0) + Number(position.stakeLamports)
+      );
+      feesMap.set(
+        key,
+        (feesMap.get(key) ?? 0) + Number(position.feeLamports)
+      );
+    }
+    const joinsMap = new Map<string, number>();
+    for (const entry of joins) {
+      const key = utcDayKey(entry.joinedAt);
+      joinsMap.set(key, (joinsMap.get(key) ?? 0) + 1);
+    }
+
+    const fromIso = range.from.toISOString();
+    const toIso = range.to.toISOString();
+
+    const recentTransactionsRaw = await tx.transactionLog.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+
+    const liveSessions = await tx.session.findMany({
+      where: { status: "LIVE" },
+      orderBy: { startsAt: "asc" },
+      take: 5,
+      select: { title: true },
+    });
+
+    return {
+      summary,
+      sparklines: {
+        volumeByDay: fillTimeSeries(fromIso, toIso, volumeMap),
+        feesByDay: fillTimeSeries(fromIso, toIso, feesMap),
+        joinsByDay: fillTimeSeries(fromIso, toIso, joinsMap),
+      },
+      recentTransactions: recentTransactionsRaw.map(mapAdminTransaction),
+      liveSessionTitles: liveSessions.map((row) => row.title),
+    };
+  });
+}
+
+export async function listAdminSessions(input: {
+  walletAddress: string;
+  status?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminSessionListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    200
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+
+  const statusFilter = (() => {
+    if (!input.status) return undefined;
+    const map: Record<string, PrismaSessionStatus> = {
+      pending: "PENDING",
+      live: "LIVE",
+      expired: "EXPIRED",
+      completed: "COMPLETED",
+    };
+    return map[input.status.toLowerCase()];
+  })();
+
+  const dateFrom = input.dateFrom ? new Date(input.dateFrom) : null;
+  const dateTo = input.dateTo ? new Date(input.dateTo) : null;
+
+  const where: Prisma.SessionWhereInput = {};
+  if (statusFilter) where.status = statusFilter;
+  if (dateFrom || dateTo) {
+    where.startsAt = {};
+    if (dateFrom && !Number.isNaN(dateFrom.getTime())) {
+      (where.startsAt as Prisma.DateTimeFilter).gte = dateFrom;
+    }
+    if (dateTo && !Number.isNaN(dateTo.getTime())) {
+      (where.startsAt as Prisma.DateTimeFilter).lte = dateTo;
+    }
+  }
+
+  const items = await prisma.session.findMany({
+    where,
+    orderBy: [{ startsAt: "desc" }, { createdAt: "desc" }],
+    skip,
+    take: pageSize + 1,
+  });
+  const hasMore = items.length > pageSize;
+  const slice = hasMore ? items.slice(0, pageSize) : items;
+
+  return {
+    items: slice.map<AdminSessionListItem>((session) => ({
+      id: session.id,
+      slug: session.slug,
+      title: session.title,
+      status: mapSessionStatus(session.status),
+      startsAtIso: session.startsAt.toISOString(),
+      endsAtIso: session.endsAt.toISOString(),
+      activatedAtIso: session.activatedAt?.toISOString() ?? null,
+      completedAtIso: session.completedAt?.toISOString() ?? null,
+      joinedWallets: session.joinedWallets,
+      totalEscrowLamports: toNumber(session.totalEscrowLamports),
+      protocolFeeAccruedLamports: toNumber(
+        session.protocolFeeAccruedLamports
+      ),
+      chainSessionNumber:
+        session.chainSessionNumber == null
+          ? null
+          : session.chainSessionNumber.toString(),
+      chainSessionAddress: session.chainSessionAddress ?? null,
+      chainDeployTxSignature: session.chainDeployTxSignature ?? null,
+      createdAtIso: session.createdAt.toISOString(),
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function getAdminSessionDetail(input: {
+  walletAddress: string;
+  sessionId: string;
+}): Promise<AdminSessionDetail | null> {
+  assertAdminWallet(input.walletAddress);
+  return prisma.$transaction(async (tx) => {
+    await syncSessionState(tx, input.sessionId).catch(() => null);
+    const session = await tx.session.findUnique({
+      where: { id: input.sessionId },
+      include: {
+        rounds: {
+          include: { pair: true, positions: { select: { id: true } } },
+          orderBy: { roundIndex: "asc" },
+        },
+        participants: {
+          orderBy: { joinedAt: "asc" },
+          include: { positions: { select: { id: true } } },
+        },
+        cardPackTemplates: { orderBy: { createdAt: "asc" } },
+      },
+    });
+    if (!session) return null;
+
+    const positions = await tx.roundPosition.findMany({
+      where: { round: { sessionId: input.sessionId } },
+      orderBy: { submittedAt: "asc" },
+      include: { round: { select: { roundIndex: true } } },
+    });
+    const referrals = await tx.referralAccrual.findMany({
+      where: { sessionId: input.sessionId },
+      orderBy: { createdAt: "asc" },
+    });
+    const transactions = await tx.transactionLog.findMany({
+      where: { sessionId: input.sessionId },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    return {
+      id: session.id,
+      slug: session.slug,
+      title: session.title,
+      seasonLabel: session.seasonLabel,
+      status: mapSessionStatus(session.status),
+      startsAtIso: session.startsAt.toISOString(),
+      endsAtIso: session.endsAt.toISOString(),
+      activatedAtIso: session.activatedAt?.toISOString() ?? null,
+      completedAtIso: session.completedAt?.toISOString() ?? null,
+      launchIso: session.launchIso.toISOString(),
+      joinedWallets: session.joinedWallets,
+      totalEscrowLamports: toNumber(session.totalEscrowLamports),
+      protocolFeeAccruedLamports: toNumber(session.protocolFeeAccruedLamports),
+      buyInLamports: toNumber(session.buyInLamports),
+      roundStakeLamports: toNumber(session.roundStakeLamports),
+      protocolFeeBps: session.protocolFeeBps,
+      referralCutBps: session.referralCutBps,
+      minWallets: session.minWallets,
+      minTotalLamports: toNumber(session.minTotalLamports),
+      cardRewardSlots: session.cardRewardSlots,
+      payoutCadenceDays: session.payoutCadenceDays,
+      chainSessionNumber:
+        session.chainSessionNumber == null
+          ? null
+          : session.chainSessionNumber.toString(),
+      chainSessionAddress: session.chainSessionAddress ?? null,
+      chainDeployTxSignature: session.chainDeployTxSignature ?? null,
+      createdAtIso: session.createdAt.toISOString(),
+      rounds: session.rounds.map<AdminSessionRoundDetail>((round) => ({
+        id: round.id,
+        index: round.roundIndex,
+        pairId: round.pairId,
+        category: round.pair.category,
+        sideA: round.pair.sideA,
+        sideB: round.pair.sideB,
+        status: mapRoundStatus(round.status),
+        opensAtIso: round.opensAt?.toISOString() ?? null,
+        closesAtIso: round.closesAt?.toISOString() ?? null,
+        settledAtIso: round.settledAt?.toISOString() ?? null,
+        sideAProbabilityPct: round.sideAProbabilityPct,
+        sideBProbabilityPct: round.sideBProbabilityPct,
+        sideATotalEntries: round.sideATotalEntries,
+        sideBTotalEntries: round.sideBTotalEntries,
+        sideATotalNetLamports: toNumber(round.sideATotalNetLamports),
+        sideBTotalNetLamports: toNumber(round.sideBTotalNetLamports),
+        totalVolumeLamports: toNumber(round.totalVolumeLamports),
+        positionsCount: round.positions.length,
+      })),
+      participants: session.participants.map<AdminSessionParticipantDetail>(
+        (participant) => ({
+          id: participant.id,
+          walletAddress: participant.walletAddress,
+          joinedAtIso: participant.joinedAt.toISOString(),
+          totalEscrowLamports: toNumber(participant.totalEscrowLamports),
+          remainingEscrowLamports: toNumber(participant.remainingEscrowLamports),
+          referredByWallet: participant.referredByWallet,
+          positionsEntered: participant.positions.length,
+          chainJoinTxSignature: participant.chainJoinTxSignature,
+          chainPlayerSessionAddress: participant.chainPlayerSessionAddress,
+        })
+      ),
+      positions: positions.map<AdminSessionPositionDetail>((position) => ({
+        id: position.id,
+        roundId: position.roundId,
+        roundIndex: position.round.roundIndex,
+        walletAddress: position.walletAddress,
+        side: position.side === "A" ? "A" : "B",
+        submittedAtIso: position.submittedAt.toISOString(),
+        stakeLamports: toNumber(position.stakeLamports),
+        feeLamports: toNumber(position.feeLamports),
+        netStakeLamports: toNumber(position.netStakeLamports),
+        shares: toNumber(position.shares),
+        rewardDebtLamports: toNumber(position.rewardDebtLamports),
+        claimedLamports: toNumber(position.claimedLamports),
+        claimedAtIso: position.claimedAt?.toISOString() ?? null,
+      })),
+      referrals: referrals.map<AdminSessionReferralDetail>((referral) => ({
+        id: referral.id,
+        referrerWallet: referral.referrerWallet,
+        refereeWallet: referral.refereeWallet,
+        status:
+          referral.status === "CLAIMED"
+            ? "claimed"
+            : referral.status === "CLAIMABLE"
+              ? "claimable"
+              : "pending",
+        amountLamports: toNumber(referral.amountLamports),
+        createdAtIso: referral.createdAt.toISOString(),
+        claimableAtIso: referral.claimableAt?.toISOString() ?? null,
+        claimedAtIso: referral.claimedAt?.toISOString() ?? null,
+      })),
+      transactions: transactions.map(mapAdminTransaction),
+      cardPackTemplates: session.cardPackTemplates.map<AdminCardPackTemplate>(
+        (template) => ({
+          id: template.id,
+          kind: mapRewardKind(template.kind),
+          title: template.title,
+          subtitle: template.subtitle,
+          createdAtIso: template.createdAt.toISOString(),
+        })
+      ),
+    };
+  });
+}
+
+export async function expireAdminSession(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  const sessionId = input.sessionId.trim();
+  if (!sessionId) throw new Error("sessionId is required.");
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.session.findUnique({ where: { id: sessionId } });
+    if (!session) throw new Error("Session not found.");
+    if (session.status === "COMPLETED") {
+      throw new Error("Cannot expire a completed session.");
+    }
+    await tx.session.update({
+      where: { id: sessionId },
+      data: { status: "EXPIRED" },
+    });
+    await tx.transactionLog.create({
+      data: {
+        sessionId,
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_expire_session",
+        metadataJson: JSON.stringify({
+          payloadSnapshot: { sessionId },
+          previousStatus: session.status,
+        }),
+      },
+    });
+  });
+}
+
+export async function recordChainCloseRound(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  roundId: string;
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  await prisma.transactionLog.create({
+    data: {
+      sessionId: input.sessionId,
+      walletAddress: input.adminWalletAddress,
+      kind: "admin_close_round",
+      metadataJson: JSON.stringify({
+        payloadSnapshot: {
+          sessionId: input.sessionId,
+          roundId: input.roundId,
+          chainTxSignature: input.chainTxSignature,
+        },
+      }),
+    },
+  });
+  await prisma.$transaction(async (tx) => {
+    await syncSessionState(tx, input.sessionId).catch(() => null);
+  });
+}
+
+export async function recordChainSweepOrphans(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  roundId: string;
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  await prisma.transactionLog.create({
+    data: {
+      sessionId: input.sessionId,
+      walletAddress: input.adminWalletAddress,
+      kind: "admin_sweep_orphans",
+      metadataJson: JSON.stringify({
+        payloadSnapshot: {
+          sessionId: input.sessionId,
+          roundId: input.roundId,
+          chainTxSignature: input.chainTxSignature,
+        },
+      }),
+    },
+  });
+}
+
+export async function recordChainFinalizeSession(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  await prisma.transactionLog.create({
+    data: {
+      sessionId: input.sessionId,
+      walletAddress: input.adminWalletAddress,
+      kind: "admin_finalize_session",
+      metadataJson: JSON.stringify({
+        payloadSnapshot: {
+          sessionId: input.sessionId,
+          chainTxSignature: input.chainTxSignature,
+        },
+      }),
+    },
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.session.update({
+      where: { id: input.sessionId },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  });
+}
+
+export async function recordChainWithdrawFees(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  await prisma.transactionLog.create({
+    data: {
+      sessionId: input.sessionId,
+      walletAddress: input.adminWalletAddress,
+      kind: "admin_withdraw_protocol_fees",
+      metadataJson: JSON.stringify({
+        payloadSnapshot: {
+          sessionId: input.sessionId,
+          chainTxSignature: input.chainTxSignature,
+        },
+      }),
+    },
+  });
+  await prisma.session.update({
+    where: { id: input.sessionId },
+    data: { protocolFeeAccruedLamports: 0n },
+  });
+}
+
+export async function assignSessionCardPack(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  items: Array<{
+    kind: RewardInventoryItem["kind"];
+    title: string;
+    subtitle: string;
+  }>;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  if (!input.sessionId) throw new Error("sessionId is required.");
+  if (input.items.length === 0)
+    throw new Error("Provide at least one card-pack item.");
+
+  const items = input.items.map((item) => ({
+    kind: parseRewardKind(item.kind),
+    title: item.title.trim(),
+    subtitle: item.subtitle.trim(),
+  }));
+  for (const item of items) {
+    if (!item.title) throw new Error("Card-pack item title is required.");
+    if (!item.subtitle) throw new Error("Card-pack item subtitle is required.");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.session.findUnique({
+      where: { id: input.sessionId },
+    });
+    if (!session) throw new Error("Session not found.");
+    await tx.sessionCardPackTemplate.createMany({
+      data: items.map((item) => ({
+        sessionId: input.sessionId,
+        kind: item.kind,
+        title: item.title,
+        subtitle: item.subtitle,
+      })),
+    });
+    await tx.transactionLog.create({
+      data: {
+        sessionId: input.sessionId,
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_assign_card_pack",
+        metadataJson: JSON.stringify({
+          payloadSnapshot: {
+            sessionId: input.sessionId,
+            itemCount: items.length,
+          },
+        }),
+      },
+    });
+  });
+}
+
+export async function listAdminPairs(input: {
+  walletAddress: string;
+  search?: string | null;
+  active?: boolean | null;
+  assigned?: boolean | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminPairListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    200
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+
+  const where: Prisma.FaultLinePairWhereInput = {};
+  const search = input.search?.trim();
+  if (search) {
+    where.OR = [
+      { category: { contains: search } },
+      { sideA: { contains: search } },
+      { sideB: { contains: search } },
+      { slug: { contains: search } },
+    ];
+  }
+  if (typeof input.active === "boolean") where.active = input.active;
+
+  const [pairs, assignedPairs] = await Promise.all([
+    prisma.faultLinePair.findMany({
+      where,
+      orderBy: [{ active: "desc" }, { category: "asc" }, { slug: "asc" }],
+      skip,
+      take: pageSize + 1,
+    }),
+    prisma.sessionRound.findMany({
+      where: {
+        session: { status: "LIVE" },
+      },
+      select: { pairId: true },
+      distinct: ["pairId"],
+    }),
+  ]);
+  const assignedPairIds = new Set(assignedPairs.map((p) => p.pairId));
+  let filtered = pairs;
+  if (typeof input.assigned === "boolean") {
+    filtered = pairs.filter((pair) =>
+      input.assigned ? assignedPairIds.has(pair.id) : !assignedPairIds.has(pair.id)
+    );
+  }
+  const hasMore = filtered.length > pageSize;
+  const slice = hasMore ? filtered.slice(0, pageSize) : filtered;
+
+  return {
+    items: slice.map<AdminPairTableRow>((pair) => ({
+      id: pair.id,
+      slug: pair.slug,
+      category: pair.category,
+      sideA: pair.sideA,
+      sideB: pair.sideB,
+      defaultSideAPct: pair.defaultSideAPct,
+      defaultSideBPct: pair.defaultSideBPct,
+      crowdLabel: pair.crowdLabel,
+      active: pair.active,
+      assigned: assignedPairIds.has(pair.id),
+      createdAtIso: pair.createdAt.toISOString(),
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function editAdminPair(input: {
+  adminWalletAddress: string;
+  id: string;
+  category?: string;
+  sideA?: string;
+  sideB?: string;
+  crowdLabel?: string;
+  defaultSideAPct?: number;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  const id = input.id.trim();
+  if (!id) throw new Error("Pair id is required.");
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.faultLinePair.findUnique({ where: { id } });
+    if (!existing) throw new Error("Pair not found.");
+    const updateData: Prisma.FaultLinePairUpdateInput = {};
+    if (input.category !== undefined) {
+      const value = input.category.trim();
+      if (!value) throw new Error("category cannot be empty.");
+      updateData.category = value;
+    }
+    if (input.sideA !== undefined) {
+      const value = input.sideA.trim();
+      if (!value) throw new Error("sideA cannot be empty.");
+      updateData.sideA = value;
+    }
+    if (input.sideB !== undefined) {
+      const value = input.sideB.trim();
+      if (!value) throw new Error("sideB cannot be empty.");
+      updateData.sideB = value;
+    }
+    if (input.crowdLabel !== undefined) {
+      updateData.crowdLabel = input.crowdLabel.trim() || existing.crowdLabel;
+    }
+    if (input.defaultSideAPct !== undefined) {
+      const pct = Math.round(input.defaultSideAPct);
+      if (pct < 0 || pct > 100) {
+        throw new Error("defaultSideAPct must be between 0 and 100.");
+      }
+      updateData.defaultSideAPct = pct;
+      updateData.defaultSideBPct = 100 - pct;
+    }
+    await tx.faultLinePair.update({ where: { id }, data: updateData });
+    await tx.transactionLog.create({
+      data: {
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_edit_pair",
+        metadataJson: JSON.stringify({
+          payloadSnapshot: { id, ...updateData },
+        }),
+      },
+    });
+  });
+}
+
+export async function bulkTogglePairs(input: {
+  adminWalletAddress: string;
+  pairIds: string[];
+  active: boolean;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  const pairIds = Array.from(
+    new Set(input.pairIds.map((p) => p.trim()).filter(Boolean))
+  );
+  if (pairIds.length === 0) throw new Error("Provide at least one pair id.");
+  return prisma.$transaction(async (tx) => {
+    await tx.faultLinePair.updateMany({
+      where: { id: { in: pairIds } },
+      data: { active: input.active },
+    });
+    await tx.transactionLog.create({
+      data: {
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_toggle_pair_bulk",
+        metadataJson: JSON.stringify({
+          payloadSnapshot: { pairIds, active: input.active },
+          count: pairIds.length,
+        }),
+      },
+    });
+  });
+}
+
+export async function listAdminPlayers(input: {
+  walletAddress: string;
+  search?: string | null;
+  sessionId?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminPlayerListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    200
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+
+  const where: Prisma.SessionParticipantWhereInput = {};
+  const search = input.search?.trim();
+  if (search) {
+    where.walletAddress = { contains: search };
+  }
+  if (input.sessionId) where.sessionId = input.sessionId;
+
+  const allParticipants = await prisma.sessionParticipant.findMany({
+    where,
+    include: {
+      positions: {
+        select: { stakeLamports: true },
+      },
+    },
+    orderBy: { joinedAt: "desc" },
+  });
+
+  type Aggregated = {
+    walletAddress: string;
+    sessionsJoined: number;
+    totalStakedLamports: bigint;
+    totalEscrowLamports: bigint;
+    remainingEscrowLamports: bigint;
+    positionsEntered: number;
+    rewardsAssigned: number;
+    referredByWallet: string | null;
+    firstJoinedAt: Date | null;
+    lastJoinedAt: Date | null;
+  };
+  const aggregated = new Map<string, Aggregated>();
+  for (const participant of allParticipants) {
+    const current =
+      aggregated.get(participant.walletAddress) ??
+      ({
+        walletAddress: participant.walletAddress,
+        sessionsJoined: 0,
+        totalStakedLamports: 0n,
+        totalEscrowLamports: 0n,
+        remainingEscrowLamports: 0n,
+        positionsEntered: 0,
+        rewardsAssigned: 0,
+        referredByWallet: null,
+        firstJoinedAt: null,
+        lastJoinedAt: null,
+      } as Aggregated);
+    current.sessionsJoined += 1;
+    for (const position of participant.positions) {
+      current.totalStakedLamports += position.stakeLamports;
+    }
+    current.totalEscrowLamports += participant.totalEscrowLamports;
+    current.remainingEscrowLamports += participant.remainingEscrowLamports;
+    current.positionsEntered += participant.positions.length;
+    if (!current.referredByWallet && participant.referredByWallet) {
+      current.referredByWallet = participant.referredByWallet;
+    }
+    if (!current.firstJoinedAt || participant.joinedAt < current.firstJoinedAt) {
+      current.firstJoinedAt = participant.joinedAt;
+    }
+    if (!current.lastJoinedAt || participant.joinedAt > current.lastJoinedAt) {
+      current.lastJoinedAt = participant.joinedAt;
+    }
+    aggregated.set(participant.walletAddress, current);
+  }
+
+  const wallets = Array.from(aggregated.keys());
+  const rewardsCounts = await prisma.rewardInventory.groupBy({
+    by: ["walletAddress"],
+    where: { walletAddress: { in: wallets } },
+    _count: { _all: true },
+  });
+  for (const row of rewardsCounts) {
+    const current = aggregated.get(row.walletAddress);
+    if (current) current.rewardsAssigned = row._count._all;
+  }
+
+  const sorted = Array.from(aggregated.values()).sort((left, right) => {
+    const leftMs = left.lastJoinedAt?.getTime() ?? 0;
+    const rightMs = right.lastJoinedAt?.getTime() ?? 0;
+    return rightMs - leftMs;
+  });
+  const sliced = sorted.slice(skip, skip + pageSize + 1);
+  const hasMore = sliced.length > pageSize;
+  const page = hasMore ? sliced.slice(0, pageSize) : sliced;
+
+  return {
+    items: page.map<AdminPlayerListItem>((entry) => ({
+      walletAddress: entry.walletAddress,
+      displayName: null,
+      sessionsJoined: entry.sessionsJoined,
+      totalStakedLamports: toNumber(entry.totalStakedLamports),
+      totalEscrowLamports: toNumber(entry.totalEscrowLamports),
+      remainingEscrowLamports: toNumber(entry.remainingEscrowLamports),
+      positionsEntered: entry.positionsEntered,
+      rewardsAssigned: entry.rewardsAssigned,
+      referredByWallet: entry.referredByWallet,
+      firstJoinedAtIso: entry.firstJoinedAt?.toISOString() ?? null,
+      lastJoinedAtIso: entry.lastJoinedAt?.toISOString() ?? null,
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function getAdminPlayerDetail(input: {
+  walletAddress: string;
+  targetWalletAddress: string;
+}): Promise<AdminPlayerDetail | null> {
+  assertAdminWallet(input.walletAddress);
+  const target = normalizeWalletAddress(input.targetWalletAddress);
+  if (!target) return null;
+  const participants = await prisma.sessionParticipant.findMany({
+    where: { walletAddress: target },
+    include: {
+      session: { select: { id: true, title: true, status: true } },
+      positions: {
+        include: { round: { include: { pair: true } } },
+      },
+    },
+    orderBy: { joinedAt: "desc" },
+  });
+  if (participants.length === 0) return null;
+
+  const sessions: AdminPlayerSessionRow[] = participants.map((participant) => ({
+    participantId: participant.id,
+    sessionId: participant.session.id,
+    sessionTitle: participant.session.title,
+    status: mapSessionStatus(participant.session.status),
+    joinedAtIso: participant.joinedAt.toISOString(),
+    totalEscrowLamports: toNumber(participant.totalEscrowLamports),
+    remainingEscrowLamports: toNumber(participant.remainingEscrowLamports),
+    positionsEntered: participant.positions.length,
+  }));
+
+  const positions: AdminPlayerPositionRow[] = participants.flatMap((participant) =>
+    participant.positions.map((position) => ({
+      id: position.id,
+      sessionId: participant.session.id,
+      sessionTitle: participant.session.title,
+      roundIndex: position.round.roundIndex,
+      category: position.round.pair.category,
+      side: position.side === "A" ? "A" : "B",
+      stakeLamports: toNumber(position.stakeLamports),
+      feeLamports: toNumber(position.feeLamports),
+      claimedLamports: toNumber(position.claimedLamports),
+      submittedAtIso: position.submittedAt.toISOString(),
+    }))
+  );
+
+  const rewards = await prisma.rewardInventory.findMany({
+    where: { walletAddress: target },
+    orderBy: { assignedAt: "desc" },
+  });
+  const rewardItems: AdminPlayerReward[] = rewards.map((reward) => ({
+    id: reward.id,
+    kind: mapRewardKind(reward.kind),
+    title: reward.title,
+    subtitle: reward.subtitle,
+    status: mapRewardStatus(reward.status),
+    assignedAtIso: reward.assignedAt.toISOString(),
+    claimedAtIso: reward.claimedAt?.toISOString() ?? null,
+    sessionId: reward.sessionId,
+  }));
+
+  const referredBy = participants.find((p) => p.referredByWallet)?.referredByWallet ?? null;
+  const refereeAccruals = await prisma.referralAccrual.findMany({
+    where: { referrerWallet: target },
+  });
+  const referredCountSet = new Set(refereeAccruals.map((row) => row.refereeWallet));
+  const totalAccrued = refereeAccruals.reduce(
+    (sum, row) => sum + row.amountLamports,
+    0n
+  );
+  const paidOut = refereeAccruals
+    .filter((row) => row.status === "CLAIMED")
+    .reduce((sum, row) => sum + row.amountLamports, 0n);
+
+  const referralPanel: AdminPlayerReferralPanel = {
+    referredByWallet: referredBy,
+    referredCount: referredCountSet.size,
+    totalAccruedLamports: toNumber(totalAccrued),
+    paidOutLamports: toNumber(paidOut),
+    balanceDueLamports: toNumber(totalAccrued - paidOut),
+  };
+
+  const firstJoined = participants[participants.length - 1]?.joinedAt ?? null;
+  const lastJoined = participants[0]?.joinedAt ?? null;
+
+  return {
+    walletAddress: target,
+    displayName: null,
+    firstJoinedAtIso: firstJoined?.toISOString() ?? null,
+    lastJoinedAtIso: lastJoined?.toISOString() ?? null,
+    sessions,
+    positions,
+    rewards: rewardItems,
+    referralPanel,
+  };
+}
+
+export async function listAdminTransactions(input: {
+  walletAddress: string;
+  kind?: string | null;
+  walletFilter?: string | null;
+  sessionId?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminTransactionListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    500
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+  const where: Prisma.TransactionLogWhereInput = {};
+  if (input.kind) where.kind = input.kind;
+  if (input.walletFilter) where.walletAddress = input.walletFilter;
+  if (input.sessionId) where.sessionId = input.sessionId;
+  if (input.dateFrom || input.dateTo) {
+    where.createdAt = {};
+    if (input.dateFrom) {
+      const parsed = new Date(input.dateFrom);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.createdAt as Prisma.DateTimeFilter).gte = parsed;
+      }
+    }
+    if (input.dateTo) {
+      const parsed = new Date(input.dateTo);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.createdAt as Prisma.DateTimeFilter).lte = parsed;
+      }
+    }
+  }
+  const items = await prisma.transactionLog.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    skip,
+    take: pageSize + 1,
+  });
+  const hasMore = items.length > pageSize;
+  const slice = hasMore ? items.slice(0, pageSize) : items;
+  return {
+    items: slice.map(mapAdminTransaction),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function listAdminAudit(input: {
+  walletAddress: string;
+  actor?: string | null;
+  kind?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminAuditListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    500
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+  const where: Prisma.TransactionLogWhereInput = {
+    kind: { startsWith: ADMIN_AUDIT_PREFIX },
+  };
+  if (input.kind) where.kind = input.kind;
+  if (input.actor) where.walletAddress = input.actor;
+  if (input.dateFrom || input.dateTo) {
+    where.createdAt = {};
+    if (input.dateFrom) {
+      const parsed = new Date(input.dateFrom);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.createdAt as Prisma.DateTimeFilter).gte = parsed;
+      }
+    }
+    if (input.dateTo) {
+      const parsed = new Date(input.dateTo);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.createdAt as Prisma.DateTimeFilter).lte = parsed;
+      }
+    }
+  }
+  const items = await prisma.transactionLog.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    skip,
+    take: pageSize + 1,
+  });
+  const hasMore = items.length > pageSize;
+  const slice = hasMore ? items.slice(0, pageSize) : items;
+  return {
+    items: slice.map<AdminAuditEntry>((row) => ({
+      id: row.id,
+      actor: row.walletAddress,
+      kind: row.kind,
+      sessionId: row.sessionId,
+      amountLamports:
+        row.amountLamports == null ? null : Number(row.amountLamports),
+      metadataJson: row.metadataJson,
+      createdAtIso: row.createdAt.toISOString(),
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function listAdminReferralBalances(input: {
+  walletAddress: string;
+  search?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminReferralListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    500
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+
+  const accruals = await prisma.referralAccrual.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  const balanceMap = new Map<
+    string,
+    {
+      referees: Set<string>;
+      totalAccruedLamports: bigint;
+      paidOutLamports: bigint;
+    }
+  >();
+  for (const accrual of accruals) {
+    const current =
+      balanceMap.get(accrual.referrerWallet) ??
+      {
+        referees: new Set<string>(),
+        totalAccruedLamports: 0n,
+        paidOutLamports: 0n,
+      };
+    current.referees.add(accrual.refereeWallet);
+    current.totalAccruedLamports += accrual.amountLamports;
+    if (accrual.status === "CLAIMED") {
+      current.paidOutLamports += accrual.amountLamports;
+    }
+    balanceMap.set(accrual.referrerWallet, current);
+  }
+
+  const allBalances = Array.from(balanceMap.entries())
+    .map<AdminReferralBalance>(([referrerWallet, totals]) => ({
+      referrerWallet,
+      referredWallets: totals.referees.size,
+      totalAccruedLamports: toNumber(totals.totalAccruedLamports),
+      paidOutLamports: toNumber(totals.paidOutLamports),
+      balanceDueLamports: toNumber(
+        totals.totalAccruedLamports - totals.paidOutLamports
+      ),
+    }))
+    .sort((left, right) => right.balanceDueLamports - left.balanceDueLamports);
+
+  const search = input.search?.trim().toLowerCase();
+  const filtered = search
+    ? allBalances.filter((row) =>
+        row.referrerWallet.toLowerCase().includes(search)
+      )
+    : allBalances;
+
+  const sliced = filtered.slice(skip, skip + pageSize + 1);
+  const hasMore = sliced.length > pageSize;
+  const page = hasMore ? sliced.slice(0, pageSize) : sliced;
+
+  return {
+    items: page,
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function listReferralBatches(input: {
+  walletAddress: string;
+  referrerWallet?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminReferralBatchListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    500
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+  const where: Prisma.ReferralPayoutBatchWhereInput = {};
+  if (input.referrerWallet) where.referrerWallet = input.referrerWallet;
+  if (input.dateFrom || input.dateTo) {
+    where.paidAt = {};
+    if (input.dateFrom) {
+      const parsed = new Date(input.dateFrom);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.paidAt as Prisma.DateTimeFilter).gte = parsed;
+      }
+    }
+    if (input.dateTo) {
+      const parsed = new Date(input.dateTo);
+      if (!Number.isNaN(parsed.getTime())) {
+        (where.paidAt as Prisma.DateTimeFilter).lte = parsed;
+      }
+    }
+  }
+  const batches = await prisma.referralPayoutBatch.findMany({
+    where,
+    orderBy: { paidAt: "desc" },
+    skip,
+    take: pageSize + 1,
+  });
+  const hasMore = batches.length > pageSize;
+  const slice = hasMore ? batches.slice(0, pageSize) : batches;
+  return {
+    items: slice.map<AdminReferralBatch>((batch) => ({
+      id: batch.id,
+      referrerWallet: batch.referrerWallet,
+      adminWalletAddress: batch.adminWalletAddress,
+      totalLamports: toNumber(batch.totalLamports),
+      referralCount: batch.referralCount,
+      paidAtIso: batch.paidAt.toISOString(),
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function getAdminReferrerDetail(input: {
+  walletAddress: string;
+  referrerWallet: string;
+}): Promise<AdminReferrerDetail | null> {
+  assertAdminWallet(input.walletAddress);
+  const referrerWallet = normalizeWalletAddress(input.referrerWallet);
+  if (!referrerWallet) return null;
+  const accruals = await prisma.referralAccrual.findMany({
+    where: { referrerWallet },
+    orderBy: { createdAt: "desc" },
+  });
+  if (accruals.length === 0) return null;
+  const refereeBreakdownMap = new Map<
+    string,
+    { earned: bigint; paid: bigint }
+  >();
+  for (const accrual of accruals) {
+    const current =
+      refereeBreakdownMap.get(accrual.refereeWallet) ??
+      { earned: 0n, paid: 0n };
+    current.earned += accrual.amountLamports;
+    if (accrual.status === "CLAIMED") current.paid += accrual.amountLamports;
+    refereeBreakdownMap.set(accrual.refereeWallet, current);
+  }
+  const totalAccruedLamports = accruals.reduce(
+    (sum, a) => sum + a.amountLamports,
+    0n
+  );
+  const paidOutLamports = accruals
+    .filter((a) => a.status === "CLAIMED")
+    .reduce((sum, a) => sum + a.amountLamports, 0n);
+
+  const batches = await prisma.referralPayoutBatch.findMany({
+    where: { referrerWallet },
+    orderBy: { paidAt: "desc" },
+  });
+
+  return {
+    referrerWallet,
+    referredWallets: refereeBreakdownMap.size,
+    totalAccruedLamports: toNumber(totalAccruedLamports),
+    paidOutLamports: toNumber(paidOutLamports),
+    balanceDueLamports: toNumber(totalAccruedLamports - paidOutLamports),
+    batches: batches.map<AdminReferralBatch>((batch) => ({
+      id: batch.id,
+      referrerWallet: batch.referrerWallet,
+      adminWalletAddress: batch.adminWalletAddress,
+      totalLamports: toNumber(batch.totalLamports),
+      referralCount: batch.referralCount,
+      paidAtIso: batch.paidAt.toISOString(),
+    })),
+    refereeBreakdown: Array.from(refereeBreakdownMap.entries())
+      .map<ReferredWalletContribution>(([wallet, totals]) => ({
+        walletAddress: wallet,
+        totalEarnedLamports: toNumber(totals.earned),
+        paidOutLamports: toNumber(totals.paid),
+        balanceDueLamports: toNumber(totals.earned - totals.paid),
+      }))
+      .sort((left, right) => right.totalEarnedLamports - left.totalEarnedLamports),
+    activeAccruals: accruals
+      .filter((a) => a.status !== "CLAIMED")
+      .map<AdminSessionReferralDetail>((accrual) => ({
+        id: accrual.id,
+        referrerWallet: accrual.referrerWallet,
+        refereeWallet: accrual.refereeWallet,
+        status:
+          accrual.status === "CLAIMED"
+            ? "claimed"
+            : accrual.status === "CLAIMABLE"
+              ? "claimable"
+              : "pending",
+        amountLamports: toNumber(accrual.amountLamports),
+        createdAtIso: accrual.createdAt.toISOString(),
+        claimableAtIso: accrual.claimableAt?.toISOString() ?? null,
+        claimedAtIso: accrual.claimedAt?.toISOString() ?? null,
+      })),
+  };
+}
+
+export async function bulkPayoutReferrals(input: {
+  adminWalletAddress: string;
+  referrerWallets: string[];
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  const referrers = Array.from(
+    new Set(
+      input.referrerWallets
+        .map((wallet) => normalizeWalletAddress(wallet))
+        .filter((wallet): wallet is string => Boolean(wallet))
+    )
+  );
+  if (referrers.length === 0) {
+    throw new Error("Provide at least one referrer wallet to pay out.");
+  }
+  return prisma.$transaction(async (tx) => {
+    const results: { referrerWallet: string; totalLamports: number }[] = [];
+    for (const referrerWallet of referrers) {
+      const accruals = await tx.referralAccrual.findMany({
+        where: { referrerWallet, status: "CLAIMABLE" },
+      });
+      if (accruals.length === 0) continue;
+      const totalLamports = accruals.reduce(
+        (sum, a) => sum + a.amountLamports,
+        0n
+      );
+      const batch = await tx.referralPayoutBatch.create({
+        data: {
+          referrerWallet,
+          adminWalletAddress: input.adminWalletAddress,
+          totalLamports,
+          referralCount: new Set(accruals.map((a) => a.refereeWallet)).size,
+          metadataJson: JSON.stringify({
+            accrualIds: accruals.map((a) => a.id),
+            bulk: true,
+          }),
+        },
+      });
+      await tx.referralAccrual.updateMany({
+        where: { id: { in: accruals.map((a) => a.id) } },
+        data: {
+          status: "CLAIMED",
+          claimedAt: batch.paidAt,
+          payoutBatchId: batch.id,
+        },
+      });
+      results.push({
+        referrerWallet,
+        totalLamports: Number(totalLamports),
+      });
+    }
+    await tx.transactionLog.create({
+      data: {
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_payout_referrals_bulk",
+        amountLamports: results.reduce(
+          (sum, row) => sum + BigInt(row.totalLamports),
+          0n
+        ),
+        metadataJson: JSON.stringify({
+          payoutCount: results.length,
+          payloadSnapshot: { referrerWallets: referrers },
+          results,
+        }),
+      },
+    });
+    return { results };
+  });
+}
+
+export async function listAdminRewards(input: {
+  walletAddress: string;
+  status?: string | null;
+  kind?: string | null;
+  sessionId?: string | null;
+  walletFilter?: string | null;
+  cursor?: string | null;
+  pageSize?: number | null;
+}): Promise<AdminRewardListResponse> {
+  assertAdminWallet(input.walletAddress);
+  const pageSize = Math.min(
+    Math.max(input.pageSize ?? ADMIN_LIST_PAGE_SIZE, 1),
+    500
+  );
+  const { skip } = decodeListCursor(input.cursor ?? null);
+  const where: Prisma.RewardInventoryWhereInput = {};
+  if (input.status) {
+    const map: Record<string, RewardStatus> = {
+      assigned: "ASSIGNED",
+      claimable: "CLAIMABLE",
+      claimed: "CLAIMED",
+    };
+    const mapped = map[input.status.toLowerCase()];
+    if (mapped) where.status = mapped;
+  }
+  if (input.kind) {
+    try {
+      where.kind = parseRewardKind(input.kind);
+    } catch {
+      // ignore unknown kind
+    }
+  }
+  if (input.sessionId) where.sessionId = input.sessionId;
+  if (input.walletFilter) where.walletAddress = input.walletFilter;
+
+  const items = await prisma.rewardInventory.findMany({
+    where,
+    orderBy: { assignedAt: "desc" },
+    skip,
+    take: pageSize + 1,
+    include: { session: { select: { title: true } } },
+  });
+  const hasMore = items.length > pageSize;
+  const slice = hasMore ? items.slice(0, pageSize) : items;
+  return {
+    items: slice.map<AdminRewardItem>((reward) => ({
+      id: reward.id,
+      walletAddress: reward.walletAddress,
+      sessionId: reward.sessionId,
+      sessionTitle: reward.session?.title ?? null,
+      kind: mapRewardKind(reward.kind),
+      title: reward.title,
+      subtitle: reward.subtitle,
+      status: mapRewardStatus(reward.status),
+      assignedAtIso: reward.assignedAt.toISOString(),
+      claimedAtIso: reward.claimedAt?.toISOString() ?? null,
+    })),
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
+}
+
+export async function bulkAssignRewards(input: {
+  adminWalletAddress: string;
+  items: Array<{
+    targetWalletAddress: string;
+    title: string;
+    subtitle: string;
+    kind: RewardInventoryItem["kind"];
+    sessionId?: string | null;
+  }>;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  if (input.items.length === 0) {
+    throw new Error("Provide at least one reward to assign.");
+  }
+  const items = input.items.map((item) => ({
+    targetWalletAddress:
+      normalizeWalletAddress(item.targetWalletAddress) ?? "",
+    title: item.title.trim(),
+    subtitle: item.subtitle.trim(),
+    kind: parseRewardKind(item.kind),
+    sessionId: item.sessionId?.trim() || null,
+  }));
+  for (const item of items) {
+    if (!item.targetWalletAddress) {
+      throw new Error("Each reward item needs a valid target wallet.");
+    }
+    if (!item.title) throw new Error("Each reward item needs a title.");
+    if (!item.subtitle) throw new Error("Each reward item needs a subtitle.");
+  }
+  return prisma.$transaction(async (tx) => {
+    const fallbackSessionId = await getPrimarySessionId(tx);
+    const assignedIds: string[] = [];
+    for (const item of items) {
+      const sessionId = item.sessionId ?? fallbackSessionId;
+      const participant = await tx.sessionParticipant.findUnique({
+        where: {
+          sessionId_walletAddress: {
+            sessionId,
+            walletAddress: item.targetWalletAddress,
+          },
+        },
+      });
+      if (!participant) {
+        throw new Error(
+          `Wallet ${item.targetWalletAddress} has not joined session ${sessionId}.`
+        );
+      }
+      const created = await tx.rewardInventory.create({
+        data: {
+          participantId: participant.id,
+          walletAddress: participant.walletAddress,
+          sessionId,
+          kind: item.kind,
+          title: item.title,
+          subtitle: item.subtitle,
+          status: "ASSIGNED",
+        },
+      });
+      assignedIds.push(created.id);
+    }
+    await tx.transactionLog.create({
+      data: {
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_assign_reward_bulk",
+        metadataJson: JSON.stringify({
+          payloadSnapshot: { itemCount: items.length },
+          assignedIds,
+        }),
+      },
+    });
+    return { assignedCount: assignedIds.length };
+  });
+}
+
+export async function getAdminAnalytics(input: {
+  walletAddress: string;
+  from?: string | null;
+  to?: string | null;
+}): Promise<AdminAnalytics> {
+  assertAdminWallet(input.walletAddress);
+  const range = parseAnalyticsRange({ from: input.from, to: input.to });
+  const fromIso = range.from.toISOString();
+  const toIso = range.to.toISOString();
+
+  const positions = await prisma.roundPosition.findMany({
+    where: { submittedAt: { gte: range.from, lte: range.to } },
+    select: { submittedAt: true, stakeLamports: true, feeLamports: true },
+  });
+  const joins = await prisma.sessionParticipant.findMany({
+    where: { joinedAt: { gte: range.from, lte: range.to } },
+    select: { joinedAt: true },
+  });
+  const sessionsInRange = await prisma.session.findMany({
+    where: { endsAt: { gte: range.from, lte: range.to } },
+    select: { endsAt: true, status: true },
+  });
+
+  const volumeMap = new Map<string, number>();
+  const feesMap = new Map<string, number>();
+  for (const position of positions) {
+    const key = utcDayKey(position.submittedAt);
+    volumeMap.set(
+      key,
+      (volumeMap.get(key) ?? 0) + Number(position.stakeLamports)
+    );
+    feesMap.set(
+      key,
+      (feesMap.get(key) ?? 0) + Number(position.feeLamports)
+    );
+  }
+  const joinsMap = new Map<string, number>();
+  for (const entry of joins) {
+    const key = utcDayKey(entry.joinedAt);
+    joinsMap.set(key, (joinsMap.get(key) ?? 0) + 1);
+  }
+  const expiryMap = new Map<string, { expired: number; total: number }>();
+  for (const session of sessionsInRange) {
+    const key = utcDayKey(session.endsAt);
+    const current = expiryMap.get(key) ?? { expired: 0, total: 0 };
+    current.total += 1;
+    if (session.status === "EXPIRED") current.expired += 1;
+    expiryMap.set(key, current);
+  }
+  const expiryRateMap = new Map<string, number>();
+  for (const [key, totals] of expiryMap) {
+    expiryRateMap.set(
+      key,
+      totals.total === 0 ? 0 : Math.round((totals.expired / totals.total) * 1000) / 10
+    );
+  }
+
+  const referralRows = await prisma.referralAccrual.findMany();
+  const referrerMap = new Map<
+    string,
+    {
+      referees: Set<string>;
+      total: bigint;
+      paid: bigint;
+    }
+  >();
+  for (const accrual of referralRows) {
+    const current =
+      referrerMap.get(accrual.referrerWallet) ??
+      { referees: new Set<string>(), total: 0n, paid: 0n };
+    current.referees.add(accrual.refereeWallet);
+    current.total += accrual.amountLamports;
+    if (accrual.status === "CLAIMED") current.paid += accrual.amountLamports;
+    referrerMap.set(accrual.referrerWallet, current);
+  }
+  const topReferrers: AdminTopReferrer[] = Array.from(referrerMap.entries())
+    .map(([wallet, totals]) => ({
+      referrerWallet: wallet,
+      referredCount: totals.referees.size,
+      balanceDueLamports: toNumber(totals.total - totals.paid),
+      totalAccruedLamports: toNumber(totals.total),
+    }))
+    .sort((a, b) => b.balanceDueLamports - a.balanceDueLamports)
+    .slice(0, 10);
+
+  const recentRounds = await prisma.sessionRound.findMany({
+    orderBy: { id: "desc" },
+    take: 12,
+    include: {
+      pair: { select: { category: true } },
+      session: { select: { title: true } },
+    },
+  });
+  const sideDistribution: AdminSideDistributionPoint[] = recentRounds
+    .reverse()
+    .map((round) => ({
+      roundId: round.id,
+      sessionTitle: round.session.title,
+      roundIndex: round.roundIndex,
+      category: round.pair.category,
+      sideACount: round.sideATotalEntries,
+      sideBCount: round.sideBTotalEntries,
+    }));
+
+  return {
+    rangeFromIso: fromIso,
+    rangeToIso: toIso,
+    volumeByDay: fillTimeSeries(fromIso, toIso, volumeMap),
+    feesByDay: fillTimeSeries(fromIso, toIso, feesMap),
+    joinsByDay: fillTimeSeries(fromIso, toIso, joinsMap),
+    expiryRateByDay: fillTimeSeries(fromIso, toIso, expiryRateMap),
+    topReferrers,
+    sideDistribution,
+  };
+}
+
+export async function getAdminOpsBoard(input: {
+  walletAddress: string;
+}): Promise<AdminOpsResponse> {
+  assertAdminWallet(input.walletAddress);
+  const now = new Date();
+  const liveAndPending = await prisma.session.findMany({
+    where: { status: { in: ["PENDING", "LIVE"] } },
+    include: {
+      rounds: {
+        include: { pair: true },
+        orderBy: { roundIndex: "asc" },
+      },
+    },
+  });
+
+  const staleRounds: AdminOpsRoundRow[] = [];
+  const sweepableRounds: AdminOpsRoundRow[] = [];
+  const finalizableSessions: AdminOpsSessionRow[] = [];
+  const withdrawableSessions: AdminOpsSessionRow[] = [];
+
+  for (const session of liveAndPending) {
+    for (const round of session.rounds) {
+      if (
+        round.closesAt &&
+        round.closesAt < now &&
+        round.status !== "CLOSED" &&
+        round.status !== "SKIPPED"
+      ) {
+        staleRounds.push({
+          sessionId: session.id,
+          sessionTitle: session.title,
+          chainSessionNumber:
+            session.chainSessionNumber == null
+              ? null
+              : session.chainSessionNumber.toString(),
+          chainSessionAddress: session.chainSessionAddress,
+          roundId: round.id,
+          roundIndex: round.roundIndex,
+          category: round.pair.category,
+          closesAtIso: round.closesAt?.toISOString() ?? null,
+          status: mapRoundStatus(round.status),
+        });
+      }
+    }
+    if (session.status === "LIVE" && session.endsAt < now) {
+      finalizableSessions.push({
+        sessionId: session.id,
+        sessionTitle: session.title,
+        chainSessionNumber:
+          session.chainSessionNumber == null
+            ? null
+            : session.chainSessionNumber.toString(),
+        chainSessionAddress: session.chainSessionAddress,
+        status: mapSessionStatus(session.status),
+        endsAtIso: session.endsAt.toISOString(),
+        joinedWallets: session.joinedWallets,
+        totalEscrowLamports: toNumber(session.totalEscrowLamports),
+        protocolFeeAccruedLamports: toNumber(
+          session.protocolFeeAccruedLamports
+        ),
+      });
+    }
+  }
+
+  const completed = await prisma.session.findMany({
+    where: { status: "COMPLETED" },
+    include: {
+      rounds: {
+        include: { pair: true },
+        orderBy: { roundIndex: "asc" },
+      },
+    },
+    take: 25,
+    orderBy: { completedAt: "desc" },
+  });
+
+  for (const session of completed) {
+    for (const round of session.rounds) {
+      if (
+        round.status === "CLOSED" &&
+        round.sideARewardPerShare === 0n &&
+        round.sideBRewardPerShare === 0n &&
+        (round.sideATotalEntries > 0 || round.sideBTotalEntries > 0)
+      ) {
+        sweepableRounds.push({
+          sessionId: session.id,
+          sessionTitle: session.title,
+          chainSessionNumber:
+            session.chainSessionNumber == null
+              ? null
+              : session.chainSessionNumber.toString(),
+          chainSessionAddress: session.chainSessionAddress,
+          roundId: round.id,
+          roundIndex: round.roundIndex,
+          category: round.pair.category,
+          closesAtIso: round.closesAt?.toISOString() ?? null,
+          status: mapRoundStatus(round.status),
+        });
+      }
+    }
+    if (session.protocolFeeAccruedLamports > 0n) {
+      withdrawableSessions.push({
+        sessionId: session.id,
+        sessionTitle: session.title,
+        chainSessionNumber:
+          session.chainSessionNumber == null
+            ? null
+            : session.chainSessionNumber.toString(),
+        chainSessionAddress: session.chainSessionAddress,
+        status: mapSessionStatus(session.status),
+        endsAtIso: session.endsAt.toISOString(),
+        joinedWallets: session.joinedWallets,
+        totalEscrowLamports: toNumber(session.totalEscrowLamports),
+        protocolFeeAccruedLamports: toNumber(
+          session.protocolFeeAccruedLamports
+        ),
+      });
+    }
+  }
+
+  return {
+    staleRounds,
+    finalizableSessions,
+    sweepableRounds,
+    withdrawableSessions,
+  };
+}
+
+export async function syncAllActiveSessions(input: {
+  adminWalletAddress: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  const sessions = await prisma.session.findMany({
+    where: { status: { in: ["PENDING", "LIVE"] } },
+    select: { id: true },
+  });
+  let synced = 0;
+  for (const session of sessions) {
+    await prisma
+      .$transaction(async (tx) => {
+        await syncSessionState(tx, session.id);
+      })
+      .then(() => {
+        synced += 1;
+      })
+      .catch(() => null);
+  }
+  await prisma.transactionLog.create({
+    data: {
+      walletAddress: input.adminWalletAddress,
+      kind: "admin_sync_sessions",
+      metadataJson: JSON.stringify({
+        sessionCount: sessions.length,
+        syncedCount: synced,
+      }),
+    },
+  });
+  return { sessionCount: sessions.length, syncedCount: synced };
+}
+
+export async function listJoinableSessions(input?: { cursor?: string | null }) {
+  const { skip } = decodeListCursor(input?.cursor ?? null);
+  const pageSize = 20;
+  const rows = await prisma.session.findMany({
+    where: { status: { in: ["PENDING", "LIVE"] } },
+    orderBy: [{ createdAt: "desc" }],
+    take: pageSize + 1,
+    skip,
+  });
+  const hasMore = rows.length > pageSize;
+  const items = (hasMore ? rows.slice(0, pageSize) : rows).map<AdminSessionCard>(
+    (sessionRecord) => ({
+      id: sessionRecord.id,
+      title: sessionRecord.title,
+      status: mapSessionStatus(sessionRecord.status),
+      startsAtIso: sessionRecord.startsAt.toISOString(),
+      endsAtIso: sessionRecord.endsAt.toISOString(),
+      walletsJoined: sessionRecord.joinedWallets,
+      totalEscrowLamports: toNumber(sessionRecord.totalEscrowLamports),
+      chainSessionNumber:
+        sessionRecord.chainSessionNumber == null
+          ? null
+          : sessionRecord.chainSessionNumber.toString(),
+      chainSessionAddress: sessionRecord.chainSessionAddress ?? null,
+      chainDeployTxSignature: sessionRecord.chainDeployTxSignature ?? null,
+      createdAtIso: sessionRecord.createdAt.toISOString(),
+    })
+  );
+  return {
+    items,
+    nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
+  };
 }

@@ -7,7 +7,13 @@
  */
 
 export * from "./config";
+export * from "./depositToVaultVault";
+export * from "./depositToVaultVaultTokens";
 export * from "./playerSession";
 export * from "./position";
 export * from "./protocolTreasury";
+export * from "./protocolTreasuryTokens";
 export * from "./sessionTreasury";
+export * from "./sessionTreasuryTokens";
+export * from "./vault";
+export * from "./vaultTokens";

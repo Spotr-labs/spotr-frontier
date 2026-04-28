@@ -17,10 +17,14 @@ import {
   fixEncoderSize,
   getAddressDecoder,
   getAddressEncoder,
+  getArrayDecoder,
+  getArrayEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getStructDecoder,
   getStructEncoder,
+  getU32Decoder,
+  getU32Encoder,
   getU64Decoder,
   getU64Encoder,
   getU8Decoder,
@@ -31,9 +35,6 @@ import {
   type EncodedAccount,
   type FetchAccountConfig,
   type FetchAccountsConfig,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
   type MaybeAccount,
   type MaybeEncodedAccount,
   type ReadonlyUint8Array,
@@ -53,55 +54,59 @@ export type PlayerSession = {
   discriminator: ReadonlyUint8Array;
   session: Address;
   player: Address;
-  totalEscrowLamports: bigint;
-  remainingEscrowLamports: bigint;
+  totalEscrowUsdcUnits: bigint;
+  remainingEscrowUsdcUnits: bigint;
   enteredRoundMask: bigint;
   bump: number;
+  roundChoices: Array<number>;
 };
 
 export type PlayerSessionArgs = {
   session: Address;
   player: Address;
-  totalEscrowLamports: number | bigint;
-  remainingEscrowLamports: number | bigint;
+  totalEscrowUsdcUnits: number | bigint;
+  remainingEscrowUsdcUnits: number | bigint;
   enteredRoundMask: number | bigint;
   bump: number;
+  roundChoices: Array<number>;
 };
 
 /** Gets the encoder for {@link PlayerSessionArgs} account data. */
-export function getPlayerSessionEncoder(): FixedSizeEncoder<PlayerSessionArgs> {
+export function getPlayerSessionEncoder() {
   return transformEncoder(
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
       ["session", getAddressEncoder()],
       ["player", getAddressEncoder()],
-      ["totalEscrowLamports", getU64Encoder()],
-      ["remainingEscrowLamports", getU64Encoder()],
+      ["totalEscrowUsdcUnits", getU64Encoder()],
+      ["remainingEscrowUsdcUnits", getU64Encoder()],
       ["enteredRoundMask", getU64Encoder()],
       ["bump", getU8Encoder()],
+      ["roundChoices", getArrayEncoder(getU8Encoder(), { size: getU32Encoder() })],
     ]),
-    (value) => ({ ...value, discriminator: PLAYER_SESSION_DISCRIMINATOR }),
+    (value: PlayerSessionArgs) => ({
+      ...value,
+      discriminator: PLAYER_SESSION_DISCRIMINATOR,
+    }),
   );
 }
 
 /** Gets the decoder for {@link PlayerSession} account data. */
-export function getPlayerSessionDecoder(): FixedSizeDecoder<PlayerSession> {
+export function getPlayerSessionDecoder() {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
     ["session", getAddressDecoder()],
     ["player", getAddressDecoder()],
-    ["totalEscrowLamports", getU64Decoder()],
-    ["remainingEscrowLamports", getU64Decoder()],
+    ["totalEscrowUsdcUnits", getU64Decoder()],
+    ["remainingEscrowUsdcUnits", getU64Decoder()],
     ["enteredRoundMask", getU64Decoder()],
     ["bump", getU8Decoder()],
+    ["roundChoices", getArrayDecoder(getU8Decoder(), { size: getU32Decoder() })],
   ]);
 }
 
 /** Gets the codec for {@link PlayerSession} account data. */
-export function getPlayerSessionCodec(): FixedSizeCodec<
-  PlayerSessionArgs,
-  PlayerSession
-> {
+export function getPlayerSessionCodec() {
   return combineCodec(getPlayerSessionEncoder(), getPlayerSessionDecoder());
 }
 
@@ -163,5 +168,5 @@ export async function fetchAllMaybePlayerSession(
 }
 
 export function getPlayerSessionSize(): number {
-  return 97;
+  return 165; // 8 discriminator + 32 session + 32 player + 8 total_escrow + 8 remaining_escrow + 8 entered_round_mask + 1 bump + 4 vec-len + 64 round_choices
 }

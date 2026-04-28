@@ -45,6 +45,14 @@ function bytesEqual(left: Uint8Array, right: Uint8Array) {
   return diff === 0;
 }
 
+// Some wallets (e.g. Phantom) prepend a domain-separator prefix to the raw
+// message bytes before signing. result.signedMessage = prefix + original.
+// The prefix is always at the front, so our content is always a suffix.
+function bytesSuffix(haystack: Uint8Array, suffix: Uint8Array) {
+  if (suffix.length > haystack.length) return false;
+  return bytesEqual(haystack.subarray(haystack.length - suffix.length), suffix);
+}
+
 export function isValidSolanaAddress(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (!SOLANA_ADDRESS_PATTERN.test(value)) return false;
@@ -104,7 +112,7 @@ export async function verifySignedSpotrAction<TPayload>(
     buildSpotrSignedActionMessage(action, envelope.issuedAtIso, envelope.payload)
   );
   const signedMessageBytes = base64ToBytes(envelope.signedMessageBase64);
-  if (!bytesEqual(expectedMessage, signedMessageBytes)) {
+  if (!bytesEqual(expectedMessage, signedMessageBytes) && !bytesSuffix(signedMessageBytes, expectedMessage)) {
     throw new Error("Signed request payload does not match the signed message.");
   }
 

@@ -1,15 +1,19 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program::{transfer, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk");
 
 const CONFIG_SEED: &[u8] = b"config";
 const PROTOCOL_TREASURY_SEED: &[u8] = b"protocol-treasury";
+const PROTOCOL_TREASURY_TOKENS_SEED: &[u8] = b"protocol-treasury-tokens";
 const SESSION_SEED: &[u8] = b"session";
 const SESSION_TREASURY_SEED: &[u8] = b"session-treasury";
+const SESSION_TREASURY_TOKENS_SEED: &[u8] = b"session-treasury-tokens";
 const ROUND_SEED: &[u8] = b"round";
 const PLAYER_SESSION_SEED: &[u8] = b"player-session";
 const POSITION_SEED: &[u8] = b"position";
+const USER_VAULT_SEED: &[u8] = b"user-vault";
+const USER_VAULT_TOKENS_SEED: &[u8] = b"user-vault-tokens";
 
 /// PRD §3.6.6 nominally mandates 200 entries per side. The serialized
 /// `Round` account with 200 entries per side exceeds the 10 240-byte inner
@@ -20,12 +24,12 @@ const POSITION_SEED: &[u8] = b"position";
 /// settlement claim math.
 pub const MAX_SIDE_ENTRIES: u32 = 80;
 
-/// PRD §3.7 — minimum per-position stake is 0.005 SOL.
-pub const MIN_POSITION_LAMPORTS: u64 = 5_000_000;
+/// PRD §3.7 — minimum per-position stake is 1 USDC (1_000_000 micro-USDC).
+pub const MIN_POSITION_USDC_UNITS: u64 = 1_000_000;
 
 /// PRD §3.3 — session ignites when either threshold is met.
 pub const DEFAULT_MIN_WALLETS: u16 = 35;
-pub const DEFAULT_MIN_TOTAL_LAMPORTS: u64 = 3_500_000_000;
+pub const DEFAULT_MIN_TOTAL_USDC_UNITS: u64 = 3_500_000_000;
 
 #[program]
 pub mod spotr_markets {
@@ -39,18 +43,20 @@ pub mod spotr_markets {
 
         let config = &mut ctx.accounts.config;
         config.authority = ctx.accounts.authority.key();
+        config.usdc_mint = ctx.accounts.usdc_mint.key();
         config.protocol_fee_bps = input.protocol_fee_bps;
         config.referral_cut_bps = input.referral_cut_bps;
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
-        config.default_buy_in_lamports = input.buy_in_lamports;
-        config.default_round_stake_lamports = input.round_stake_lamports;
+        config.default_buy_in_usdc_units = input.buy_in_usdc_units;
+        config.default_round_stake_usdc_units = input.round_stake_usdc_units;
         config.bump = ctx.bumps.config;
 
         let treasury = &mut ctx.accounts.protocol_treasury;
         treasury.authority = ctx.accounts.authority.key();
-        treasury.total_collected_lamports = 0;
+        treasury.total_collected_usdc_units = 0;
         treasury.bump = ctx.bumps.protocol_treasury;
+        treasury.token_bump = ctx.bumps.protocol_treasury_tokens;
 
         Ok(())
     }
@@ -63,8 +69,8 @@ pub mod spotr_markets {
         config.referral_cut_bps = input.referral_cut_bps;
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
-        config.default_buy_in_lamports = input.buy_in_lamports;
-        config.default_round_stake_lamports = input.round_stake_lamports;
+        config.default_buy_in_usdc_units = input.buy_in_usdc_units;
+        config.default_round_stake_usdc_units = input.round_stake_usdc_units;
 
         Ok(())
     }
@@ -81,15 +87,15 @@ pub mod spotr_markets {
         session.status = SessionStatus::Pending;
         session.round_count = input.round_count;
         session.round_duration_seconds = input.round_duration_seconds;
-        session.buy_in_lamports = input.buy_in_lamports;
-        session.round_stake_lamports = input.round_stake_lamports;
+        session.buy_in_usdc_units = input.buy_in_usdc_units;
+        session.round_stake_usdc_units = input.round_stake_usdc_units;
         session.protocol_fee_bps = input.protocol_fee_bps;
         session.referral_cut_bps = input.referral_cut_bps;
         session.min_wallets = input.min_wallets;
-        session.min_total_lamports = input.min_total_lamports;
+        session.min_total_usdc_units = input.min_total_usdc_units;
         session.joined_wallets = 0;
-        session.total_escrowed_lamports = 0;
-        session.protocol_fee_accrued_lamports = 0;
+        session.total_escrowed_usdc_units = 0;
+        session.protocol_fee_accrued_usdc_units = 0;
         session.rounds_closed = 0;
         session.start_ts = input.start_ts;
         session.end_ts = input.end_ts;
@@ -98,6 +104,83 @@ pub mod spotr_markets {
         let treasury = &mut ctx.accounts.session_treasury;
         treasury.session = session.key();
         treasury.bump = ctx.bumps.session_treasury;
+        treasury.token_bump = ctx.bumps.session_treasury_tokens;
+
+        Ok(())
+    }
+
+    pub fn init_user_vault(ctx: Context<InitUserVault>) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        vault.owner = ctx.accounts.owner.key();
+        vault.active_sessions = 0;
+        vault.total_deposited = 0;
+        vault.total_withdrawn = 0;
+        vault.bump = ctx.bumps.vault;
+        vault.token_bump = ctx.bumps.vault_tokens;
+        Ok(())
+    }
+
+    pub fn deposit_to_vault(ctx: Context<DepositToVault>, amount: u64) -> Result<()> {
+        require!(amount > 0, SpotrError::NothingToClaim);
+
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.owner_token_account.to_account_info(),
+                    to: ctx.accounts.vault_tokens.to_account_info(),
+                    authority: ctx.accounts.owner.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.total_deposited = vault
+            .total_deposited
+            .checked_add(amount)
+            .ok_or(SpotrError::MathOverflow)?;
+
+        Ok(())
+    }
+
+    pub fn withdraw_from_vault(ctx: Context<WithdrawFromVault>, amount: u64) -> Result<()> {
+        require!(amount > 0, SpotrError::NothingToClaim);
+        require!(
+            ctx.accounts.vault.active_sessions == 0,
+            SpotrError::VaultLocked
+        );
+        require!(
+            ctx.accounts.vault_tokens.amount >= amount,
+            SpotrError::InsufficientVaultBalance
+        );
+
+        let owner_key = ctx.accounts.owner.key();
+        let bump = ctx.accounts.vault.bump;
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            USER_VAULT_SEED,
+            owner_key.as_ref(),
+            std::slice::from_ref(&bump),
+        ]];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_tokens.to_account_info(),
+                    to: ctx.accounts.owner_token_account.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.total_withdrawn = vault
+            .total_withdrawn
+            .checked_add(amount)
+            .ok_or(SpotrError::MathOverflow)?;
 
         Ok(())
     }
@@ -111,39 +194,60 @@ pub mod spotr_markets {
         );
         require!(clock.unix_timestamp <= session.end_ts, SpotrError::SessionClosed);
 
-        transfer(
-            CpiContext::new(
-                ctx.accounts.system_program.to_account_info(),
+        let buy_in = session.buy_in_usdc_units;
+
+        // Move buy-in from the player's vault → session treasury token account.
+        // The vault PDA signs as the authority on `vault_tokens`.
+        let owner_key = ctx.accounts.player.key();
+        let vault_bump = ctx.accounts.vault.bump;
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            USER_VAULT_SEED,
+            owner_key.as_ref(),
+            std::slice::from_ref(&vault_bump),
+        ]];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
                 Transfer {
-                    from: ctx.accounts.player.to_account_info(),
-                    to: ctx.accounts.session_treasury.to_account_info(),
+                    from: ctx.accounts.vault_tokens.to_account_info(),
+                    to: ctx.accounts.session_treasury_tokens.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
                 },
+                signer_seeds,
             ),
-            session.buy_in_lamports,
+            buy_in,
         )?;
 
         let player_session = &mut ctx.accounts.player_session;
         player_session.session = session.key();
         player_session.player = ctx.accounts.player.key();
-        player_session.total_escrow_lamports = session.buy_in_lamports;
-        player_session.remaining_escrow_lamports = session.buy_in_lamports;
+        player_session.total_escrow_usdc_units = buy_in;
+        player_session.remaining_escrow_usdc_units = buy_in;
         player_session.entered_round_mask = 0;
         player_session.bump = ctx.bumps.player_session;
+        player_session.round_choices = vec![u8::MAX; session.round_count as usize];
 
         session.joined_wallets = session
             .joined_wallets
             .checked_add(1)
             .ok_or(SpotrError::MathOverflow)?;
-        session.total_escrowed_lamports = session
-            .total_escrowed_lamports
-            .checked_add(session.buy_in_lamports)
+        session.total_escrowed_usdc_units = session
+            .total_escrowed_usdc_units
+            .checked_add(buy_in)
             .ok_or(SpotrError::MathOverflow)?;
 
         if session.joined_wallets >= session.min_wallets
-            || session.total_escrowed_lamports >= session.min_total_lamports
+            || session.total_escrowed_usdc_units >= session.min_total_usdc_units
         {
             session.status = SessionStatus::Live;
         }
+
+        let vault = &mut ctx.accounts.vault;
+        vault.active_sessions = vault
+            .active_sessions
+            .checked_add(1)
+            .ok_or(SpotrError::MathOverflow)?;
 
         Ok(())
     }
@@ -166,7 +270,7 @@ pub mod spotr_markets {
             .ok_or(SpotrError::MathOverflow)?;
         round.side_a = SideState::default();
         round.side_b = SideState::default();
-        round.total_volume_lamports = 0;
+        round.total_volume_usdc_units = 0;
         round.bump = ctx.bumps.round;
 
         Ok(())
@@ -182,7 +286,7 @@ pub mod spotr_markets {
         require!(round.state == RoundState::Open, SpotrError::RoundClosed);
         require!(clock.unix_timestamp < round.closes_at, SpotrError::RoundClosed);
         require!(
-            session.round_stake_lamports >= MIN_POSITION_LAMPORTS,
+            session.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
             SpotrError::StakeBelowMinimum
         );
 
@@ -192,13 +296,13 @@ pub mod spotr_markets {
             SpotrError::RoundAlreadyEntered
         );
         require!(
-            player_session.remaining_escrow_lamports >= session.round_stake_lamports,
+            player_session.remaining_escrow_usdc_units >= session.round_stake_usdc_units,
             SpotrError::InsufficientEscrow
         );
 
-        let (fee_lamports, net_lamports) =
-            split_fee(session.round_stake_lamports, session.protocol_fee_bps)?;
-        require!(net_lamports > 0, SpotrError::StakeBelowMinimum);
+        let (fee_units, net_units) =
+            split_fee(session.round_stake_usdc_units, session.protocol_fee_bps)?;
+        require!(net_units > 0, SpotrError::StakeBelowMinimum);
 
         let side_state = match side {
             SideSelection::A => &mut round.side_a,
@@ -210,47 +314,54 @@ pub mod spotr_markets {
             SpotrError::SideFull
         );
 
-        let cum_prior_lamports = side_state.total_net_deposits_lamports;
-        let distributed_from_j = if cum_prior_lamports == 0 {
+        let cum_prior_units = side_state.total_net_deposits_usdc_units;
+        let distributed_from_j = if cum_prior_units == 0 {
             0u64
         } else {
-            distribute_incoming(&side_state.entries, net_lamports, cum_prior_lamports)?
+            distribute_incoming(&side_state.entries, net_units, cum_prior_units)?
         };
-        debug_assert!(distributed_from_j <= net_lamports);
+        debug_assert!(distributed_from_j <= net_units);
 
         let entry_index = side_state.entries.len() as u32;
         side_state.entries.push(DepositEntry {
             wallet: ctx.accounts.player.key(),
-            net_amount: net_lamports,
-            cum_prior_lamports,
+            net_amount: net_units,
+            cum_prior_usdc_units: cum_prior_units,
             timestamp: clock.unix_timestamp,
         });
-        side_state.total_net_deposits_lamports = side_state
-            .total_net_deposits_lamports
-            .checked_add(net_lamports)
+        side_state.total_net_deposits_usdc_units = side_state
+            .total_net_deposits_usdc_units
+            .checked_add(net_units)
             .ok_or(SpotrError::MathOverflow)?;
         side_state.total_entries = side_state
             .total_entries
             .checked_add(1)
             .ok_or(SpotrError::MathOverflow)?;
-        side_state.total_entitled_lamports = side_state
-            .total_entitled_lamports
+        side_state.total_entitled_usdc_units = side_state
+            .total_entitled_usdc_units
             .checked_add(distributed_from_j)
             .ok_or(SpotrError::MathOverflow)?;
 
-        player_session.remaining_escrow_lamports = player_session
-            .remaining_escrow_lamports
-            .checked_sub(session.round_stake_lamports)
+        player_session.remaining_escrow_usdc_units = player_session
+            .remaining_escrow_usdc_units
+            .checked_sub(session.round_stake_usdc_units)
             .ok_or(SpotrError::MathOverflow)?;
         player_session.entered_round_mask |= round_bit;
+        let side_byte = match side {
+            SideSelection::A => 0u8,
+            SideSelection::B => 1u8,
+        };
+        if (round.index as usize) < player_session.round_choices.len() {
+            player_session.round_choices[round.index as usize] = side_byte;
+        }
 
-        session.protocol_fee_accrued_lamports = session
-            .protocol_fee_accrued_lamports
-            .checked_add(fee_lamports)
+        session.protocol_fee_accrued_usdc_units = session
+            .protocol_fee_accrued_usdc_units
+            .checked_add(fee_units)
             .ok_or(SpotrError::MathOverflow)?;
-        round.total_volume_lamports = round
-            .total_volume_lamports
-            .checked_add(session.round_stake_lamports)
+        round.total_volume_usdc_units = round
+            .total_volume_usdc_units
+            .checked_add(session.round_stake_usdc_units)
             .ok_or(SpotrError::MathOverflow)?;
 
         let position = &mut ctx.accounts.position;
@@ -258,8 +369,8 @@ pub mod spotr_markets {
         position.player = ctx.accounts.player.key();
         position.side = side;
         position.entry_index = entry_index;
-        position.net_amount_lamports = net_lamports;
-        position.claimed_lamports = 0;
+        position.net_amount_usdc_units = net_units;
+        position.claimed_usdc_units = 0;
         position.claimed = false;
         position.bump = ctx.bumps.position;
 
@@ -314,7 +425,7 @@ pub mod spotr_markets {
             SpotrError::InvalidEntryIndex
         );
         require!(
-            entry.net_amount == position.net_amount_lamports,
+            entry.net_amount == position.net_amount_usdc_units,
             SpotrError::InvalidEntryIndex
         );
 
@@ -324,15 +435,16 @@ pub mod spotr_markets {
         )?;
 
         let position_mut = &mut ctx.accounts.position;
-        position_mut.claimed_lamports = pending_u64;
+        position_mut.claimed_usdc_units = pending_u64;
         position_mut.claimed = true;
 
         if pending_u64 > 0 {
-            transfer_from_session_treasury(
+            transfer_from_session_treasury_tokens(
                 &ctx.accounts.session,
                 &ctx.accounts.session_treasury,
-                &ctx.accounts.player.to_account_info(),
-                &ctx.accounts.system_program,
+                &ctx.accounts.session_treasury_tokens,
+                &ctx.accounts.vault_tokens.to_account_info(),
+                &ctx.accounts.token_program,
                 pending_u64,
             )?;
         }
@@ -371,17 +483,26 @@ pub mod spotr_markets {
         );
 
         let player_session = &mut ctx.accounts.player_session;
-        let refund_amount = player_session.remaining_escrow_lamports;
-        require!(refund_amount > 0, SpotrError::NothingToClaim);
-        player_session.remaining_escrow_lamports = 0;
+        let refund_amount = player_session.remaining_escrow_usdc_units;
+        player_session.remaining_escrow_usdc_units = 0;
 
-        transfer_from_session_treasury(
-            session,
-            &ctx.accounts.session_treasury,
-            &ctx.accounts.player.to_account_info(),
-            &ctx.accounts.system_program,
-            refund_amount,
-        )?;
+        if refund_amount > 0 {
+            transfer_from_session_treasury_tokens(
+                session,
+                &ctx.accounts.session_treasury,
+                &ctx.accounts.session_treasury_tokens,
+                &ctx.accounts.vault_tokens.to_account_info(),
+                &ctx.accounts.token_program,
+                refund_amount,
+            )?;
+        }
+
+        // Canonical lock-release point. The player can now withdraw from the vault.
+        let vault = &mut ctx.accounts.vault;
+        vault.active_sessions = vault
+            .active_sessions
+            .checked_sub(1)
+            .ok_or(SpotrError::MathOverflow)?;
 
         Ok(())
     }
@@ -396,8 +517,8 @@ pub mod spotr_markets {
         if !round.side_a.orphans_swept {
             let orphan = round
                 .side_a
-                .total_net_deposits_lamports
-                .checked_sub(round.side_a.total_entitled_lamports)
+                .total_net_deposits_usdc_units
+                .checked_sub(round.side_a.total_entitled_usdc_units)
                 .ok_or(SpotrError::MathOverflow)?;
             round.side_a.orphans_swept = true;
             total_orphan = total_orphan
@@ -407,8 +528,8 @@ pub mod spotr_markets {
         if !round.side_b.orphans_swept {
             let orphan = round
                 .side_b
-                .total_net_deposits_lamports
-                .checked_sub(round.side_b.total_entitled_lamports)
+                .total_net_deposits_usdc_units
+                .checked_sub(round.side_b.total_entitled_usdc_units)
                 .ok_or(SpotrError::MathOverflow)?;
             round.side_b.orphans_swept = true;
             total_orphan = total_orphan
@@ -420,18 +541,19 @@ pub mod spotr_markets {
             return Ok(());
         }
 
-        transfer_from_session_treasury(
+        transfer_from_session_treasury_tokens(
             &ctx.accounts.session,
             &ctx.accounts.session_treasury,
-            &ctx.accounts.protocol_treasury.to_account_info(),
-            &ctx.accounts.system_program,
+            &ctx.accounts.session_treasury_tokens,
+            &ctx.accounts.protocol_treasury_tokens.to_account_info(),
+            &ctx.accounts.token_program,
             total_orphan,
         )?;
 
-        ctx.accounts.protocol_treasury.total_collected_lamports = ctx
+        ctx.accounts.protocol_treasury.total_collected_usdc_units = ctx
             .accounts
             .protocol_treasury
-            .total_collected_lamports
+            .total_collected_usdc_units
             .checked_add(total_orphan)
             .ok_or(SpotrError::MathOverflow)?;
 
@@ -439,22 +561,23 @@ pub mod spotr_markets {
     }
 
     pub fn withdraw_protocol_fees(ctx: Context<WithdrawProtocolFees>) -> Result<()> {
-        let amount = ctx.accounts.session.protocol_fee_accrued_lamports;
+        let amount = ctx.accounts.session.protocol_fee_accrued_usdc_units;
         require!(amount > 0, SpotrError::NothingToClaim);
 
-        transfer_from_session_treasury(
+        transfer_from_session_treasury_tokens(
             &ctx.accounts.session,
             &ctx.accounts.session_treasury,
-            &ctx.accounts.protocol_treasury.to_account_info(),
-            &ctx.accounts.system_program,
+            &ctx.accounts.session_treasury_tokens,
+            &ctx.accounts.protocol_treasury_tokens.to_account_info(),
+            &ctx.accounts.token_program,
             amount,
         )?;
 
-        ctx.accounts.session.protocol_fee_accrued_lamports = 0;
-        ctx.accounts.protocol_treasury.total_collected_lamports = ctx
+        ctx.accounts.session.protocol_fee_accrued_usdc_units = 0;
+        ctx.accounts.protocol_treasury.total_collected_usdc_units = ctx
             .accounts
             .protocol_treasury
-            .total_collected_lamports
+            .total_collected_usdc_units
             .checked_add(amount)
             .ok_or(SpotrError::MathOverflow)?;
 
@@ -468,8 +591,8 @@ pub struct ConfigInput {
     pub referral_cut_bps: u16,
     pub round_count: u8,
     pub round_duration_seconds: i64,
-    pub buy_in_lamports: u64,
-    pub round_stake_lamports: u64,
+    pub buy_in_usdc_units: u64,
+    pub round_stake_usdc_units: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
@@ -477,12 +600,12 @@ pub struct SessionInput {
     pub session_number: u64,
     pub round_count: u8,
     pub round_duration_seconds: i64,
-    pub buy_in_lamports: u64,
-    pub round_stake_lamports: u64,
+    pub buy_in_usdc_units: u64,
+    pub round_stake_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub min_wallets: u16,
-    pub min_total_lamports: u64,
+    pub min_total_usdc_units: u64,
     pub start_ts: i64,
     pub end_ts: i64,
 }
@@ -517,14 +640,14 @@ pub enum SideSelection {
 pub struct DepositEntry {
     pub wallet: Pubkey,
     pub net_amount: u64,
-    pub cum_prior_lamports: u64,
+    pub cum_prior_usdc_units: u64,
     pub timestamp: i64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, InitSpace)]
 pub struct SideState {
-    pub total_net_deposits_lamports: u64,
-    pub total_entitled_lamports: u64,
+    pub total_net_deposits_usdc_units: u64,
+    pub total_entitled_usdc_units: u64,
     pub total_entries: u32,
     pub orphans_swept: bool,
     #[max_len(80)]
@@ -535,12 +658,13 @@ pub struct SideState {
 #[derive(InitSpace)]
 pub struct SpotrConfig {
     pub authority: Pubkey,
+    pub usdc_mint: Pubkey,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub default_round_count: u8,
     pub default_round_duration_seconds: i64,
-    pub default_buy_in_lamports: u64,
-    pub default_round_stake_lamports: u64,
+    pub default_buy_in_usdc_units: u64,
+    pub default_round_stake_usdc_units: u64,
     pub bump: u8,
 }
 
@@ -548,8 +672,9 @@ pub struct SpotrConfig {
 #[derive(InitSpace)]
 pub struct ProtocolTreasury {
     pub authority: Pubkey,
-    pub total_collected_lamports: u64,
+    pub total_collected_usdc_units: u64,
     pub bump: u8,
+    pub token_bump: u8,
 }
 
 #[account]
@@ -560,15 +685,15 @@ pub struct Session {
     pub status: SessionStatus,
     pub round_count: u8,
     pub round_duration_seconds: i64,
-    pub buy_in_lamports: u64,
-    pub round_stake_lamports: u64,
+    pub buy_in_usdc_units: u64,
+    pub round_stake_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub min_wallets: u16,
-    pub min_total_lamports: u64,
+    pub min_total_usdc_units: u64,
     pub joined_wallets: u16,
-    pub total_escrowed_lamports: u64,
-    pub protocol_fee_accrued_lamports: u64,
+    pub total_escrowed_usdc_units: u64,
+    pub protocol_fee_accrued_usdc_units: u64,
     pub rounds_closed: u8,
     pub start_ts: i64,
     pub end_ts: i64,
@@ -580,6 +705,7 @@ pub struct Session {
 pub struct SessionTreasury {
     pub session: Pubkey,
     pub bump: u8,
+    pub token_bump: u8,
 }
 
 #[account]
@@ -593,7 +719,7 @@ pub struct Round {
     pub closes_at: i64,
     pub side_a: SideState,
     pub side_b: SideState,
-    pub total_volume_lamports: u64,
+    pub total_volume_usdc_units: u64,
     pub bump: u8,
 }
 
@@ -602,10 +728,12 @@ pub struct Round {
 pub struct PlayerSession {
     pub session: Pubkey,
     pub player: Pubkey,
-    pub total_escrow_lamports: u64,
-    pub remaining_escrow_lamports: u64,
+    pub total_escrow_usdc_units: u64,
+    pub remaining_escrow_usdc_units: u64,
     pub entered_round_mask: u64,
     pub bump: u8,
+    #[max_len(64)]
+    pub round_choices: Vec<u8>,
 }
 
 #[account]
@@ -615,10 +743,21 @@ pub struct PlayerRoundPosition {
     pub player: Pubkey,
     pub side: SideSelection,
     pub entry_index: u32,
-    pub net_amount_lamports: u64,
-    pub claimed_lamports: u64,
+    pub net_amount_usdc_units: u64,
+    pub claimed_usdc_units: u64,
     pub claimed: bool,
     pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct UserVault {
+    pub owner: Pubkey,
+    pub active_sessions: u32,
+    pub total_deposited: u64,
+    pub total_withdrawn: u64,
+    pub bump: u8,
+    pub token_bump: u8,
 }
 
 #[derive(Accounts)]
@@ -641,7 +780,19 @@ pub struct InitializeConfig<'info> {
         bump
     )]
     pub protocol_treasury: Account<'info, ProtocolTreasury>,
+    #[account(
+        init,
+        payer = authority,
+        seeds = [PROTOCOL_TREASURY_TOKENS_SEED],
+        bump,
+        token::mint = usdc_mint,
+        token::authority = protocol_treasury,
+    )]
+    pub protocol_treasury_tokens: Account<'info, TokenAccount>,
+    pub usdc_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -684,7 +835,115 @@ pub struct CreateSession<'info> {
         bump
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
+    #[account(
+        init,
+        payer = authority,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump,
+        token::mint = usdc_mint,
+        token::authority = session_treasury,
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(address = config.usdc_mint @ SpotrError::InvalidMint)]
+    pub usdc_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct InitUserVault<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump
+    )]
+    pub config: Account<'info, SpotrConfig>,
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + UserVault::INIT_SPACE,
+        seeds = [USER_VAULT_SEED, owner.key().as_ref()],
+        bump
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        init,
+        payer = owner,
+        seeds = [USER_VAULT_TOKENS_SEED, owner.key().as_ref()],
+        bump,
+        token::mint = usdc_mint,
+        token::authority = vault,
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    #[account(address = config.usdc_mint @ SpotrError::InvalidMint)]
+    pub usdc_mint: Account<'info, Mint>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct DepositToVault<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump
+    )]
+    pub config: Account<'info, SpotrConfig>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_SEED, owner.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, owner.key().as_ref()],
+        bump = vault.token_bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = owner_token_account.mint == config.usdc_mint @ SpotrError::InvalidMint,
+        constraint = owner_token_account.owner == owner.key() @ SpotrError::InvalidMint,
+    )]
+    pub owner_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawFromVault<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump
+    )]
+    pub config: Account<'info, SpotrConfig>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_SEED, owner.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, owner.key().as_ref()],
+        bump = vault.token_bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = owner_token_account.mint == config.usdc_mint @ SpotrError::InvalidMint,
+        constraint = owner_token_account.owner == owner.key() @ SpotrError::InvalidMint,
+    )]
+    pub owner_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -700,6 +959,25 @@ pub struct JoinSession<'info> {
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
     #[account(
+        mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_SEED, player.key().as_ref()],
+        bump = vault.bump,
+        constraint = vault.owner == player.key() @ SpotrError::InvalidMint,
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, player.key().as_ref()],
+        bump = vault.token_bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    #[account(
         init,
         payer = player,
         space = 8 + PlayerSession::INIT_SPACE,
@@ -708,6 +986,7 @@ pub struct JoinSession<'info> {
     )]
     pub player_session: Account<'info, PlayerSession>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -790,12 +1069,23 @@ pub struct ClaimRound<'info> {
     )]
     pub position: Account<'info, PlayerRoundPosition>,
     #[account(
-        mut,
         seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
         bump = session_treasury.bump
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
-    pub system_program: Program<'info, System>,
+    #[account(
+        mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, player.key().as_ref()],
+        bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -818,12 +1108,30 @@ pub struct ClaimSessionBalance<'info> {
     )]
     pub player_session: Account<'info, PlayerSession>,
     #[account(
-        mut,
         seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
         bump = session_treasury.bump
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
-    pub system_program: Program<'info, System>,
+    #[account(
+        mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_SEED, player.key().as_ref()],
+        bump = vault.bump,
+        constraint = vault.owner == player.key() @ SpotrError::InvalidMint,
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, player.key().as_ref()],
+        bump = vault.token_bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -837,18 +1145,29 @@ pub struct SweepOrphans<'info> {
     )]
     pub round: Account<'info, Round>,
     #[account(
-        mut,
         seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
         bump = session_treasury.bump
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
     #[account(
         mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
         seeds = [PROTOCOL_TREASURY_SEED],
         bump = protocol_treasury.bump
     )]
     pub protocol_treasury: Account<'info, ProtocolTreasury>,
-    pub system_program: Program<'info, System>,
+    #[account(
+        mut,
+        seeds = [PROTOCOL_TREASURY_TOKENS_SEED],
+        bump = protocol_treasury.token_bump
+    )]
+    pub protocol_treasury_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -864,18 +1183,29 @@ pub struct WithdrawProtocolFees<'info> {
     #[account(mut, has_one = authority)]
     pub session: Account<'info, Session>,
     #[account(
-        mut,
         seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
         bump = session_treasury.bump
     )]
     pub session_treasury: Account<'info, SessionTreasury>,
     #[account(
         mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
         seeds = [PROTOCOL_TREASURY_SEED],
         bump = protocol_treasury.bump
     )]
     pub protocol_treasury: Account<'info, ProtocolTreasury>,
-    pub system_program: Program<'info, System>,
+    #[account(
+        mut,
+        seeds = [PROTOCOL_TREASURY_TOKENS_SEED],
+        bump = protocol_treasury.token_bump
+    )]
+    pub protocol_treasury_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 fn validate_config(input: ConfigInput) -> Result<()> {
@@ -883,14 +1213,14 @@ fn validate_config(input: ConfigInput) -> Result<()> {
     require!(input.referral_cut_bps <= 10_000, SpotrError::InvalidConfig);
     require!(input.round_count > 0, SpotrError::InvalidConfig);
     require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
-    require!(input.buy_in_lamports > 0, SpotrError::InvalidConfig);
-    require!(input.round_stake_lamports > 0, SpotrError::InvalidConfig);
+    require!(input.buy_in_usdc_units > 0, SpotrError::InvalidConfig);
+    require!(input.round_stake_usdc_units > 0, SpotrError::InvalidConfig);
     require!(
-        input.round_stake_lamports >= MIN_POSITION_LAMPORTS,
+        input.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
         SpotrError::StakeBelowMinimum
     );
     require!(
-        input.round_stake_lamports <= input.buy_in_lamports,
+        input.round_stake_usdc_units <= input.buy_in_usdc_units,
         SpotrError::InvalidConfig
     );
     Ok(())
@@ -902,8 +1232,8 @@ fn validate_session_input(input: SessionInput) -> Result<()> {
         referral_cut_bps: input.referral_cut_bps,
         round_count: input.round_count,
         round_duration_seconds: input.round_duration_seconds,
-        buy_in_lamports: input.buy_in_lamports,
-        round_stake_lamports: input.round_stake_lamports,
+        buy_in_usdc_units: input.buy_in_usdc_units,
+        round_stake_usdc_units: input.round_stake_usdc_units,
     })?;
     require!(input.min_wallets > 0, SpotrError::InvalidConfig);
     require!(input.end_ts > input.start_ts, SpotrError::InvalidConfig);
@@ -915,29 +1245,29 @@ fn bit_for_round(index: u8) -> Result<u64> {
     Ok(1u64 << index)
 }
 
-fn split_fee(stake_lamports: u64, protocol_fee_bps: u16) -> Result<(u64, u64)> {
-    let fee = u128::from(stake_lamports)
+fn split_fee(stake_units: u64, protocol_fee_bps: u16) -> Result<(u64, u64)> {
+    let fee = u128::from(stake_units)
         .checked_mul(u128::from(protocol_fee_bps))
         .ok_or(SpotrError::MathOverflow)?
         .checked_div(10_000)
         .ok_or(SpotrError::MathOverflow)?;
     let fee_u64 = u64::try_from(fee).map_err(|_| SpotrError::MathOverflow)?;
-    let net = stake_lamports
+    let net = stake_units
         .checked_sub(fee_u64)
         .ok_or(SpotrError::MathOverflow)?;
     Ok((fee_u64, net))
 }
 
 /// Sum over i<j of floor(d_i * d_j / cum_prior_j). Runs at enter-time to
-/// incrementally maintain `side.total_entitled_lamports` so `sweep_orphans`
+/// incrementally maintain `side.total_entitled_usdc_units` so `sweep_orphans`
 /// can compute residuals in O(1).
 fn distribute_incoming(
     existing: &[DepositEntry],
     incoming_net: u64,
-    cum_prior_lamports: u64,
+    cum_prior_units: u64,
 ) -> Result<u64> {
-    require!(cum_prior_lamports > 0, SpotrError::MathOverflow);
-    let cum = u128::from(cum_prior_lamports);
+    require!(cum_prior_units > 0, SpotrError::MathOverflow);
+    let cum = u128::from(cum_prior_units);
     let d_j = u128::from(incoming_net);
     let mut total: u128 = 0;
     for entry in existing {
@@ -957,7 +1287,7 @@ fn compute_lazy_entitlement(entries: &[DepositEntry], index: usize) -> Result<u6
     let d_i = u128::from(entries[index].net_amount);
     let mut total: u128 = 0;
     for j in (index + 1)..entries.len() {
-        let cum_prior = u128::from(entries[j].cum_prior_lamports);
+        let cum_prior = u128::from(entries[j].cum_prior_usdc_units);
         require!(cum_prior > 0, SpotrError::MathOverflow);
         let d_j = u128::from(entries[j].net_amount);
         let share = d_i
@@ -970,46 +1300,46 @@ fn compute_lazy_entitlement(entries: &[DepositEntry], index: usize) -> Result<u6
     u64::try_from(total).map_err(|_| SpotrError::MathOverflow.into())
 }
 
-/// Moves lamports out of the `SessionTreasury` PDA. Because the PDA is owned
-/// by this program and carries data, we cannot use `system_program::Transfer`
-/// (it rejects `from` accounts that are not system-owned zero-data). Instead
-/// mutate lamports directly — safe because the PDA is program-owned and the
-/// caller has already validated `amount <= balance - rent_exempt_minimum`.
-fn transfer_from_session_treasury<'info>(
-    _session: &Account<'info, Session>,
+/// Moves USDC tokens out of the SessionTreasuryTokens token account, signed
+/// by the SessionTreasury PDA whose seeds we re-derive on the fly.
+fn transfer_from_session_treasury_tokens<'info>(
+    session: &Account<'info, Session>,
     session_treasury: &Account<'info, SessionTreasury>,
-    recipient: &AccountInfo<'info>,
-    _system_program: &Program<'info, System>,
+    session_treasury_tokens: &Account<'info, TokenAccount>,
+    recipient_tokens: &AccountInfo<'info>,
+    token_program: &Program<'info, Token>,
     amount: u64,
 ) -> Result<()> {
     if amount == 0 {
         return Ok(());
     }
-    let treasury_info = session_treasury.to_account_info();
-    let rent_exempt = Rent::get()?.minimum_balance(treasury_info.data_len());
-    let current = treasury_info.lamports();
-    let remaining = current
-        .checked_sub(amount)
-        .ok_or(SpotrError::MathOverflow)?;
-    require!(
-        remaining >= rent_exempt,
-        SpotrError::InsufficientTreasuryBalance
-    );
+    let session_key = session.key();
+    let bump = session_treasury.bump;
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        SESSION_TREASURY_SEED,
+        session_key.as_ref(),
+        std::slice::from_ref(&bump),
+    ]];
 
-    **treasury_info.try_borrow_mut_lamports()? = remaining;
-    **recipient.try_borrow_mut_lamports()? = recipient
-        .lamports()
-        .checked_add(amount)
-        .ok_or(SpotrError::MathOverflow)?;
-
-    Ok(())
+    token::transfer(
+        CpiContext::new_with_signer(
+            token_program.to_account_info(),
+            Transfer {
+                from: session_treasury_tokens.to_account_info(),
+                to: recipient_tokens.clone(),
+                authority: session_treasury.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        amount,
+    )
 }
 
 #[error_code]
 pub enum SpotrError {
     #[msg("The provided configuration is invalid")]
     InvalidConfig,
-    #[msg("Per-position stake is below the 0.005 SOL minimum")]
+    #[msg("Per-position stake is below the minimum")]
     StakeBelowMinimum,
     #[msg("The session can no longer be joined")]
     SessionNotJoinable,
@@ -1041,6 +1371,12 @@ pub enum SpotrError {
     MathOverflow,
     #[msg("Session treasury would drop below rent-exempt minimum")]
     InsufficientTreasuryBalance,
+    #[msg("Vault is locked while at least one session is active")]
+    VaultLocked,
+    #[msg("Vault has insufficient USDC balance for this withdrawal")]
+    InsufficientVaultBalance,
+    #[msg("Token mint or owner does not match expected USDC mint")]
+    InvalidMint,
 }
 
 #[cfg(test)]
@@ -1051,7 +1387,7 @@ mod tests {
         DepositEntry {
             wallet: Pubkey::new_from_array([wallet_byte; 32]),
             net_amount: net,
-            cum_prior_lamports: cum_prior,
+            cum_prior_usdc_units: cum_prior,
             timestamp: 0,
         }
     }
@@ -1063,15 +1399,16 @@ mod tests {
         assert_eq!(net, 4_825_000);
     }
 
-    /// PRD §3.6 worked example: three depositors of 1 SOL each, no fee.
-    /// Expected payouts: 1.5 / 0.5 / 0 SOL, orphan 1 SOL.
+    /// PRD §3.6 worked example: three depositors of 1 unit each, no fee.
+    /// Expected payouts: 1.5 / 0.5 / 0 units, orphan 1 unit.
+    /// (Math is unitless — same shape works for SOL or USDC.)
     #[test]
     fn prd_worked_example_three_equal_deposits() {
-        const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+        const ONE_UNIT: u64 = 1_000_000_000;
         let entries = vec![
-            entry(1, LAMPORTS_PER_SOL, 0),
-            entry(2, LAMPORTS_PER_SOL, LAMPORTS_PER_SOL),
-            entry(3, LAMPORTS_PER_SOL, 2 * LAMPORTS_PER_SOL),
+            entry(1, ONE_UNIT, 0),
+            entry(2, ONE_UNIT, ONE_UNIT),
+            entry(3, ONE_UNIT, 2 * ONE_UNIT),
         ];
 
         let d0 = compute_lazy_entitlement(&entries, 0).unwrap();
@@ -1083,24 +1420,24 @@ mod tests {
         assert_eq!(d2, 0);
 
         let mut total_entitled: u64 = 0;
-        total_entitled += distribute_incoming(&[], LAMPORTS_PER_SOL, 0).unwrap_or(0);
+        total_entitled += distribute_incoming(&[], ONE_UNIT, 0).unwrap_or(0);
         total_entitled += distribute_incoming(
             &entries[..1],
-            LAMPORTS_PER_SOL,
-            LAMPORTS_PER_SOL,
+            ONE_UNIT,
+            ONE_UNIT,
         )
         .unwrap();
         total_entitled += distribute_incoming(
             &entries[..2],
-            LAMPORTS_PER_SOL,
-            2 * LAMPORTS_PER_SOL,
+            ONE_UNIT,
+            2 * ONE_UNIT,
         )
         .unwrap();
 
-        let total_net = 3 * LAMPORTS_PER_SOL;
+        let total_net = 3 * ONE_UNIT;
         let orphan = total_net - total_entitled;
         assert_eq!(total_entitled, d0 + d1 + d2);
-        assert_eq!(orphan, LAMPORTS_PER_SOL, "first depositor's stake is orphaned");
+        assert_eq!(orphan, ONE_UNIT, "first depositor's stake is orphaned");
     }
 
     /// Asymmetric deposits: later whale pays earlier small fish proportionally.
@@ -1125,7 +1462,6 @@ mod tests {
         let total_net: u64 = 1_000_000 + 3_000_000 + 4_000_000;
         let total_claimed = d0 + d1 + d2;
         assert!(total_claimed <= total_net);
-        // Orphan = first deposit only (no rounding dust in this case).
         assert_eq!(total_net - total_claimed, 1_000_000);
     }
 
@@ -1140,27 +1476,17 @@ mod tests {
         let d0 = compute_lazy_entitlement(&entries, 0).unwrap();
         let d1 = compute_lazy_entitlement(&entries, 1).unwrap();
 
-        // From d2=1: share to each prior holder = 1*1/2e6 = 0 (floor)
-        // So d0 and d1 only get their d1 contribution.
         assert_eq!(d0, 1_000_000);
         assert_eq!(d1, 0);
 
         let total_net: u64 = 2_000_001;
         let total_claimed = d0 + d1;
-        // Orphan = 1_000_000 (d_0 stake) + 1 (dust from d_2) + 1_000_000 (unrecovered d1 share) ...
-        // Actually d1 gets 0 because only d_2=1 is later, which floors to 0 both shares.
-        // So total_entitled here computed incrementally:
-        // j=1: distribute_incoming(prior=[d0], incoming=1e6, cum=1e6) = 1e6
-        // j=2: distribute_incoming(prior=[d0,d1], incoming=1, cum=2e6) = 0 + 0 = 0
-        // total_entitled = 1e6. orphan = 2_000_001 - 1e6 = 1_000_001.
         let expected_orphan = total_net - total_claimed;
         assert_eq!(expected_orphan, 1_000_001);
     }
 
     #[test]
     fn first_depositor_entitlement_uses_zero_cum_prior_safely() {
-        // cum_prior == 0 on the first entry MUST NOT be reached by compute_lazy_entitlement —
-        // the first entry never appears on the RHS of the loop since j > index.
         let entries = vec![entry(1, 123_456, 0)];
         assert_eq!(compute_lazy_entitlement(&entries, 0).unwrap(), 0);
     }

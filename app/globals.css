@@ -196,6 +196,31 @@
   .thin-scrollbar::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  .card-flip-scene {
+    perspective: 1400px;
+  }
+
+  .card-flip-inner {
+    position: relative;
+    width: 100%;
+    transform-style: preserve-3d;
+  }
+
+  .card-flip-inner.is-flipped {
+    transform: rotateY(180deg);
+  }
+
+  .card-flip-face {
+    position: absolute;
+    inset: 0;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+  }
+
+  .card-flip-face--back {
+    transform: rotateY(180deg);
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -269,5 +294,9 @@
     );
     animation: shimmer 2.8s ease-in-out infinite;
     pointer-events: none;
+  }
+
+  .card-flip-inner {
+    transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   }
 }

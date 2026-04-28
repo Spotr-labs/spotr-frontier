@@ -28,8 +28,8 @@ export type ConfigInput = {
   referralCutBps: number;
   roundCount: number;
   roundDurationSeconds: bigint;
-  buyInLamports: bigint;
-  roundStakeLamports: bigint;
+  buyInUsdcUnits: bigint;
+  roundStakeUsdcUnits: bigint;
 };
 
 export type ConfigInputArgs = {
@@ -37,8 +37,8 @@ export type ConfigInputArgs = {
   referralCutBps: number;
   roundCount: number;
   roundDurationSeconds: number | bigint;
-  buyInLamports: number | bigint;
-  roundStakeLamports: number | bigint;
+  buyInUsdcUnits: number | bigint;
+  roundStakeUsdcUnits: number | bigint;
 };
 
 export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
@@ -47,8 +47,8 @@ export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
     ["referralCutBps", getU16Encoder()],
     ["roundCount", getU8Encoder()],
     ["roundDurationSeconds", getI64Encoder()],
-    ["buyInLamports", getU64Encoder()],
-    ["roundStakeLamports", getU64Encoder()],
+    ["buyInUsdcUnits", getU64Encoder()],
+    ["roundStakeUsdcUnits", getU64Encoder()],
   ]);
 }
 
@@ -58,8 +58,8 @@ export function getConfigInputDecoder(): FixedSizeDecoder<ConfigInput> {
     ["referralCutBps", getU16Decoder()],
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
-    ["buyInLamports", getU64Decoder()],
-    ["roundStakeLamports", getU64Decoder()],
+    ["buyInUsdcUnits", getU64Decoder()],
+    ["roundStakeUsdcUnits", getU64Decoder()],
   ]);
 }
 

@@ -30,7 +30,12 @@ import {
   type WritableAccount,
   type WritableSignerAccount,
 } from "@solana/kit";
-import { findPositionPda, findSessionTreasuryPda } from "../pdas";
+import {
+  findPositionPda,
+  findSessionTreasuryPda,
+  findSessionTreasuryTokensPda,
+  findVaultTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
   expectAddress,
@@ -53,8 +58,10 @@ export type ClaimRoundInstruction<
   TAccountRound extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
-  TAccountSystemProgram extends string | AccountMeta<string> =
-    "11111111111111111111111111111111",
+  TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountVaultTokens extends string | AccountMeta<string> = string,
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -74,11 +81,17 @@ export type ClaimRoundInstruction<
         ? WritableAccount<TAccountPosition>
         : TAccountPosition,
       TAccountSessionTreasury extends string
-        ? WritableAccount<TAccountSessionTreasury>
+        ? ReadonlyAccount<TAccountSessionTreasury>
         : TAccountSessionTreasury,
-      TAccountSystemProgram extends string
-        ? ReadonlyAccount<TAccountSystemProgram>
-        : TAccountSystemProgram,
+      TAccountSessionTreasuryTokens extends string
+        ? WritableAccount<TAccountSessionTreasuryTokens>
+        : TAccountSessionTreasuryTokens,
+      TAccountVaultTokens extends string
+        ? WritableAccount<TAccountVaultTokens>
+        : TAccountVaultTokens,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
       ...TRemainingAccounts,
     ]
   >;
@@ -116,14 +129,18 @@ export type ClaimRoundAsyncInput<
   TAccountRound extends string = string,
   TAccountPosition extends string = string,
   TAccountSessionTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
   position?: Address<TAccountPosition>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
+  vaultTokens?: Address<TAccountVaultTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export async function getClaimRoundInstructionAsync<
@@ -132,7 +149,9 @@ export async function getClaimRoundInstructionAsync<
   TAccountRound extends string,
   TAccountPosition extends string,
   TAccountSessionTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountVaultTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimRoundAsyncInput<
@@ -141,7 +160,9 @@ export async function getClaimRoundInstructionAsync<
     TAccountRound,
     TAccountPosition,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
@@ -152,7 +173,9 @@ export async function getClaimRoundInstructionAsync<
     TAccountRound,
     TAccountPosition,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >
 > {
   // Program address.
@@ -165,8 +188,16 @@ export async function getClaimRoundInstructionAsync<
     session: { value: input.session ?? null, isWritable: false },
     round: { value: input.round ?? null, isWritable: false },
     position: { value: input.position ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -185,9 +216,19 @@ export async function getClaimRoundInstructionAsync<
       session: expectAddress(accounts.session.value),
     });
   }
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.sessionTreasuryTokens.value) {
+    accounts.sessionTreasuryTokens.value = await findSessionTreasuryTokensPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
+  if (!accounts.vaultTokens.value) {
+    accounts.vaultTokens.value = await findVaultTokensPda({
+      player: expectAddress(accounts.player.value),
+    });
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -198,7 +239,9 @@ export async function getClaimRoundInstructionAsync<
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.sessionTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getClaimRoundInstructionDataEncoder().encode({}),
     programAddress,
@@ -209,7 +252,9 @@ export async function getClaimRoundInstructionAsync<
     TAccountRound,
     TAccountPosition,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -219,14 +264,18 @@ export type ClaimRoundInput<
   TAccountRound extends string = string,
   TAccountPosition extends string = string,
   TAccountSessionTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
   position: Address<TAccountPosition>;
   sessionTreasury: Address<TAccountSessionTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
+  vaultTokens: Address<TAccountVaultTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export function getClaimRoundInstruction<
@@ -235,7 +284,9 @@ export function getClaimRoundInstruction<
   TAccountRound extends string,
   TAccountPosition extends string,
   TAccountSessionTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountVaultTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimRoundInput<
@@ -244,7 +295,9 @@ export function getClaimRoundInstruction<
     TAccountRound,
     TAccountPosition,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): ClaimRoundInstruction<
@@ -254,7 +307,9 @@ export function getClaimRoundInstruction<
   TAccountRound,
   TAccountPosition,
   TAccountSessionTreasury,
-  TAccountSystemProgram
+  TAccountSessionTreasuryTokens,
+  TAccountVaultTokens,
+  TAccountTokenProgram
 > {
   // Program address.
   const programAddress =
@@ -266,8 +321,16 @@ export function getClaimRoundInstruction<
     session: { value: input.session ?? null, isWritable: false },
     round: { value: input.round ?? null, isWritable: false },
     position: { value: input.position ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -275,9 +338,9 @@ export function getClaimRoundInstruction<
   >;
 
   // Resolve default values.
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -288,7 +351,9 @@ export function getClaimRoundInstruction<
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.sessionTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getClaimRoundInstructionDataEncoder().encode({}),
     programAddress,
@@ -299,7 +364,9 @@ export function getClaimRoundInstruction<
     TAccountRound,
     TAccountPosition,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -314,7 +381,9 @@ export type ParsedClaimRoundInstruction<
     round: TAccountMetas[2];
     position: TAccountMetas[3];
     sessionTreasury: TAccountMetas[4];
-    systemProgram: TAccountMetas[5];
+    sessionTreasuryTokens: TAccountMetas[5];
+    vaultTokens: TAccountMetas[6];
+    tokenProgram: TAccountMetas[7];
   };
   data: ClaimRoundInstructionData;
 };
@@ -327,7 +396,7 @@ export function parseClaimRoundInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedClaimRoundInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 6) {
+  if (instruction.accounts.length < 8) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -345,7 +414,9 @@ export function parseClaimRoundInstruction<
       round: getNextAccount(),
       position: getNextAccount(),
       sessionTreasury: getNextAccount(),
-      systemProgram: getNextAccount(),
+      sessionTreasuryTokens: getNextAccount(),
+      vaultTokens: getNextAccount(),
+      tokenProgram: getNextAccount(),
     },
     data: getClaimRoundInstructionDataDecoder().decode(instruction.data),
   };

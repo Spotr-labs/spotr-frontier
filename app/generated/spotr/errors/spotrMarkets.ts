@@ -16,7 +16,7 @@ import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 
 /** InvalidConfig: The provided configuration is invalid */
 export const SPOTR_MARKETS_ERROR__INVALID_CONFIG = 0x1770; // 6000
-/** StakeBelowMinimum: Per-position stake is below the 0.005 SOL minimum */
+/** StakeBelowMinimum: Per-position stake is below the minimum */
 export const SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM = 0x1771; // 6001
 /** SessionNotJoinable: The session can no longer be joined */
 export const SPOTR_MARKETS_ERROR__SESSION_NOT_JOINABLE = 0x1772; // 6002
@@ -48,13 +48,21 @@ export const SPOTR_MARKETS_ERROR__SESSION_STILL_IN_PROGRESS = 0x177e; // 6014
 export const SPOTR_MARKETS_ERROR__MATH_OVERFLOW = 0x177f; // 6015
 /** InsufficientTreasuryBalance: Session treasury would drop below rent-exempt minimum */
 export const SPOTR_MARKETS_ERROR__INSUFFICIENT_TREASURY_BALANCE = 0x1780; // 6016
+/** VaultLocked: Vault is locked while at least one session is active */
+export const SPOTR_MARKETS_ERROR__VAULT_LOCKED = 0x1781; // 6017
+/** InsufficientVaultBalance: Vault has insufficient USDC balance for this withdrawal */
+export const SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE = 0x1782; // 6018
+/** InvalidMint: Token mint or owner does not match expected USDC mint */
+export const SPOTR_MARKETS_ERROR__INVALID_MINT = 0x1783; // 6019
 
 export type SpotrMarketsError =
   | typeof SPOTR_MARKETS_ERROR__ALREADY_CLAIMED
   | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_ESCROW
   | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_TREASURY_BALANCE
+  | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE
   | typeof SPOTR_MARKETS_ERROR__INVALID_CONFIG
   | typeof SPOTR_MARKETS_ERROR__INVALID_ENTRY_INDEX
+  | typeof SPOTR_MARKETS_ERROR__INVALID_MINT
   | typeof SPOTR_MARKETS_ERROR__INVALID_ROUND_INDEX
   | typeof SPOTR_MARKETS_ERROR__MATH_OVERFLOW
   | typeof SPOTR_MARKETS_ERROR__NOTHING_TO_CLAIM
@@ -66,7 +74,8 @@ export type SpotrMarketsError =
   | typeof SPOTR_MARKETS_ERROR__SESSION_NOT_LIVE
   | typeof SPOTR_MARKETS_ERROR__SESSION_STILL_IN_PROGRESS
   | typeof SPOTR_MARKETS_ERROR__SIDE_FULL
-  | typeof SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM;
+  | typeof SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM
+  | typeof SPOTR_MARKETS_ERROR__VAULT_LOCKED;
 
 let spotrMarketsErrorMessages: Record<SpotrMarketsError, string> | undefined;
 if (process.env.NODE_ENV !== "production") {
@@ -74,8 +83,10 @@ if (process.env.NODE_ENV !== "production") {
     [SPOTR_MARKETS_ERROR__ALREADY_CLAIMED]: `This position has already been claimed`,
     [SPOTR_MARKETS_ERROR__INSUFFICIENT_ESCROW]: `There is not enough escrow left for this position`,
     [SPOTR_MARKETS_ERROR__INSUFFICIENT_TREASURY_BALANCE]: `Session treasury would drop below rent-exempt minimum`,
+    [SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE]: `Vault has insufficient USDC balance for this withdrawal`,
     [SPOTR_MARKETS_ERROR__INVALID_CONFIG]: `The provided configuration is invalid`,
     [SPOTR_MARKETS_ERROR__INVALID_ENTRY_INDEX]: `The stored entry index no longer matches the side state`,
+    [SPOTR_MARKETS_ERROR__INVALID_MINT]: `Token mint or owner does not match expected USDC mint`,
     [SPOTR_MARKETS_ERROR__INVALID_ROUND_INDEX]: `The round index is invalid`,
     [SPOTR_MARKETS_ERROR__MATH_OVERFLOW]: `Math overflow`,
     [SPOTR_MARKETS_ERROR__NOTHING_TO_CLAIM]: `There is nothing to claim`,
@@ -87,7 +98,8 @@ if (process.env.NODE_ENV !== "production") {
     [SPOTR_MARKETS_ERROR__SESSION_NOT_LIVE]: `The session is not yet live`,
     [SPOTR_MARKETS_ERROR__SESSION_STILL_IN_PROGRESS]: `The session is still in progress`,
     [SPOTR_MARKETS_ERROR__SIDE_FULL]: `The side is full (per-side entry cap reached)`,
-    [SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM]: `Per-position stake is below the 0.005 SOL minimum`,
+    [SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM]: `Per-position stake is below the minimum`,
+    [SPOTR_MARKETS_ERROR__VAULT_LOCKED]: `Vault is locked while at least one session is active`,
   };
 }
 

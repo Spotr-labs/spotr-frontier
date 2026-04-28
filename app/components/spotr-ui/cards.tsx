@@ -8,59 +8,105 @@ import { MomentumBar, SpotrLogo } from "./system";
 
 export function FaultLineCard({
   category,
-  side,
-  copy,
-  pct,
-  opposingPct,
+  sideA,
+  sideB,
+  sideAPct,
+  sideBPct,
   flipped,
   onFlip,
   locked,
+  lockedSide,
 }: {
   category: string;
-  side: SpotrSide;
-  copy: string;
-  pct: number;
-  opposingPct: number;
+  sideA: string;
+  sideB: string;
+  sideAPct: number;
+  sideBPct: number;
   flipped: boolean;
   onFlip: () => void;
   locked: boolean;
+  lockedSide: SpotrSide | null;
 }) {
   return (
     <button
       type="button"
       onClick={onFlip}
-      className={cn(
-        "focus-ring relative w-full overflow-hidden rounded-[1.9rem] border bg-white p-6 text-left text-[#1a1a1a] shadow-[0_18px_40px_rgba(0,0,0,0.35)] transition-transform duration-200 hover:-translate-y-1",
-        locked ? "border-success ring-2 ring-success/40" : "border-white/25"
-      )}
-      style={{ minHeight: "28rem" }}
-      aria-label={`Flip fault line card. Currently showing side ${side}.`}
+      className="card-flip-scene focus-ring relative flex-1 w-full hover:scale-[1.01] transition-transform duration-200"
+      aria-label={`Flip fault line card. Currently showing side ${flipped ? "B" : "A"}.`}
     >
-      <div className="relative flex h-full flex-col">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <CategoryBadge>{category}</CategoryBadge>
-            <SideBadge side={side} />
-            {locked ? <TokenBoughtBadge /> : null}
-          </div>
-          <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
-            {pct}%
+      <div
+        className={cn("card-flip-inner h-full", flipped && "is-flipped")}
+      >
+        {/* FRONT: Side A */}
+        <div
+          className={cn(
+            "card-flip-face overflow-hidden rounded-[1.9rem] border bg-white p-6 text-left text-[#1a1a1a] shadow-[0_18px_40px_rgba(0,0,0,0.35)]",
+            locked && lockedSide === "A"
+              ? "border-success ring-2 ring-success/40"
+              : "border-white/25"
+          )}
+        >
+          <div className="relative flex h-full flex-col">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <CategoryBadge>{category}</CategoryBadge>
+                <SideBadge side="A" />
+                {locked && lockedSide === "A" ? <TokenBoughtBadge /> : null}
+              </div>
+              <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
+                {sideAPct}%
+              </div>
+            </div>
+            <div className="flex flex-1 items-center justify-center py-8">
+              <p className="max-w-full text-center font-bold leading-[1.22] text-balance text-[clamp(20px,5.5vw,26px)]">
+                {sideA}
+              </p>
+            </div>
+            <div className="mt-auto">
+              <MomentumBar
+                leftPct={sideAPct}
+                rightPct={sideBPct}
+                leftAccent="blue"
+                caption={`${sideAPct}% of players spotted this take`}
+              />
+            </div>
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center py-8">
-          <p className="max-w-full text-center font-bold leading-[1.22] text-balance text-[clamp(20px,5.5vw,26px)]">
-            {copy}
-          </p>
-        </div>
-
-        <div className="mt-auto">
-          <MomentumBar
-            leftPct={pct}
-            rightPct={opposingPct}
-            leftAccent={flipped ? "gold" : "blue"}
-            caption={`${pct}% of players spotted this take`}
-          />
+        {/* BACK: Side B */}
+        <div
+          className={cn(
+            "card-flip-face card-flip-face--back overflow-hidden rounded-[1.9rem] border bg-[#f8f6f0] p-6 text-left text-[#1a1a1a] shadow-[0_18px_40px_rgba(0,0,0,0.35)]",
+            locked && lockedSide === "B"
+              ? "border-success ring-2 ring-success/40"
+              : "border-white/25"
+          )}
+        >
+          <div className="relative flex h-full flex-col">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <CategoryBadge>{category}</CategoryBadge>
+                <SideBadge side="B" />
+                {locked && lockedSide === "B" ? <TokenBoughtBadge /> : null}
+              </div>
+              <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
+                {sideBPct}%
+              </div>
+            </div>
+            <div className="flex flex-1 items-center justify-center py-8">
+              <p className="max-w-full text-center font-bold leading-[1.22] text-balance text-[clamp(20px,5.5vw,26px)]">
+                {sideB}
+              </p>
+            </div>
+            <div className="mt-auto">
+              <MomentumBar
+                leftPct={sideBPct}
+                rightPct={sideAPct}
+                leftAccent="gold"
+                caption={`${sideBPct}% of players spotted this take`}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </button>

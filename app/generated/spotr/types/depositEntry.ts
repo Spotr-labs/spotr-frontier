@@ -25,14 +25,14 @@ import {
 export type DepositEntry = {
   wallet: Address;
   netAmount: bigint;
-  cumPriorLamports: bigint;
+  cumPriorUsdcUnits: bigint;
   timestamp: bigint;
 };
 
 export type DepositEntryArgs = {
   wallet: Address;
   netAmount: number | bigint;
-  cumPriorLamports: number | bigint;
+  cumPriorUsdcUnits: number | bigint;
   timestamp: number | bigint;
 };
 
@@ -40,7 +40,7 @@ export function getDepositEntryEncoder(): FixedSizeEncoder<DepositEntryArgs> {
   return getStructEncoder([
     ["wallet", getAddressEncoder()],
     ["netAmount", getU64Encoder()],
-    ["cumPriorLamports", getU64Encoder()],
+    ["cumPriorUsdcUnits", getU64Encoder()],
     ["timestamp", getI64Encoder()],
   ]);
 }
@@ -49,7 +49,7 @@ export function getDepositEntryDecoder(): FixedSizeDecoder<DepositEntry> {
   return getStructDecoder([
     ["wallet", getAddressDecoder()],
     ["netAmount", getU64Decoder()],
-    ["cumPriorLamports", getU64Decoder()],
+    ["cumPriorUsdcUnits", getU64Decoder()],
     ["timestamp", getI64Decoder()],
   ]);
 }

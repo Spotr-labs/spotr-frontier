@@ -30,16 +30,16 @@ import {
 } from ".";
 
 export type SideState = {
-  totalNetDepositsLamports: bigint;
-  totalEntitledLamports: bigint;
+  totalNetDepositsUsdcUnits: bigint;
+  totalEntitledUsdcUnits: bigint;
   totalEntries: number;
   orphansSwept: boolean;
   entries: Array<DepositEntry>;
 };
 
 export type SideStateArgs = {
-  totalNetDepositsLamports: number | bigint;
-  totalEntitledLamports: number | bigint;
+  totalNetDepositsUsdcUnits: number | bigint;
+  totalEntitledUsdcUnits: number | bigint;
   totalEntries: number;
   orphansSwept: boolean;
   entries: Array<DepositEntryArgs>;
@@ -47,8 +47,8 @@ export type SideStateArgs = {
 
 export function getSideStateEncoder(): Encoder<SideStateArgs> {
   return getStructEncoder([
-    ["totalNetDepositsLamports", getU64Encoder()],
-    ["totalEntitledLamports", getU64Encoder()],
+    ["totalNetDepositsUsdcUnits", getU64Encoder()],
+    ["totalEntitledUsdcUnits", getU64Encoder()],
     ["totalEntries", getU32Encoder()],
     ["orphansSwept", getBooleanEncoder()],
     ["entries", getArrayEncoder(getDepositEntryEncoder())],
@@ -57,8 +57,8 @@ export function getSideStateEncoder(): Encoder<SideStateArgs> {
 
 export function getSideStateDecoder(): Decoder<SideState> {
   return getStructDecoder([
-    ["totalNetDepositsLamports", getU64Decoder()],
-    ["totalEntitledLamports", getU64Decoder()],
+    ["totalNetDepositsUsdcUnits", getU64Decoder()],
+    ["totalEntitledUsdcUnits", getU64Decoder()],
     ["totalEntries", getU32Decoder()],
     ["orphansSwept", getBooleanDecoder()],
     ["entries", getArrayDecoder(getDepositEntryDecoder())],

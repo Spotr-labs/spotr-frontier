@@ -4,7 +4,7 @@ import { publicSpotrConfig } from "./spotr-config/public";
 
 export type ClusterMoniker = "devnet" | "testnet" | "mainnet" | "localnet";
 
-export const CLUSTERS: ClusterMoniker[] = [publicSpotrConfig.cluster];
+export const CLUSTERS: ClusterMoniker[] = ["mainnet", "devnet", "localnet"];
 
 const CLUSTER_URLS: Record<ClusterMoniker, string> = {
   devnet: "https://api.devnet.solana.com",

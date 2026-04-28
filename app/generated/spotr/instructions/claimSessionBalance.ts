@@ -30,7 +30,13 @@ import {
   type WritableAccount,
   type WritableSignerAccount,
 } from "@solana/kit";
-import { findPlayerSessionPda, findSessionTreasuryPda } from "../pdas";
+import {
+  findPlayerSessionPda,
+  findSessionTreasuryPda,
+  findSessionTreasuryTokensPda,
+  findVaultPda,
+  findVaultTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
   expectAddress,
@@ -54,8 +60,11 @@ export type ClaimSessionBalanceInstruction<
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountPlayerSession extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
-  TAccountSystemProgram extends string | AccountMeta<string> =
-    "11111111111111111111111111111111",
+  TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountVault extends string | AccountMeta<string> = string,
+  TAccountVaultTokens extends string | AccountMeta<string> = string,
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -72,11 +81,20 @@ export type ClaimSessionBalanceInstruction<
         ? WritableAccount<TAccountPlayerSession>
         : TAccountPlayerSession,
       TAccountSessionTreasury extends string
-        ? WritableAccount<TAccountSessionTreasury>
+        ? ReadonlyAccount<TAccountSessionTreasury>
         : TAccountSessionTreasury,
-      TAccountSystemProgram extends string
-        ? ReadonlyAccount<TAccountSystemProgram>
-        : TAccountSystemProgram,
+      TAccountSessionTreasuryTokens extends string
+        ? WritableAccount<TAccountSessionTreasuryTokens>
+        : TAccountSessionTreasuryTokens,
+      TAccountVault extends string
+        ? WritableAccount<TAccountVault>
+        : TAccountVault,
+      TAccountVaultTokens extends string
+        ? WritableAccount<TAccountVaultTokens>
+        : TAccountVaultTokens,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
       ...TRemainingAccounts,
     ]
   >;
@@ -118,13 +136,19 @@ export type ClaimSessionBalanceAsyncInput<
   TAccountSession extends string = string,
   TAccountPlayerSession extends string = string,
   TAccountSessionTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountVault extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
   session: Address<TAccountSession>;
   playerSession?: Address<TAccountPlayerSession>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
+  vault?: Address<TAccountVault>;
+  vaultTokens?: Address<TAccountVaultTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export async function getClaimSessionBalanceInstructionAsync<
@@ -132,7 +156,10 @@ export async function getClaimSessionBalanceInstructionAsync<
   TAccountSession extends string,
   TAccountPlayerSession extends string,
   TAccountSessionTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountVault extends string,
+  TAccountVaultTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimSessionBalanceAsyncInput<
@@ -140,7 +167,10 @@ export async function getClaimSessionBalanceInstructionAsync<
     TAccountSession,
     TAccountPlayerSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
@@ -150,7 +180,10 @@ export async function getClaimSessionBalanceInstructionAsync<
     TAccountSession,
     TAccountPlayerSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >
 > {
   // Program address.
@@ -162,8 +195,17 @@ export async function getClaimSessionBalanceInstructionAsync<
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: false },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    vault: { value: input.vault ?? null, isWritable: true },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -182,9 +224,24 @@ export async function getClaimSessionBalanceInstructionAsync<
       session: expectAddress(accounts.session.value),
     });
   }
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.sessionTreasuryTokens.value) {
+    accounts.sessionTreasuryTokens.value = await findSessionTreasuryTokensPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
+  if (!accounts.vault.value) {
+    accounts.vault.value = await findVaultPda({
+      player: expectAddress(accounts.player.value),
+    });
+  }
+  if (!accounts.vaultTokens.value) {
+    accounts.vaultTokens.value = await findVaultTokensPda({
+      player: expectAddress(accounts.player.value),
+    });
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -194,7 +251,10 @@ export async function getClaimSessionBalanceInstructionAsync<
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.playerSession),
       getAccountMeta(accounts.sessionTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getClaimSessionBalanceInstructionDataEncoder().encode({}),
     programAddress,
@@ -204,7 +264,10 @@ export async function getClaimSessionBalanceInstructionAsync<
     TAccountSession,
     TAccountPlayerSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -213,13 +276,19 @@ export type ClaimSessionBalanceInput<
   TAccountSession extends string = string,
   TAccountPlayerSession extends string = string,
   TAccountSessionTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountVault extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
   session: Address<TAccountSession>;
   playerSession: Address<TAccountPlayerSession>;
   sessionTreasury: Address<TAccountSessionTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
+  vault: Address<TAccountVault>;
+  vaultTokens: Address<TAccountVaultTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export function getClaimSessionBalanceInstruction<
@@ -227,7 +296,10 @@ export function getClaimSessionBalanceInstruction<
   TAccountSession extends string,
   TAccountPlayerSession extends string,
   TAccountSessionTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountVault extends string,
+  TAccountVaultTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimSessionBalanceInput<
@@ -235,7 +307,10 @@ export function getClaimSessionBalanceInstruction<
     TAccountSession,
     TAccountPlayerSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): ClaimSessionBalanceInstruction<
@@ -244,7 +319,10 @@ export function getClaimSessionBalanceInstruction<
   TAccountSession,
   TAccountPlayerSession,
   TAccountSessionTreasury,
-  TAccountSystemProgram
+  TAccountSessionTreasuryTokens,
+  TAccountVault,
+  TAccountVaultTokens,
+  TAccountTokenProgram
 > {
   // Program address.
   const programAddress =
@@ -255,8 +333,17 @@ export function getClaimSessionBalanceInstruction<
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: false },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    vault: { value: input.vault ?? null, isWritable: true },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -264,9 +351,9 @@ export function getClaimSessionBalanceInstruction<
   >;
 
   // Resolve default values.
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -276,7 +363,10 @@ export function getClaimSessionBalanceInstruction<
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.playerSession),
       getAccountMeta(accounts.sessionTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getClaimSessionBalanceInstructionDataEncoder().encode({}),
     programAddress,
@@ -286,7 +376,10 @@ export function getClaimSessionBalanceInstruction<
     TAccountSession,
     TAccountPlayerSession,
     TAccountSessionTreasury,
-    TAccountSystemProgram
+    TAccountSessionTreasuryTokens,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -300,7 +393,10 @@ export type ParsedClaimSessionBalanceInstruction<
     session: TAccountMetas[1];
     playerSession: TAccountMetas[2];
     sessionTreasury: TAccountMetas[3];
-    systemProgram: TAccountMetas[4];
+    sessionTreasuryTokens: TAccountMetas[4];
+    vault: TAccountMetas[5];
+    vaultTokens: TAccountMetas[6];
+    tokenProgram: TAccountMetas[7];
   };
   data: ClaimSessionBalanceInstructionData;
 };
@@ -313,7 +409,7 @@ export function parseClaimSessionBalanceInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedClaimSessionBalanceInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 5) {
+  if (instruction.accounts.length < 8) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -330,7 +426,10 @@ export function parseClaimSessionBalanceInstruction<
       session: getNextAccount(),
       playerSession: getNextAccount(),
       sessionTreasury: getNextAccount(),
-      systemProgram: getNextAccount(),
+      sessionTreasuryTokens: getNextAccount(),
+      vault: getNextAccount(),
+      vaultTokens: getNextAccount(),
+      tokenProgram: getNextAccount(),
     },
     data: getClaimSessionBalanceInstructionDataDecoder().decode(
       instruction.data,

@@ -132,6 +132,19 @@ export NEXT_PUBLIC_USDC_MINT_ADDRESS="$USDC_MINT_ADDR"
 export SOLANA_RPC_URL="$RPC_URL"
 export SOLANA_WS_URL="$RPC_WS"
 
+# Set launch ISO to today so the session activates immediately on first join.
+# The seed + generate scripts read this from process.env before loading .env files,
+# so this value wins over whatever is in .env.local.
+export NEXT_PUBLIC_SPOTR_LAUNCH_ISO="$(date -u +'%Y-%m-%dT00:00:00.000Z')"
+export NEXT_PUBLIC_SPOTR_DEFAULT_SESSION_END_HOUR_UTC=23
+
+# ── db reset + seed ──────────────────────────────────────────────────────────
+echo "[dev-local] resetting database …"
+rm -f "$ROOT/prisma/dev.db"
+npx prisma db push --skip-generate
+node --env-file=.env --env-file=.env.local scripts/seed-spotr.mjs
+echo "[dev-local] ✓  database ready"
+
 echo "[dev-local] starting next dev (localnet) …"
 npm run generate:public-config
 npx next dev &

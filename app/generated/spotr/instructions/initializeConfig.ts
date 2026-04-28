@@ -30,7 +30,11 @@ import {
   type WritableAccount,
   type WritableSignerAccount,
 } from "@solana/kit";
-import { findConfigPda, findProtocolTreasuryPda } from "../pdas";
+import {
+  findConfigPda,
+  findProtocolTreasuryPda,
+  findProtocolTreasuryTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import { getAccountMetaFactory, type ResolvedAccount } from "../shared";
 import {
@@ -55,8 +59,14 @@ export type InitializeConfigInstruction<
   TAccountAuthority extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountProtocolTreasury extends string | AccountMeta<string> = string,
+  TAccountProtocolTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountUsdcMint extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     "11111111111111111111111111111111",
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  TAccountRent extends string | AccountMeta<string> =
+    "SysvarRent111111111111111111111111111111111",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -72,9 +82,21 @@ export type InitializeConfigInstruction<
       TAccountProtocolTreasury extends string
         ? WritableAccount<TAccountProtocolTreasury>
         : TAccountProtocolTreasury,
+      TAccountProtocolTreasuryTokens extends string
+        ? WritableAccount<TAccountProtocolTreasuryTokens>
+        : TAccountProtocolTreasuryTokens,
+      TAccountUsdcMint extends string
+        ? ReadonlyAccount<TAccountUsdcMint>
+        : TAccountUsdcMint,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
+      TAccountRent extends string
+        ? ReadonlyAccount<TAccountRent>
+        : TAccountRent,
       ...TRemainingAccounts,
     ]
   >;
@@ -117,12 +139,20 @@ export type InitializeConfigAsyncInput<
   TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
   TAccountProtocolTreasury extends string = string,
+  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountUsdcMint extends string = string,
   TAccountSystemProgram extends string = string,
+  TAccountTokenProgram extends string = string,
+  TAccountRent extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
   protocolTreasury?: Address<TAccountProtocolTreasury>;
+  protocolTreasuryTokens?: Address<TAccountProtocolTreasuryTokens>;
+  usdcMint: Address<TAccountUsdcMint>;
   systemProgram?: Address<TAccountSystemProgram>;
+  tokenProgram?: Address<TAccountTokenProgram>;
+  rent?: Address<TAccountRent>;
   input: InitializeConfigInstructionDataArgs["input"];
 };
 
@@ -130,14 +160,22 @@ export async function getInitializeConfigInstructionAsync<
   TAccountAuthority extends string,
   TAccountConfig extends string,
   TAccountProtocolTreasury extends string,
+  TAccountProtocolTreasuryTokens extends string,
+  TAccountUsdcMint extends string,
   TAccountSystemProgram extends string,
+  TAccountTokenProgram extends string,
+  TAccountRent extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: InitializeConfigAsyncInput<
     TAccountAuthority,
     TAccountConfig,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
@@ -146,7 +184,11 @@ export async function getInitializeConfigInstructionAsync<
     TAccountAuthority,
     TAccountConfig,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >
 > {
   // Program address.
@@ -161,7 +203,14 @@ export async function getInitializeConfigInstructionAsync<
       value: input.protocolTreasury ?? null,
       isWritable: true,
     },
+    protocolTreasuryTokens: {
+      value: input.protocolTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    usdcMint: { value: input.usdcMint ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
+    rent: { value: input.rent ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -178,9 +227,21 @@ export async function getInitializeConfigInstructionAsync<
   if (!accounts.protocolTreasury.value) {
     accounts.protocolTreasury.value = await findProtocolTreasuryPda();
   }
+  if (!accounts.protocolTreasuryTokens.value) {
+    accounts.protocolTreasuryTokens.value =
+      await findProtocolTreasuryTokensPda();
+  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
+  if (!accounts.rent.value) {
+    accounts.rent.value =
+      "SysvarRent111111111111111111111111111111111" as Address<"SysvarRent111111111111111111111111111111111">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -189,7 +250,11 @@ export async function getInitializeConfigInstructionAsync<
       getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.protocolTreasury),
+      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.usdcMint),
       getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.tokenProgram),
+      getAccountMeta(accounts.rent),
     ],
     data: getInitializeConfigInstructionDataEncoder().encode(
       args as InitializeConfigInstructionDataArgs,
@@ -200,7 +265,11 @@ export async function getInitializeConfigInstructionAsync<
     TAccountAuthority,
     TAccountConfig,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >);
 }
 
@@ -208,12 +277,20 @@ export type InitializeConfigInput<
   TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
   TAccountProtocolTreasury extends string = string,
+  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountUsdcMint extends string = string,
   TAccountSystemProgram extends string = string,
+  TAccountTokenProgram extends string = string,
+  TAccountRent extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
   protocolTreasury: Address<TAccountProtocolTreasury>;
+  protocolTreasuryTokens: Address<TAccountProtocolTreasuryTokens>;
+  usdcMint: Address<TAccountUsdcMint>;
   systemProgram?: Address<TAccountSystemProgram>;
+  tokenProgram?: Address<TAccountTokenProgram>;
+  rent?: Address<TAccountRent>;
   input: InitializeConfigInstructionDataArgs["input"];
 };
 
@@ -221,14 +298,22 @@ export function getInitializeConfigInstruction<
   TAccountAuthority extends string,
   TAccountConfig extends string,
   TAccountProtocolTreasury extends string,
+  TAccountProtocolTreasuryTokens extends string,
+  TAccountUsdcMint extends string,
   TAccountSystemProgram extends string,
+  TAccountTokenProgram extends string,
+  TAccountRent extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: InitializeConfigInput<
     TAccountAuthority,
     TAccountConfig,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >,
   config?: { programAddress?: TProgramAddress },
 ): InitializeConfigInstruction<
@@ -236,7 +321,11 @@ export function getInitializeConfigInstruction<
   TAccountAuthority,
   TAccountConfig,
   TAccountProtocolTreasury,
-  TAccountSystemProgram
+  TAccountProtocolTreasuryTokens,
+  TAccountUsdcMint,
+  TAccountSystemProgram,
+  TAccountTokenProgram,
+  TAccountRent
 > {
   // Program address.
   const programAddress =
@@ -250,7 +339,14 @@ export function getInitializeConfigInstruction<
       value: input.protocolTreasury ?? null,
       isWritable: true,
     },
+    protocolTreasuryTokens: {
+      value: input.protocolTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    usdcMint: { value: input.usdcMint ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
+    rent: { value: input.rent ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -265,6 +361,14 @@ export function getInitializeConfigInstruction<
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
   }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
+  if (!accounts.rent.value) {
+    accounts.rent.value =
+      "SysvarRent111111111111111111111111111111111" as Address<"SysvarRent111111111111111111111111111111111">;
+  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
@@ -272,7 +376,11 @@ export function getInitializeConfigInstruction<
       getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.protocolTreasury),
+      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.usdcMint),
       getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.tokenProgram),
+      getAccountMeta(accounts.rent),
     ],
     data: getInitializeConfigInstructionDataEncoder().encode(
       args as InitializeConfigInstructionDataArgs,
@@ -283,7 +391,11 @@ export function getInitializeConfigInstruction<
     TAccountAuthority,
     TAccountConfig,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountUsdcMint,
+    TAccountSystemProgram,
+    TAccountTokenProgram,
+    TAccountRent
   >);
 }
 
@@ -296,7 +408,11 @@ export type ParsedInitializeConfigInstruction<
     authority: TAccountMetas[0];
     config: TAccountMetas[1];
     protocolTreasury: TAccountMetas[2];
-    systemProgram: TAccountMetas[3];
+    protocolTreasuryTokens: TAccountMetas[3];
+    usdcMint: TAccountMetas[4];
+    systemProgram: TAccountMetas[5];
+    tokenProgram: TAccountMetas[6];
+    rent: TAccountMetas[7];
   };
   data: InitializeConfigInstructionData;
 };
@@ -309,7 +425,7 @@ export function parseInitializeConfigInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedInitializeConfigInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 4) {
+  if (instruction.accounts.length < 8) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -325,7 +441,11 @@ export function parseInitializeConfigInstruction<
       authority: getNextAccount(),
       config: getNextAccount(),
       protocolTreasury: getNextAccount(),
+      protocolTreasuryTokens: getNextAccount(),
+      usdcMint: getNextAccount(),
       systemProgram: getNextAccount(),
+      tokenProgram: getNextAccount(),
+      rent: getNextAccount(),
     },
     data: getInitializeConfigInstructionDataDecoder().decode(instruction.data),
   };

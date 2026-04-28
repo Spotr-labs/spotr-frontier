@@ -5,11 +5,11 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 export function BalanceStatusRow({
-  currentSol,
-  shortfallSol,
+  currentUsdc,
+  shortfallUsdc,
 }: {
-  currentSol: number;
-  shortfallSol: number;
+  currentUsdc: number;
+  shortfallUsdc: number;
 }) {
   return (
     <div className="rounded-[16px] bg-black/25 px-5 py-4">
@@ -18,7 +18,7 @@ export function BalanceStatusRow({
           Current
         </span>
         <span className="text-[15px] font-semibold text-white">
-          {currentSol.toFixed(3)} SOL
+          {currentUsdc.toFixed(2)} USDC
         </span>
       </div>
       <div className="flex items-center justify-between">
@@ -26,7 +26,7 @@ export function BalanceStatusRow({
           Short by
         </span>
         <span className="text-[15px] font-semibold text-destructive">
-          {shortfallSol.toFixed(3)} SOL
+          {shortfallUsdc.toFixed(2)} USDC
         </span>
       </div>
     </div>
@@ -34,12 +34,12 @@ export function BalanceStatusRow({
 }
 
 export function AmountStepper({
-  valueSol,
+  valueUsdc,
   onChange,
-  step = 0.01,
+  step = 1,
   min = 0,
 }: {
-  valueSol: number;
+  valueUsdc: number;
   onChange: (next: number) => void;
   step?: number;
   min?: number;
@@ -50,7 +50,7 @@ export function AmountStepper({
       <button
         type="button"
         onClick={() =>
-          onChange(Math.max(min, parseFloat((valueSol - step).toFixed(3))))
+          onChange(Math.max(min, parseFloat((valueUsdc - step).toFixed(2))))
         }
         className="flex h-8 w-8 items-center justify-center text-[var(--category-blue)]"
         aria-label="Decrease"
@@ -59,16 +59,16 @@ export function AmountStepper({
       </button>
       <input
         type="number"
-        value={valueSol}
+        value={valueUsdc}
         onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
         step={step}
         min={min}
         className="flex-1 bg-transparent text-center text-[18px] font-bold text-[#1a1a1a] outline-none"
       />
-      <span className="text-[14px] font-semibold text-[#666]">SOL</span>
+      <span className="text-[14px] font-semibold text-[#666]">USDC</span>
       <button
         type="button"
-        onClick={() => onChange(parseFloat((valueSol + step).toFixed(3)))}
+        onClick={() => onChange(parseFloat((valueUsdc + step).toFixed(2)))}
         className="flex h-8 w-8 items-center justify-center text-[var(--category-blue)]"
         aria-label="Increase"
       >
@@ -103,7 +103,7 @@ export function QuickAmountChips({
               isSelected && "border-primary bg-primary/15 text-primary"
             )}
           >
-            {option} SOL
+            {option} USDC
           </Button>
         );
       })}
@@ -111,10 +111,10 @@ export function QuickAmountChips({
   );
 }
 
-export function ConversionLine({ newBalanceSol }: { newBalanceSol: number }) {
+export function ConversionLine({ newBalanceUsdc }: { newBalanceUsdc: number }) {
   return (
     <p className="text-[13px] text-white/60">
-      New balance: {newBalanceSol.toFixed(3)} SOL
+      New balance: {newBalanceUsdc.toFixed(2)} USDC
     </p>
   );
 }

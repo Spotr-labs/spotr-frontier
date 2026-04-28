@@ -27,7 +27,12 @@ import {
   type ReadonlyUint8Array,
   type WritableAccount,
 } from "@solana/kit";
-import { findProtocolTreasuryPda, findSessionTreasuryPda } from "../pdas";
+import {
+  findProtocolTreasuryPda,
+  findProtocolTreasuryTokensPda,
+  findSessionTreasuryPda,
+  findSessionTreasuryTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
   expectAddress,
@@ -50,9 +55,11 @@ export type SweepOrphansInstruction<
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountRound extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
+  TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
   TAccountProtocolTreasury extends string | AccountMeta<string> = string,
-  TAccountSystemProgram extends string | AccountMeta<string> =
-    "11111111111111111111111111111111",
+  TAccountProtocolTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -65,14 +72,20 @@ export type SweepOrphansInstruction<
         ? WritableAccount<TAccountRound>
         : TAccountRound,
       TAccountSessionTreasury extends string
-        ? WritableAccount<TAccountSessionTreasury>
+        ? ReadonlyAccount<TAccountSessionTreasury>
         : TAccountSessionTreasury,
+      TAccountSessionTreasuryTokens extends string
+        ? WritableAccount<TAccountSessionTreasuryTokens>
+        : TAccountSessionTreasuryTokens,
       TAccountProtocolTreasury extends string
         ? WritableAccount<TAccountProtocolTreasury>
         : TAccountProtocolTreasury,
-      TAccountSystemProgram extends string
-        ? ReadonlyAccount<TAccountSystemProgram>
-        : TAccountSystemProgram,
+      TAccountProtocolTreasuryTokens extends string
+        ? WritableAccount<TAccountProtocolTreasuryTokens>
+        : TAccountProtocolTreasuryTokens,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
       ...TRemainingAccounts,
     ]
   >;
@@ -108,30 +121,38 @@ export type SweepOrphansAsyncInput<
   TAccountSession extends string = string,
   TAccountRound extends string = string,
   TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
   TAccountProtocolTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
   protocolTreasury?: Address<TAccountProtocolTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  protocolTreasuryTokens?: Address<TAccountProtocolTreasuryTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export async function getSweepOrphansInstructionAsync<
   TAccountSession extends string,
   TAccountRound extends string,
   TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
   TAccountProtocolTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountProtocolTreasuryTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: SweepOrphansAsyncInput<
     TAccountSession,
     TAccountRound,
     TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
@@ -140,8 +161,10 @@ export async function getSweepOrphansInstructionAsync<
     TAccountSession,
     TAccountRound,
     TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountTokenProgram
   >
 > {
   // Program address.
@@ -152,12 +175,23 @@ export async function getSweepOrphansInstructionAsync<
   const originalAccounts = {
     session: { value: input.session ?? null, isWritable: true },
     round: { value: input.round ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
     protocolTreasury: {
       value: input.protocolTreasury ?? null,
       isWritable: true,
     },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    protocolTreasuryTokens: {
+      value: input.protocolTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -170,12 +204,21 @@ export async function getSweepOrphansInstructionAsync<
       session: expectAddress(accounts.session.value),
     });
   }
+  if (!accounts.sessionTreasuryTokens.value) {
+    accounts.sessionTreasuryTokens.value = await findSessionTreasuryTokensPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
   if (!accounts.protocolTreasury.value) {
     accounts.protocolTreasury.value = await findProtocolTreasuryPda();
   }
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.protocolTreasuryTokens.value) {
+    accounts.protocolTreasuryTokens.value =
+      await findProtocolTreasuryTokensPda();
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -184,8 +227,10 @@ export async function getSweepOrphansInstructionAsync<
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
       getAccountMeta(accounts.protocolTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getSweepOrphansInstructionDataEncoder().encode({}),
     programAddress,
@@ -194,8 +239,10 @@ export async function getSweepOrphansInstructionAsync<
     TAccountSession,
     TAccountRound,
     TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -203,30 +250,38 @@ export type SweepOrphansInput<
   TAccountSession extends string = string,
   TAccountRound extends string = string,
   TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
   TAccountProtocolTreasury extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountTokenProgram extends string = string,
 > = {
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
   sessionTreasury: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
   protocolTreasury: Address<TAccountProtocolTreasury>;
-  systemProgram?: Address<TAccountSystemProgram>;
+  protocolTreasuryTokens: Address<TAccountProtocolTreasuryTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
 };
 
 export function getSweepOrphansInstruction<
   TAccountSession extends string,
   TAccountRound extends string,
   TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
   TAccountProtocolTreasury extends string,
-  TAccountSystemProgram extends string,
+  TAccountProtocolTreasuryTokens extends string,
+  TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: SweepOrphansInput<
     TAccountSession,
     TAccountRound,
     TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): SweepOrphansInstruction<
@@ -234,8 +289,10 @@ export function getSweepOrphansInstruction<
   TAccountSession,
   TAccountRound,
   TAccountSessionTreasury,
+  TAccountSessionTreasuryTokens,
   TAccountProtocolTreasury,
-  TAccountSystemProgram
+  TAccountProtocolTreasuryTokens,
+  TAccountTokenProgram
 > {
   // Program address.
   const programAddress =
@@ -245,12 +302,23 @@ export function getSweepOrphansInstruction<
   const originalAccounts = {
     session: { value: input.session ?? null, isWritable: true },
     round: { value: input.round ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
     protocolTreasury: {
       value: input.protocolTreasury ?? null,
       isWritable: true,
     },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    protocolTreasuryTokens: {
+      value: input.protocolTreasuryTokens ?? null,
+      isWritable: true,
+    },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -258,9 +326,9 @@ export function getSweepOrphansInstruction<
   >;
 
   // Resolve default values.
-  if (!accounts.systemProgram.value) {
-    accounts.systemProgram.value =
-      "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
   }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
@@ -269,8 +337,10 @@ export function getSweepOrphansInstruction<
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
       getAccountMeta(accounts.protocolTreasury),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.tokenProgram),
     ],
     data: getSweepOrphansInstructionDataEncoder().encode({}),
     programAddress,
@@ -279,8 +349,10 @@ export function getSweepOrphansInstruction<
     TAccountSession,
     TAccountRound,
     TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
     TAccountProtocolTreasury,
-    TAccountSystemProgram
+    TAccountProtocolTreasuryTokens,
+    TAccountTokenProgram
   >);
 }
 
@@ -293,8 +365,10 @@ export type ParsedSweepOrphansInstruction<
     session: TAccountMetas[0];
     round: TAccountMetas[1];
     sessionTreasury: TAccountMetas[2];
-    protocolTreasury: TAccountMetas[3];
-    systemProgram: TAccountMetas[4];
+    sessionTreasuryTokens: TAccountMetas[3];
+    protocolTreasury: TAccountMetas[4];
+    protocolTreasuryTokens: TAccountMetas[5];
+    tokenProgram: TAccountMetas[6];
   };
   data: SweepOrphansInstructionData;
 };
@@ -307,7 +381,7 @@ export function parseSweepOrphansInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedSweepOrphansInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 5) {
+  if (instruction.accounts.length < 7) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -323,8 +397,10 @@ export function parseSweepOrphansInstruction<
       session: getNextAccount(),
       round: getNextAccount(),
       sessionTreasury: getNextAccount(),
+      sessionTreasuryTokens: getNextAccount(),
       protocolTreasury: getNextAccount(),
-      systemProgram: getNextAccount(),
+      protocolTreasuryTokens: getNextAccount(),
+      tokenProgram: getNextAccount(),
     },
     data: getSweepOrphansInstructionDataDecoder().decode(instruction.data),
   };

@@ -74,8 +74,13 @@ function createConnector(wallet: StandardWallet): WalletConnector {
               const feature = wallet.features[
                 SolanaSignMessage
               ] as SolanaSignMessageFeature[typeof SolanaSignMessage];
+              // Use the live wallet.accounts reference so Phantom's internal
+              // reference-equality check passes even after auto-reconnect.
+              const liveAccount =
+                wallet.accounts.find((a) => a.address === account.address) ??
+                account;
               const [result] = await feature.signMessage({
-                account,
+                account: liveAccount,
                 message,
               });
               return {
@@ -89,8 +94,11 @@ function createConnector(wallet: StandardWallet): WalletConnector {
               const feature = wallet.features[
                 SolanaSignTransaction
               ] as SolanaSignTransactionFeature[typeof SolanaSignTransaction];
+              const liveAccount =
+                wallet.accounts.find((a) => a.address === account.address) ??
+                account;
               const [result] = await feature.signTransaction({
-                account,
+                account: liveAccount,
                 transaction,
                 chain: chain as `${string}:${string}`,
               });
@@ -102,8 +110,11 @@ function createConnector(wallet: StandardWallet): WalletConnector {
               const feature = wallet.features[
                 SolanaSignAndSendTransaction
               ] as SolanaSignAndSendTransactionFeature[typeof SolanaSignAndSendTransaction];
+              const liveAccount =
+                wallet.accounts.find((a) => a.address === account.address) ??
+                account;
               const [result] = await feature.signAndSendTransaction({
-                account,
+                account: liveAccount,
                 transaction,
                 chain: chain as `${string}:${string}`,
               });

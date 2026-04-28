@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 
 export function PnlNumber({
@@ -17,10 +17,10 @@ export function PnlNumber({
         ? "text-success"
         : "text-destructive";
 
-  const sol = deltaLamports / 1_000_000_000;
+  const usdc = deltaLamports / 1_000_000;
   const display = isSkip
     ? "—"
-    : `${sol >= 0 ? "+" : ""}${sol.toFixed(4)} SOL`;
+    : `${usdc >= 0 ? "+" : ""}${usdc.toFixed(4)} USDC`;
 
   return (
     <p className={cn("font-mono text-[2.4rem] font-bold tabular-nums", tone)}>
@@ -54,20 +54,23 @@ export function AutoAdvanceFooter({
   onAdvance: () => void;
 }) {
   const [secLeft, setSecLeft] = useState(durationSeconds);
+  const onAdvanceRef = useRef(onAdvance);
+  onAdvanceRef.current = onAdvance;
 
   useEffect(() => {
+    let remaining = durationSeconds;
     const t = window.setInterval(() => {
-      setSecLeft((s) => {
-        if (s <= 1) {
-          window.clearInterval(t);
-          onAdvance();
-          return 0;
-        }
-        return s - 1;
-      });
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(t);
+        setSecLeft(0);
+        onAdvanceRef.current();
+      } else {
+        setSecLeft(remaining);
+      }
     }, 1000);
     return () => window.clearInterval(t);
-  }, [onAdvance]);
+  }, [durationSeconds]);
 
   return (
     <button

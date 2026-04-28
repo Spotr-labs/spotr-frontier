@@ -3,7 +3,7 @@
 import { Check } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
-import { lamportsToSol } from "../../lib/format";
+import { microUsdcToDisplay } from "../../lib/usdc";
 import { ellipsify } from "../../lib/explorer";
 import { SpotrLogo } from "./system";
 
@@ -14,12 +14,9 @@ export function BalancePill({
 }) {
   return (
     <div className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-foreground backdrop-blur">
-      <span className="text-primary">◎</span>
+      <span className="text-primary">$</span>
       <span className="font-mono tabular-nums">
-        {balanceLamports == null ? "0.000" : lamportsToSol(Number(balanceLamports))}
-      </span>
-      <span className="text-xs font-normal uppercase tracking-[0.18em] text-muted">
-        SOL
+        {balanceLamports == null ? "0.00" : microUsdcToDisplay(Number(balanceLamports))}
       </span>
     </div>
   );
