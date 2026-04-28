@@ -23,7 +23,7 @@ export type JoinSessionChainResult = {
   sessionAddress: Address;
 };
 
-async function accountExists(
+export async function accountExists(
   cluster: ClusterMoniker,
   pda: Address
 ): Promise<boolean> {
@@ -47,7 +47,7 @@ async function accountExists(
   return json.result?.value != null;
 }
 
-async function getTokenBalance(
+export async function getTokenBalance(
   cluster: ClusterMoniker,
   tokenAccount: Address
 ): Promise<bigint> {

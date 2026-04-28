@@ -196,28 +196,30 @@ pub mod spotr_markets {
 
         let buy_in = session.buy_in_usdc_units;
 
-        // Move buy-in from the player's vault → session treasury token account.
-        // The vault PDA signs as the authority on `vault_tokens`.
-        let owner_key = ctx.accounts.player.key();
-        let vault_bump = ctx.accounts.vault.bump;
-        let signer_seeds: &[&[&[u8]]] = &[&[
-            USER_VAULT_SEED,
-            owner_key.as_ref(),
-            std::slice::from_ref(&vault_bump),
-        ]];
+        if buy_in > 0 {
+            // Move buy-in from the player's vault → session treasury token account.
+            // The vault PDA signs as the authority on `vault_tokens`.
+            let owner_key = ctx.accounts.player.key();
+            let vault_bump = ctx.accounts.vault.bump;
+            let signer_seeds: &[&[&[u8]]] = &[&[
+                USER_VAULT_SEED,
+                owner_key.as_ref(),
+                std::slice::from_ref(&vault_bump),
+            ]];
 
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.vault_tokens.to_account_info(),
-                    to: ctx.accounts.session_treasury_tokens.to_account_info(),
-                    authority: ctx.accounts.vault.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            buy_in,
-        )?;
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.vault_tokens.to_account_info(),
+                        to: ctx.accounts.session_treasury_tokens.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                buy_in,
+            )?;
+        }
 
         let player_session = &mut ctx.accounts.player_session;
         player_session.session = session.key();
@@ -276,7 +278,11 @@ pub mod spotr_markets {
         Ok(())
     }
 
-    pub fn enter_position(ctx: Context<EnterPosition>, side: SideSelection) -> Result<()> {
+    pub fn enter_position(
+        ctx: Context<EnterPosition>,
+        side: SideSelection,
+        wager_usdc_units: u64,
+    ) -> Result<()> {
         let clock = Clock::get()?;
         let session = &mut ctx.accounts.session;
         let round = &mut ctx.accounts.round;
@@ -286,7 +292,7 @@ pub mod spotr_markets {
         require!(round.state == RoundState::Open, SpotrError::RoundClosed);
         require!(clock.unix_timestamp < round.closes_at, SpotrError::RoundClosed);
         require!(
-            session.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
+            wager_usdc_units >= MIN_POSITION_USDC_UNITS,
             SpotrError::StakeBelowMinimum
         );
 
@@ -295,14 +301,31 @@ pub mod spotr_markets {
             player_session.entered_round_mask & round_bit == 0,
             SpotrError::RoundAlreadyEntered
         );
-        require!(
-            player_session.remaining_escrow_usdc_units >= session.round_stake_usdc_units,
-            SpotrError::InsufficientEscrow
-        );
 
         let (fee_units, net_units) =
-            split_fee(session.round_stake_usdc_units, session.protocol_fee_bps)?;
+            split_fee(wager_usdc_units, session.protocol_fee_bps)?;
         require!(net_units > 0, SpotrError::StakeBelowMinimum);
+
+        // Transfer wager from player vault → session treasury.
+        let owner_key = ctx.accounts.player.key();
+        let vault_bump = ctx.accounts.vault.bump;
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            USER_VAULT_SEED,
+            owner_key.as_ref(),
+            std::slice::from_ref(&vault_bump),
+        ]];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_tokens.to_account_info(),
+                    to: ctx.accounts.session_treasury_tokens.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            wager_usdc_units,
+        )?;
 
         let side_state = match side {
             SideSelection::A => &mut round.side_a,
@@ -342,10 +365,6 @@ pub mod spotr_markets {
             .checked_add(distributed_from_j)
             .ok_or(SpotrError::MathOverflow)?;
 
-        player_session.remaining_escrow_usdc_units = player_session
-            .remaining_escrow_usdc_units
-            .checked_sub(session.round_stake_usdc_units)
-            .ok_or(SpotrError::MathOverflow)?;
         player_session.entered_round_mask |= round_bit;
         let side_byte = match side {
             SideSelection::A => 0u8,
@@ -361,7 +380,7 @@ pub mod spotr_markets {
             .ok_or(SpotrError::MathOverflow)?;
         round.total_volume_usdc_units = round
             .total_volume_usdc_units
-            .checked_add(session.round_stake_usdc_units)
+            .checked_add(wager_usdc_units)
             .ok_or(SpotrError::MathOverflow)?;
 
         let position = &mut ctx.accounts.position;
@@ -994,7 +1013,7 @@ pub struct JoinSession<'info> {
 pub struct CreateRound<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
-    #[account(mut, has_one = authority)]
+    #[account(mut)]
     pub session: Account<'info, Session>,
     #[account(
         init,
@@ -1035,6 +1054,31 @@ pub struct EnterPosition<'info> {
         bump
     )]
     pub position: Account<'info, PlayerRoundPosition>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_SEED, player.key().as_ref()],
+        bump = vault.bump,
+        constraint = vault.owner == player.key() @ SpotrError::InvalidMint,
+    )]
+    pub vault: Account<'info, UserVault>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, player.key().as_ref()],
+        bump = vault.token_bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    #[account(
+        seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
+        bump = session_treasury.bump
+    )]
+    pub session_treasury: Account<'info, SessionTreasury>,
+    #[account(
+        mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1227,14 +1271,21 @@ fn validate_config(input: ConfigInput) -> Result<()> {
 }
 
 fn validate_session_input(input: SessionInput) -> Result<()> {
-    validate_config(ConfigInput {
-        protocol_fee_bps: input.protocol_fee_bps,
-        referral_cut_bps: input.referral_cut_bps,
-        round_count: input.round_count,
-        round_duration_seconds: input.round_duration_seconds,
-        buy_in_usdc_units: input.buy_in_usdc_units,
-        round_stake_usdc_units: input.round_stake_usdc_units,
-    })?;
+    require!(input.protocol_fee_bps <= 10_000, SpotrError::InvalidConfig);
+    require!(input.referral_cut_bps <= 10_000, SpotrError::InvalidConfig);
+    require!(input.round_count > 0, SpotrError::InvalidConfig);
+    require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
+    require!(
+        input.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
+        SpotrError::StakeBelowMinimum
+    );
+    // When buy_in > 0, round stake must not exceed the buy-in.
+    if input.buy_in_usdc_units > 0 {
+        require!(
+            input.round_stake_usdc_units <= input.buy_in_usdc_units,
+            SpotrError::InvalidConfig
+        );
+    }
     require!(input.min_wallets > 0, SpotrError::InvalidConfig);
     require!(input.end_ts > input.start_ts, SpotrError::InvalidConfig);
     Ok(())

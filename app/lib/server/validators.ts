@@ -126,6 +126,21 @@ export function parseSignedEnvelope<TPayload>(
   };
 }
 
+function requirePositiveInt(
+  record: Record<string, unknown>,
+  key: string,
+  options: { min?: number } = {}
+): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new ValidationError(`${key} must be a positive integer.`);
+  }
+  if (options.min !== undefined && value < options.min) {
+    throw new ValidationError(`${key} must be at least ${options.min}.`);
+  }
+  return value;
+}
+
 function requireTxSignature(record: Record<string, unknown>, key: string) {
   const value = requireString(record, key, { maxLength: 128 });
   // "already-joined" is a sentinel emitted by the client when the on-chain
@@ -155,7 +170,9 @@ export function parseEnterRoundPayload(record: Record<string, unknown>) {
   if (sideRaw !== "A" && sideRaw !== "B") {
     throw new ValidationError("side must be 'A' or 'B'.");
   }
-  return { walletAddress, roundId, side: sideRaw as "A" | "B" };
+  const wagerLamports = requirePositiveInt(record, "wagerLamports", { min: 1_000_000 });
+  const chainTxSignature = requireTxSignature(record, "chainTxSignature");
+  return { walletAddress, roundId, side: sideRaw as "A" | "B", wagerLamports, chainTxSignature };
 }
 
 export function parseWalletOnlyPayload(record: Record<string, unknown>) {

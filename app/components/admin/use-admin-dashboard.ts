@@ -8,6 +8,7 @@ import { createSignedActionRequest } from "../../lib/wallet/signed-request";
 import { submitDeploySessionOnChain } from "../../lib/chain/spotr-deploy-session";
 import {
   submitCloseRoundOnChain,
+  submitCreateRoundOnChain,
   submitFinalizeSessionOnChain,
   submitSweepOrphansOnChain,
   submitWithdrawProtocolFeesOnChain,
@@ -99,6 +100,23 @@ export function useAdminDashboard() {
     [submitSignedAction]
   );
 
+  const createRoundOnChain = useCallback(
+    async (params: { sessionNumber: bigint; roundIndex: number; pairId: string }) => {
+      if (!signer) throw new Error("Connect an admin wallet that can sign.");
+      const pairIdBytes = new Uint8Array(32);
+      const encoded = new TextEncoder().encode(params.pairId);
+      pairIdBytes.set(encoded.slice(0, 32));
+      return submitCreateRoundOnChain({
+        cluster,
+        signer,
+        sessionNumber: params.sessionNumber,
+        roundIndex: params.roundIndex,
+        pairId: pairIdBytes,
+      });
+    },
+    [cluster, signer]
+  );
+
   const closeRoundOnChain = useCallback(
     async (params: { sessionNumber: bigint; roundIndex: number }) => {
       if (!signer) throw new Error("Connect an admin wallet that can sign.");
@@ -186,6 +204,7 @@ export function useAdminDashboard() {
     signer,
     submitSignedAction,
     runAction,
+    createRoundOnChain,
     closeRoundOnChain,
     sweepOrphansOnChain,
     finalizeSessionOnChain,

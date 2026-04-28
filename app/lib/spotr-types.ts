@@ -144,6 +144,7 @@ export type AdminSessionCard = {
   endsAtIso: string;
   walletsJoined: number;
   totalEscrowLamports: number;
+  buyInLamports: number;
   chainSessionNumber: string | null;
   chainSessionAddress: string | null;
   chainDeployTxSignature: string | null;

@@ -14,6 +14,8 @@ import {
   getBytesEncoder,
   getStructDecoder,
   getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
@@ -30,7 +32,14 @@ import {
   type WritableAccount,
   type WritableSignerAccount,
 } from "@solana/kit";
-import { findPlayerSessionPda, findPositionPda } from "../pdas";
+import {
+  findPlayerSessionPda,
+  findPositionPda,
+  findSessionTreasuryPda,
+  findSessionTreasuryTokensPda,
+  findVaultPda,
+  findVaultTokensPda,
+} from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
   expectAddress,
@@ -61,6 +70,11 @@ export type EnterPositionInstruction<
   TAccountRound extends string | AccountMeta<string> = string,
   TAccountPlayerSession extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
+  TAccountVault extends string | AccountMeta<string> = string,
+  TAccountVaultTokens extends string | AccountMeta<string> = string,
+  TAccountSessionTreasury extends string | AccountMeta<string> = string,
+  TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountTokenProgram extends string | AccountMeta<string> = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TAccountSystemProgram extends string | AccountMeta<string> =
     "11111111111111111111111111111111",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -84,6 +98,21 @@ export type EnterPositionInstruction<
       TAccountPosition extends string
         ? WritableAccount<TAccountPosition>
         : TAccountPosition,
+      TAccountVault extends string
+        ? WritableAccount<TAccountVault>
+        : TAccountVault,
+      TAccountVaultTokens extends string
+        ? WritableAccount<TAccountVaultTokens>
+        : TAccountVaultTokens,
+      TAccountSessionTreasury extends string
+        ? ReadonlyAccount<TAccountSessionTreasury>
+        : TAccountSessionTreasury,
+      TAccountSessionTreasuryTokens extends string
+        ? WritableAccount<TAccountSessionTreasuryTokens>
+        : TAccountSessionTreasuryTokens,
+      TAccountTokenProgram extends string
+        ? ReadonlyAccount<TAccountTokenProgram>
+        : TAccountTokenProgram,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
@@ -94,15 +123,20 @@ export type EnterPositionInstruction<
 export type EnterPositionInstructionData = {
   discriminator: ReadonlyUint8Array;
   side: SideSelection;
+  wagerUsdcUnits: bigint;
 };
 
-export type EnterPositionInstructionDataArgs = { side: SideSelectionArgs };
+export type EnterPositionInstructionDataArgs = {
+  side: SideSelectionArgs;
+  wagerUsdcUnits: bigint;
+};
 
 export function getEnterPositionInstructionDataEncoder(): FixedSizeEncoder<EnterPositionInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
       ["side", getSideSelectionEncoder()],
+      ["wagerUsdcUnits", getU64Encoder()],
     ]),
     (value) => ({ ...value, discriminator: ENTER_POSITION_DISCRIMINATOR }),
   );
@@ -112,6 +146,7 @@ export function getEnterPositionInstructionDataDecoder(): FixedSizeDecoder<Enter
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
     ["side", getSideSelectionDecoder()],
+    ["wagerUsdcUnits", getU64Decoder()],
   ]);
 }
 
@@ -131,6 +166,11 @@ export type EnterPositionAsyncInput<
   TAccountRound extends string = string,
   TAccountPlayerSession extends string = string,
   TAccountPosition extends string = string,
+  TAccountVault extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
@@ -138,8 +178,14 @@ export type EnterPositionAsyncInput<
   round: Address<TAccountRound>;
   playerSession?: Address<TAccountPlayerSession>;
   position?: Address<TAccountPosition>;
+  vault?: Address<TAccountVault>;
+  vaultTokens?: Address<TAccountVaultTokens>;
+  sessionTreasury?: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
   side: EnterPositionInstructionDataArgs["side"];
+  wagerUsdcUnits: EnterPositionInstructionDataArgs["wagerUsdcUnits"];
 };
 
 export async function getEnterPositionInstructionAsync<
@@ -148,6 +194,11 @@ export async function getEnterPositionInstructionAsync<
   TAccountRound extends string,
   TAccountPlayerSession extends string,
   TAccountPosition extends string,
+  TAccountVault extends string,
+  TAccountVaultTokens extends string,
+  TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountTokenProgram extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
@@ -157,6 +208,11 @@ export async function getEnterPositionInstructionAsync<
     TAccountRound,
     TAccountPlayerSession,
     TAccountPosition,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
+    TAccountTokenProgram,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress },
@@ -168,20 +224,28 @@ export async function getEnterPositionInstructionAsync<
     TAccountRound,
     TAccountPlayerSession,
     TAccountPosition,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
+    TAccountTokenProgram,
     TAccountSystemProgram
   >
 > {
-  // Program address.
   const programAddress =
     config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
 
-  // Original accounts.
   const originalAccounts = {
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: true },
     round: { value: input.round ?? null, isWritable: true },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
+    vault: { value: input.vault ?? null, isWritable: true },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: false },
+    sessionTreasuryTokens: { value: input.sessionTreasuryTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -189,10 +253,8 @@ export async function getEnterPositionInstructionAsync<
     ResolvedAccount
   >;
 
-  // Original args.
   const args = { ...input };
 
-  // Resolve default values.
   if (!accounts.playerSession.value) {
     accounts.playerSession.value = await findPlayerSessionPda({
       session: expectAddress(accounts.session.value),
@@ -205,6 +267,30 @@ export async function getEnterPositionInstructionAsync<
       player: expectAddress(accounts.player.value),
     });
   }
+  if (!accounts.vault.value) {
+    accounts.vault.value = await findVaultPda({
+      player: expectAddress(accounts.player.value),
+    });
+  }
+  if (!accounts.vaultTokens.value) {
+    accounts.vaultTokens.value = await findVaultTokensPda({
+      player: expectAddress(accounts.player.value),
+    });
+  }
+  if (!accounts.sessionTreasury.value) {
+    accounts.sessionTreasury.value = await findSessionTreasuryPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
+  if (!accounts.sessionTreasuryTokens.value) {
+    accounts.sessionTreasuryTokens.value = await findSessionTreasuryTokensPda({
+      session: expectAddress(accounts.session.value),
+    });
+  }
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
@@ -218,6 +304,11 @@ export async function getEnterPositionInstructionAsync<
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.playerSession),
       getAccountMeta(accounts.position),
+      getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getEnterPositionInstructionDataEncoder().encode(
@@ -231,6 +322,11 @@ export async function getEnterPositionInstructionAsync<
     TAccountRound,
     TAccountPlayerSession,
     TAccountPosition,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
+    TAccountTokenProgram,
     TAccountSystemProgram
   >);
 }
@@ -241,6 +337,11 @@ export type EnterPositionInput<
   TAccountRound extends string = string,
   TAccountPlayerSession extends string = string,
   TAccountPosition extends string = string,
+  TAccountVault extends string = string,
+  TAccountVaultTokens extends string = string,
+  TAccountSessionTreasury extends string = string,
+  TAccountSessionTreasuryTokens extends string = string,
+  TAccountTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   player: TransactionSigner<TAccountPlayer>;
@@ -248,8 +349,14 @@ export type EnterPositionInput<
   round: Address<TAccountRound>;
   playerSession: Address<TAccountPlayerSession>;
   position: Address<TAccountPosition>;
+  vault: Address<TAccountVault>;
+  vaultTokens: Address<TAccountVaultTokens>;
+  sessionTreasury: Address<TAccountSessionTreasury>;
+  sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
+  tokenProgram?: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
   side: EnterPositionInstructionDataArgs["side"];
+  wagerUsdcUnits: EnterPositionInstructionDataArgs["wagerUsdcUnits"];
 };
 
 export function getEnterPositionInstruction<
@@ -258,6 +365,11 @@ export function getEnterPositionInstruction<
   TAccountRound extends string,
   TAccountPlayerSession extends string,
   TAccountPosition extends string,
+  TAccountVault extends string,
+  TAccountVaultTokens extends string,
+  TAccountSessionTreasury extends string,
+  TAccountSessionTreasuryTokens extends string,
+  TAccountTokenProgram extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
@@ -267,6 +379,11 @@ export function getEnterPositionInstruction<
     TAccountRound,
     TAccountPlayerSession,
     TAccountPosition,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
+    TAccountTokenProgram,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress },
@@ -277,19 +394,27 @@ export function getEnterPositionInstruction<
   TAccountRound,
   TAccountPlayerSession,
   TAccountPosition,
+  TAccountVault,
+  TAccountVaultTokens,
+  TAccountSessionTreasury,
+  TAccountSessionTreasuryTokens,
+  TAccountTokenProgram,
   TAccountSystemProgram
 > {
-  // Program address.
   const programAddress =
     config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
 
-  // Original accounts.
   const originalAccounts = {
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: true },
     round: { value: input.round ?? null, isWritable: true },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
+    vault: { value: input.vault ?? null, isWritable: true },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
+    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: false },
+    sessionTreasuryTokens: { value: input.sessionTreasuryTokens ?? null, isWritable: true },
+    tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -297,10 +422,12 @@ export function getEnterPositionInstruction<
     ResolvedAccount
   >;
 
-  // Original args.
   const args = { ...input };
 
-  // Resolve default values.
+  if (!accounts.tokenProgram.value) {
+    accounts.tokenProgram.value =
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
+  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
@@ -314,6 +441,11 @@ export function getEnterPositionInstruction<
       getAccountMeta(accounts.round),
       getAccountMeta(accounts.playerSession),
       getAccountMeta(accounts.position),
+      getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.vaultTokens),
+      getAccountMeta(accounts.sessionTreasury),
+      getAccountMeta(accounts.sessionTreasuryTokens),
+      getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getEnterPositionInstructionDataEncoder().encode(
@@ -327,6 +459,11 @@ export function getEnterPositionInstruction<
     TAccountRound,
     TAccountPlayerSession,
     TAccountPosition,
+    TAccountVault,
+    TAccountVaultTokens,
+    TAccountSessionTreasury,
+    TAccountSessionTreasuryTokens,
+    TAccountTokenProgram,
     TAccountSystemProgram
   >);
 }
@@ -342,7 +479,12 @@ export type ParsedEnterPositionInstruction<
     round: TAccountMetas[2];
     playerSession: TAccountMetas[3];
     position: TAccountMetas[4];
-    systemProgram: TAccountMetas[5];
+    vault: TAccountMetas[5];
+    vaultTokens: TAccountMetas[6];
+    sessionTreasury: TAccountMetas[7];
+    sessionTreasuryTokens: TAccountMetas[8];
+    tokenProgram: TAccountMetas[9];
+    systemProgram: TAccountMetas[10];
   };
   data: EnterPositionInstructionData;
 };
@@ -355,8 +497,7 @@ export function parseEnterPositionInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedEnterPositionInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 6) {
-    // TODO: Coded error.
+  if (instruction.accounts.length < 11) {
     throw new Error("Not enough accounts");
   }
   let accountIndex = 0;
@@ -373,6 +514,11 @@ export function parseEnterPositionInstruction<
       round: getNextAccount(),
       playerSession: getNextAccount(),
       position: getNextAccount(),
+      vault: getNextAccount(),
+      vaultTokens: getNextAccount(),
+      sessionTreasury: getNextAccount(),
+      sessionTreasuryTokens: getNextAccount(),
+      tokenProgram: getNextAccount(),
       systemProgram: getNextAccount(),
     },
     data: getEnterPositionInstructionDataDecoder().decode(instruction.data),

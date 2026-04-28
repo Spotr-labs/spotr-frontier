@@ -843,6 +843,7 @@ async function buildAdminSummary(
       endsAtIso: sessionRecord.endsAt.toISOString(),
       walletsJoined: sessionRecord.joinedWallets,
       totalEscrowLamports: toNumber(sessionRecord.totalEscrowLamports),
+      buyInLamports: toNumber(sessionRecord.buyInLamports),
       chainSessionNumber:
         sessionRecord.chainSessionNumber == null
           ? null
@@ -1358,6 +1359,8 @@ export async function enterSpotrRoundPosition(input: {
   walletAddress: string;
   roundId: string;
   side: SpotrSide;
+  wagerLamports: bigint;
+  chainTxSignature: string;
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1411,13 +1414,9 @@ export async function enterSpotrRoundPosition(input: {
       throw new Error("You already entered this round.");
     }
 
-    if (participant.remainingEscrowLamports < session.roundStakeLamports) {
-      throw new Error("Not enough escrow remains for another round.");
-    }
-
     const referralRelationship = await ensureReferralRelationship(tx, participant);
 
-    const stakeLamports = session.roundStakeLamports;
+    const stakeLamports = input.wagerLamports;
     const feeLamports = (stakeLamports * BigInt(session.protocolFeeBps)) / 10_000n;
     const referralShareLamports = await getEligibleReferralShareLamports(
       tx,
@@ -1462,13 +1461,6 @@ export async function enterSpotrRoundPosition(input: {
         netStakeLamports,
         shares,
         rewardDebtLamports,
-      },
-    });
-
-    await tx.sessionParticipant.update({
-      where: { id: participant.id },
-      data: {
-        remainingEscrowLamports: participant.remainingEscrowLamports - stakeLamports,
       },
     });
 
@@ -4036,6 +4028,7 @@ export async function listJoinableSessions(input?: { cursor?: string | null }) {
       endsAtIso: sessionRecord.endsAt.toISOString(),
       walletsJoined: sessionRecord.joinedWallets,
       totalEscrowLamports: toNumber(sessionRecord.totalEscrowLamports),
+      buyInLamports: toNumber(sessionRecord.buyInLamports),
       chainSessionNumber:
         sessionRecord.chainSessionNumber == null
           ? null

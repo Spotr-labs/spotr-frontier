@@ -20,6 +20,7 @@ import { useWallet } from "../lib/wallet/context";
 import { createSignedActionRequest } from "../lib/wallet/signed-request";
 import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
 import { submitJoinSessionOnChain } from "../lib/chain/spotr-join-session";
+import { submitEnterPositionOnChain } from "../lib/chain/spotr-enter-position";
 import { cn } from "../lib/utils";
 import { ellipsify } from "../lib/explorer";
 import {
@@ -123,6 +124,8 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const [notice, setNotice] = useState<Notice>(null);
   const [isPending, startTransition] = useTransition();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSide, setSelectedSide] = useState<"A" | "B" | null>(null);
+  const [wagerMicro, setWagerMicro] = useState<bigint | null>(null);
 
   const walletAddress = wallet?.account.address ?? null;
   const canSignActions = Boolean(wallet?.signMessage);
@@ -283,13 +286,14 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
         try {
           setNotice({
             tone: "info",
-            message: "Sign the transaction in your wallet to pay the buy-in…",
+            message: "Registering your seat on-chain…",
           });
+          const sessionBuyIn = selectedSession?.buyInLamports ?? 0;
           const { signature } = await submitJoinSessionOnChain({
             cluster,
             sessionNumber: BigInt(activeChainSessionNumber),
             player: signer,
-            buyInAmount: BigInt(config.sessionBuyInLamports),
+            buyInAmount: BigInt(sessionBuyIn),
           });
           setNotice({
             tone: "info",
@@ -319,7 +323,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     });
   };
 
-  const handleEnter = () => {
+  const handleSelectSide = (side: "A" | "B") => {
     if (!walletAddress) {
       setNotice({ tone: "error", message: "Connect a wallet before entering a round." });
       return;
@@ -328,17 +332,58 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       setNotice({ tone: "error", message: "There is no active round to enter." });
       return;
     }
+    if (!session.joined) {
+      setNotice({ tone: "error", message: "Join the session before picking a side." });
+      return;
+    }
+    setSelectedSide(side);
+    setWagerMicro(null);
+  };
 
-    runSignedAction(
-      "/api/rounds/enter",
-      "enter-round",
-      {
-        walletAddress,
-        roundId: activeRound.id,
-        side: activeDisplay.side as SpotrSide,
-      },
-      `Position locked on side ${activeDisplay.side}.`
-    );
+  const handleConfirmWager = () => {
+    if (!walletAddress || !signer || !activeRound || !selectedSide || !wagerMicro) return;
+    const chainSessionNumber = data.session.chainSessionNumber;
+    if (!chainSessionNumber) {
+      setNotice({ tone: "error", message: "This session has not been deployed on-chain yet." });
+      return;
+    }
+
+    startTransition(() => {
+      void (async () => {
+        try {
+          setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
+          const { txSignature } = await submitEnterPositionOnChain({
+            cluster,
+            sessionNumber: BigInt(chainSessionNumber),
+            roundIndex: activeRound.index,
+            pairId: activeRound.pairId,
+            player: signer,
+            side: selectedSide,
+            wagerUsdcUnits: wagerMicro,
+          });
+          const nextData = await submitSignedAction(
+            "/api/rounds/enter",
+            "enter-round",
+            {
+              walletAddress,
+              roundId: activeRound.id,
+              side: selectedSide,
+              wagerLamports: Number(wagerMicro),
+              chainTxSignature: txSignature,
+            }
+          );
+          setData(nextData);
+          setSelectedSide(null);
+          setWagerMicro(null);
+          setNotice({ tone: "success", message: `Position locked on side ${selectedSide}.` });
+          toast.success(`Position locked on side ${selectedSide}.`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to enter position.";
+          setNotice({ tone: "error", message });
+          toast.error(message);
+        }
+      })();
+    });
   };
 
   const handleClaimRounds = () => {
@@ -403,10 +448,15 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     selectedSession,
     setSelectedSessionId,
     handleJoin,
-    handleEnter,
+    handleSelectSide,
+    handleConfirmWager,
     handleClaimRounds,
     handleClaimSessionBalance,
     refresh,
+    selectedSide,
+    setSelectedSide,
+    wagerMicro,
+    setWagerMicro,
   };
 }
 
@@ -899,8 +949,6 @@ function SessionListScreen({
   const joinable = sessions.filter(
     (s) => s.status === "pending" || s.status === "live"
   );
-  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
-
   return (
     <StageScaffold surface="onboard">
       <GameNavBar />
@@ -924,7 +972,6 @@ function SessionListScreen({
               <SessionCard
                 key={session.id}
                 session={session}
-                buyInUsdc={buyInUsdc}
                 onJoin={() => onSelect(session.id)}
               />
             ))}
@@ -937,11 +984,9 @@ function SessionListScreen({
 
 function SessionCard({
   session,
-  buyInUsdc,
   onJoin,
 }: {
   session: AdminSessionCard;
-  buyInUsdc: string;
   onJoin: () => void;
 }) {
   const isLive = session.status === "live";
@@ -976,10 +1021,8 @@ function SessionCard({
           </p>
         </div>
         <div className="rounded-xl bg-black/20 px-3 py-2">
-          <p className="text-[10px] text-white/40 uppercase tracking-[0.2em]">Buy-in</p>
-          <p className="mt-0.5 text-sm font-semibold tabular-nums text-white">
-            {buyInUsdc} USDC
-          </p>
+          <p className="text-[10px] text-white/40 uppercase tracking-[0.2em]">Entry</p>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-white">Free</p>
         </div>
       </div>
 
@@ -1051,7 +1094,7 @@ function ConfirmSessionScreen({
         body={
           state.isPending
             ? "Sign the transaction in your wallet."
-            : "Pay the buy-in to lock your seat for this session."
+            : "Register your seat to start playing."
         }
         action={
           !state.isPending ? (
@@ -1100,6 +1143,76 @@ function WaitingRoomScreen({
   );
 }
 
+const WAGER_PRESETS_MICRO = [1, 2, 5, 10, 25, 50, 100, 250].map(
+  (n) => BigInt(n) * 1_000_000n
+);
+
+function WagerPicker({
+  vaultBalance,
+  selectedWager,
+  onSelect,
+  countdown,
+  onConfirm,
+  isPending,
+}: {
+  vaultBalance: bigint | null;
+  selectedWager: bigint | null;
+  onSelect: (wager: bigint) => void;
+  countdown: number | null;
+  onConfirm: () => void;
+  isPending: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-center text-[11px] font-semibold uppercase tracking-[0.18em] text-white/40">
+        Select wager
+        {vaultBalance != null && (
+          <span className="ml-2 normal-case text-white/30">
+            · {microUsdcToDisplay(Number(vaultBalance))} USDC available
+          </span>
+        )}
+      </p>
+      <div className="grid grid-cols-4 gap-2">
+        {WAGER_PRESETS_MICRO.map((amount) => {
+          const tooLarge = vaultBalance != null && amount > vaultBalance;
+          const isSelected = selectedWager === amount;
+          return (
+            <button
+              key={amount.toString()}
+              type="button"
+              onClick={() => onSelect(amount)}
+              disabled={tooLarge || isPending}
+              className={cn(
+                "rounded-xl border py-2.5 text-[12px] font-bold transition",
+                isSelected
+                  ? "border-primary bg-primary/20 text-primary"
+                  : tooLarge
+                    ? "border-white/5 bg-white/3 text-white/20 cursor-not-allowed"
+                    : "border-white/10 bg-white/5 text-white hover:border-primary/50 hover:text-primary"
+              )}
+            >
+              ${Number(amount / 1_000_000n)}
+            </button>
+          );
+        })}
+      </div>
+      <Button
+        type="button"
+        variant="gold"
+        size="block"
+        onClick={onConfirm}
+        disabled={!selectedWager || isPending}
+      >
+        {isPending
+          ? "Confirming…"
+          : selectedWager
+            ? `Confirm wager → ${countdown ?? "—"}s`
+            : "Pick a wager above"}
+      </Button>
+    </div>
+  );
+}
+
 function LiveGameScreen({
   config,
   state,
@@ -1109,8 +1222,6 @@ function LiveGameScreen({
   state: ReturnType<typeof useSpotrDashboard>;
   balanceMicro: bigint | null;
 }) {
-  const [buyFlash, setBuyFlash] = useState(false);
-
   if (!state.activeRound) {
     return <WaitingRoomScreen state={state} config={config} />;
   }
@@ -1121,11 +1232,10 @@ function LiveGameScreen({
       : Math.max(0, Math.min(100, (state.countdown / config.roundDurationSeconds) * 100));
 
   const isLocked = Boolean(state.activeRound.lockedSide);
+  const sideSelected = !isLocked && Boolean(state.selectedSide);
 
   function handleBuy() {
-    setBuyFlash(true);
-    window.setTimeout(() => setBuyFlash(false), 260);
-    state.handleEnter();
+    state.handleSelectSide(state.activeDisplay?.side as "A" | "B" ?? "A");
   }
 
   return (
@@ -1161,17 +1271,31 @@ function LiveGameScreen({
               sideAPct={state.activeRound.sideAProbabilityPct}
               sideBPct={state.activeRound.sideBProbabilityPct}
               flipped={state.flipped}
-              onFlip={() =>
-                state.setFlipState((current) => ({
-                  roundId: state.activeRound?.id ?? current.roundId,
-                  flipped:
-                    current.roundId === state.activeRound?.id
-                      ? !current.flipped
-                      : true,
-                }))
+              onFlip={
+                isLocked
+                  ? () => {}
+                  : () => {
+                      const newSide = state.flipped ? "A" : "B";
+                      state.setFlipState((current) => ({
+                        roundId: state.activeRound?.id ?? current.roundId,
+                        flipped:
+                          current.roundId === state.activeRound?.id
+                            ? !current.flipped
+                            : true,
+                      }));
+                      if (sideSelected) {
+                        state.handleSelectSide(newSide);
+                      }
+                    }
               }
-              locked={isLocked}
-              lockedSide={(state.activeRound.lockedSide as SpotrSide) ?? null}
+              locked={isLocked || sideSelected}
+              lockedSide={
+                isLocked
+                  ? ((state.activeRound.lockedSide as SpotrSide) ?? null)
+                  : sideSelected
+                    ? (state.selectedSide as SpotrSide)
+                    : null
+              }
             />
           ) : (
             <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-white/50">
@@ -1179,37 +1303,49 @@ function LiveGameScreen({
             </div>
           )}
 
-          <p className="mb-3 mt-4 text-center text-[13px] text-white/40">
-            {isLocked
-              ? `Position locked · settles in ${state.countdown ?? "—"}s`
-              : "Tap card to flip · buy either side"}
-          </p>
-
           {isLocked ? (
-            <TokenConfirmationCard
-              statement={state.activeDisplay?.copy ?? ""}
-              settlesIn={state.countdown}
-            />
+            <>
+              <p className="mb-3 mt-4 text-center text-[13px] text-white/40">
+                {`Position locked · settles in ${state.countdown ?? "—"}s`}
+              </p>
+              <TokenConfirmationCard
+                statement={state.activeDisplay?.copy ?? ""}
+                settlesIn={state.countdown}
+              />
+            </>
+          ) : sideSelected ? (
+            <div className="mt-4">
+              <WagerPicker
+                vaultBalance={balanceMicro}
+                selectedWager={state.wagerMicro}
+                onSelect={state.setWagerMicro}
+                countdown={state.countdown}
+                onConfirm={state.handleConfirmWager}
+                isPending={state.isPending}
+              />
+            </div>
           ) : (
-            <Button
-              type="button"
-              variant="gold"
-              size="block"
-              onClick={handleBuy}
-              disabled={
-                state.isPending ||
-                !state.session.joined ||
-                !state.canSignActions ||
-                state.activeRound.status !== "open"
-              }
-              className={cn(buyFlash && "!bg-success !text-white")}
-            >
-              {buyFlash
-                ? "Locked in ✓"
-                : state.isPending
-                  ? "Locking position..."
-                  : `Buy side ${state.activeDisplay?.side ?? "A"} · ${state.activeDisplay?.pct ?? 0}% →`}
-            </Button>
+            <>
+              <p className="mb-3 mt-4 text-center text-[13px] text-white/40">
+                Tap card to flip · buy either side
+              </p>
+              <Button
+                type="button"
+                variant="gold"
+                size="block"
+                onClick={handleBuy}
+                disabled={
+                  state.isPending ||
+                  !state.session.joined ||
+                  !state.canSignActions ||
+                  state.activeRound.status !== "open"
+                }
+              >
+                {state.isPending
+                  ? "Loading..."
+                  : `Buy side ${state.activeDisplay?.side ?? "A"} · ${state.activeDisplay?.pct ?? 0}%`}
+              </Button>
+            </>
           )}
 
           <p className="mb-5 mt-3 text-center text-[11px] text-white/30">
@@ -1976,8 +2112,6 @@ export function SpotrSessionsListShell({ config, initialData }: SpotrShellProps)
     initialData.admin.nextSessionsCursor ?? null
   );
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
-
   async function loadMore() {
     if (!nextCursor || isLoadingMore) return;
     setIsLoadingMore(true);
@@ -2039,7 +2173,7 @@ export function SpotrSessionsListShell({ config, initialData }: SpotrShellProps)
                   </span>
                 </div>
                 <div className="mt-3 flex items-center justify-between">
-                  <span className="text-xs text-muted">Buy-in: {buyInUsdc} USDC</span>
+                  <span className="text-xs text-muted">Free entry · wager per round</span>
                   <span className="text-xs font-semibold text-primary">Join →</span>
                 </div>
               </div>
@@ -2075,12 +2209,12 @@ export function SpotrSessionDetailShell({
   const { cluster } = useCluster();
   const { wallet, signer, status } = useWallet();
   const walletAddress = wallet?.account.address ?? null;
-  const balance = useUsdcBalance(walletAddress);
   const [isPending, startTransition] = useTransition();
   const [notice, setNotice] = useState<Notice>(null);
   const [showGame, setShowGame] = useState(
     initialData.session.id === sessionId && initialData.session.joined
   );
+  const [joinedData, setJoinedData] = useState<SpotrDashboardPayload | null>(null);
 
   const session =
     initialData.admin.sessionHistory.find((s) => s.id === sessionId) ?? null;
@@ -2089,15 +2223,10 @@ export function SpotrSessionDetailShell({
     initialData.session.id === sessionId && initialData.session.joined;
 
   if (showGame) {
-    return <SpotrShell config={config} initialData={initialData} />;
+    return <SpotrShell config={config} initialData={joinedData ?? initialData} />;
   }
 
   const isConnected = status === "connected" && !!walletAddress;
-  const hasBalance =
-    isConnected &&
-    !balance.isLoading &&
-    (balance.microUsdc ?? 0n) >= BigInt(config.sessionBuyInLamports);
-  const buyInUsdc = (config.sessionBuyInLamports / 1_000_000).toFixed(2);
 
   const handleJoin = () => {
     if (!walletAddress || !signer || !wallet) {
@@ -2117,7 +2246,7 @@ export function SpotrSessionDetailShell({
             cluster,
             sessionNumber: BigInt(session.chainSessionNumber!),
             player: signer,
-            buyInAmount: BigInt(config.sessionBuyInLamports),
+            buyInAmount: BigInt(session.buyInLamports),
           });
           setNotice({ tone: "info", message: "Transaction confirmed. Registering your seat…" });
           const signedRequest = await createSignedActionRequest(wallet, "join-session", {
@@ -2131,8 +2260,9 @@ export function SpotrSessionDetailShell({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(signedRequest),
           });
-          const body = (await response.json()) as { error?: string };
+          const body = (await response.json()) as SpotrDashboardPayload & { error?: string };
           if (!response.ok || body.error) throw new Error(body.error ?? "Join failed.");
+          setJoinedData(body);
           toast.success("Session joined.");
           setShowGame(true);
         } catch (error) {
@@ -2192,8 +2322,8 @@ export function SpotrSessionDetailShell({
             <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{session.walletsJoined}</p>
           </div>
           <div className="rounded-xl bg-black/20 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Buy-in</p>
-            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{buyInUsdc} USDC</p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Entry</p>
+            <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">Free</p>
           </div>
           <div className="col-span-2 rounded-xl bg-black/20 px-3 py-2">
             <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Window</p>
@@ -2231,21 +2361,11 @@ export function SpotrSessionDetailShell({
           <p className="mb-3 text-sm text-muted">Connect a wallet to join this session.</p>
           <WalletButton />
         </SurfaceCard>
-      ) : balance.isLoading ? (
-        <SurfaceCard>
-          <p className="text-sm text-muted">Checking your USDC balance…</p>
-        </SurfaceCard>
-      ) : !hasBalance ? (
-        <SurfaceCard>
-          <p className="text-sm text-muted">
-            You need at least {buyInUsdc} USDC to join. Top up your wallet and try again.
-          </p>
-        </SurfaceCard>
       ) : (
         <SurfaceCard>
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">Ready to join</p>
           <p className="text-sm text-foreground">
-            Pay {buyInUsdc} USDC buy-in to lock your seat for this session.
+            Join free — wager USDC per round when you play.
           </p>
           <div className="mt-4">
             <Button
@@ -2255,7 +2375,7 @@ export function SpotrSessionDetailShell({
               disabled={isPending || !session.chainSessionNumber}
               onClick={handleJoin}
             >
-              {isPending ? "Confirming on Solana…" : "Join Session"}
+              {isPending ? "Registering on Solana…" : "Join Session"}
             </Button>
           </div>
           {!session.chainSessionNumber && (

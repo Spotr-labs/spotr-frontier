@@ -27,6 +27,8 @@ export async function POST(request: Request) {
       walletAddress: signedPayload.walletAddress,
       roundId: signedPayload.roundId,
       side: signedPayload.side,
+      wagerLamports: BigInt(signedPayload.wagerLamports),
+      chainTxSignature: signedPayload.chainTxSignature,
     });
 
     return NextResponse.json(responsePayload);

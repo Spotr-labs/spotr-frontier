@@ -216,7 +216,7 @@ function RoundsPanel({
   detail: AdminSessionDetail;
   onRefresh: () => void;
 }) {
-  const { walletAddress, runAction, closeRoundOnChain, sweepOrphansOnChain } =
+  const { walletAddress, runAction, createRoundOnChain, closeRoundOnChain, sweepOrphansOnChain } =
     useAdminDashboard();
 
   return (
@@ -279,6 +279,32 @@ function RoundsPanel({
             </div>
             {detail.chainSessionNumber ? (
               <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={round.status === "closed" || round.status === "skipped"}
+                  onClick={async () => {
+                    if (!walletAddress) {
+                      toast.error("Connect an admin wallet first.");
+                      return;
+                    }
+                    try {
+                      toast.info("Sign create_round in your wallet…");
+                      await createRoundOnChain({
+                        sessionNumber: BigInt(detail.chainSessionNumber!),
+                        roundIndex: round.index,
+                        pairId: round.pairId,
+                      });
+                      toast.success(`Round ${round.index} created on-chain.`);
+                    } catch (error) {
+                      toast.error(
+                        error instanceof Error ? error.message : "Create round failed."
+                      );
+                    }
+                  }}
+                >
+                  Create round
+                </Button>
                 <Button
                   size="sm"
                   variant="secondary"

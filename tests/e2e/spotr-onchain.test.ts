@@ -264,7 +264,7 @@ async function main() {
     sessionNumber: SESSION_NUMBER,
     roundCount: 1,
     roundDurationSeconds: ROUND_DURATION_SECONDS,
-    buyInUsdcUnits: BUY_IN_USDC_UNITS,
+    buyInUsdcUnits: BigInt(0), // free join — wager paid per-round at enter_position
     roundStakeUsdcUnits: ROUND_STAKE_USDC_UNITS,
     protocolFeeBps: 0,
     referralCutBps: 0,
@@ -342,13 +342,14 @@ async function main() {
   const createRoundSig = await sendIxs(admin, [createRoundIx]);
   console.log(`[e2e] round created: ${createRoundSig}`);
 
-  // ── 7. players: enter_position (all on side A) ─────────────────────────
+  // ── 7. players: enter_position (all on side A, 1 USDC wager each) ────────
   for (const player of players) {
     const ix = await getEnterPositionInstructionAsync({
       player,
       session: sessionPda,
       round: roundPda,
       side: SideSelection.A,
+      wagerUsdcUnits: ROUND_STAKE_USDC_UNITS,
     });
     const sig = await sendIxs(player, [ix]);
     console.log(`[e2e] enter ${player.address} → ${sig}`);
@@ -386,12 +387,11 @@ async function main() {
 
   // ── 11. assert vault deltas match the 1.5 / 0.5 / 0 USDC payout split ──
   // Per-player flow: vault pre-join = FUND_PER_PLAYER (2 USDC). join_session
-  // debits buy_in (1 USDC) into session_treasury_tokens; enter_position does
-  // not move tokens (it just allocates from the player's session escrow).
-  // claim_round credits winnings (1.5 / 0.5 / 0) back to the vault.
-  // claim_session_balance refunds remaining_escrow (0, since each player
-  // entered the only round) and decrements the vault lock. Net delta vs
-  // pre-join = winnings − buy_in = +0.5 / -0.5 / -1 USDC.
+  // is free (buy_in = 0). enter_position debits 1 USDC wager from vault into
+  // session_treasury_tokens. claim_round credits winnings (1.5 / 0.5 / 0)
+  // back to the vault. claim_session_balance releases the vault lock (no
+  // refund since remaining_escrow = 0). Net delta vs pre-join =
+  // winnings − wager = +0.5 / -0.5 / -1 USDC.
   const vaultAfter = await Promise.all(
     vaultPdas.map((pda) => getTokenAmount(pda))
   );
@@ -403,19 +403,19 @@ async function main() {
     deltas[0],
     MICRO_USDC_PER_USDC / 2n,
     TOLERANCE_USDC_UNITS,
-    "player1 vault delta ≈ +0.5 USDC (1.5 claim − 1 buy-in)"
+    "player1 vault delta ≈ +0.5 USDC (1.5 claim − 1 wager)"
   );
   assertNearEqual(
     deltas[1],
     -(MICRO_USDC_PER_USDC / 2n),
     TOLERANCE_USDC_UNITS,
-    "player2 vault delta ≈ -0.5 USDC (0.5 claim − 1 buy-in)"
+    "player2 vault delta ≈ -0.5 USDC (0.5 claim − 1 wager)"
   );
   assertNearEqual(
     deltas[2],
     -MICRO_USDC_PER_USDC,
     TOLERANCE_USDC_UNITS,
-    "player3 vault delta ≈ -1 USDC (0 claim − 1 buy-in)"
+    "player3 vault delta ≈ -1 USDC (0 claim − 1 wager)"
   );
 
   // ── 12. sweep_orphans → protocol_treasury_tokens receives 1 USDC ───────
