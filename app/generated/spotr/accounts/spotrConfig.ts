@@ -62,7 +62,6 @@ export type SpotrConfig = {
   defaultRoundCount: number;
   defaultRoundDurationSeconds: bigint;
   defaultBuyInUsdcUnits: bigint;
-  defaultRoundStakeUsdcUnits: bigint;
   bump: number;
 };
 
@@ -74,7 +73,6 @@ export type SpotrConfigArgs = {
   defaultRoundCount: number;
   defaultRoundDurationSeconds: number | bigint;
   defaultBuyInUsdcUnits: number | bigint;
-  defaultRoundStakeUsdcUnits: number | bigint;
   bump: number;
 };
 
@@ -90,7 +88,6 @@ export function getSpotrConfigEncoder(): FixedSizeEncoder<SpotrConfigArgs> {
       ["defaultRoundCount", getU8Encoder()],
       ["defaultRoundDurationSeconds", getI64Encoder()],
       ["defaultBuyInUsdcUnits", getU64Encoder()],
-      ["defaultRoundStakeUsdcUnits", getU64Encoder()],
       ["bump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: SPOTR_CONFIG_DISCRIMINATOR }),
@@ -108,7 +105,6 @@ export function getSpotrConfigDecoder(): FixedSizeDecoder<SpotrConfig> {
     ["defaultRoundCount", getU8Decoder()],
     ["defaultRoundDurationSeconds", getI64Decoder()],
     ["defaultBuyInUsdcUnits", getU64Decoder()],
-    ["defaultRoundStakeUsdcUnits", getU64Decoder()],
     ["bump", getU8Decoder()],
   ]);
 }
@@ -175,5 +171,5 @@ export async function fetchAllMaybeSpotrConfig(
 }
 
 export function getSpotrConfigSize(): number {
-  return 102;
+  return 94;
 }

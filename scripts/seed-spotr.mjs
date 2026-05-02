@@ -56,9 +56,6 @@ async function main() {
     sessionBuyInLamports: BigInt(
       readInt("NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS")
     ),
-    roundMinStakeLamports: BigInt(
-      readInt("NEXT_PUBLIC_SPOTR_ROUND_MIN_STAKE_LAMPORTS")
-    ),
     roundCount: readInt("NEXT_PUBLIC_SPOTR_ROUND_COUNT"),
     roundDurationSeconds: readInt("NEXT_PUBLIC_SPOTR_ROUND_DURATION_SECONDS"),
     protocolFeeBps: readInt("NEXT_PUBLIC_SPOTR_PROTOCOL_FEE_BPS"),
@@ -131,7 +128,6 @@ async function main() {
         roundCount: config.roundCount,
         roundDurationSeconds: config.roundDurationSeconds,
         buyInLamports: config.sessionBuyInLamports,
-        roundStakeLamports: config.roundMinStakeLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,
         minWallets: config.sessionMinWallets,
@@ -174,7 +170,6 @@ async function main() {
         roundCount: config.roundCount,
         roundDurationSeconds: config.roundDurationSeconds,
         buyInLamports: config.sessionBuyInLamports,
-        roundStakeLamports: config.roundMinStakeLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,
         minWallets: config.sessionMinWallets,

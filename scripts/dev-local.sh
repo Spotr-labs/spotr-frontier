@@ -28,8 +28,7 @@ if ! command -v solana &>/dev/null; then
   exit 1
 fi
 
-if [ ! -f "$PROGRAM_SO" ]; then
-  echo "[dev-local] program .so not found at $PROGRAM_SO"
+if [ ! -f "$PROGRAM_SO" ] || [ "$ROOT/anchor/programs/spotr_markets/src/lib.rs" -nt "$PROGRAM_SO" ]; then
   echo "[dev-local] running anchor build …"
   (cd "$ROOT/anchor" && anchor build)
 fi
@@ -52,6 +51,13 @@ cleanup() {
   fi
 }
 trap cleanup EXIT INT TERM
+
+# ── tear down any stale processes from a previous session ───────────────────
+for _port in 8899 8900; do
+  lsof -ti tcp:"$_port" | xargs kill -9 2>/dev/null || true
+done
+pkill -f "next dev" 2>/dev/null || true
+rm -f "$ROOT/.next/dev/lock"
 
 # ── start surfpool ───────────────────────────────────────────────────────────
 echo "[dev-local] starting surfpool (log → $SURFPOOL_LOG)"
@@ -112,17 +118,22 @@ fi
 USDC_AUTH_PUBKEY=$(solana-keygen pubkey "$USDC_AUTH_KP")
 USDC_MINT_ADDR=$(solana-keygen pubkey "$USDC_MINT_KP")
 
-# Fund authority on this fresh validator instance
+# Fund the mint authority on this fresh validator instance
 solana airdrop 100 "$USDC_AUTH_PUBKEY" --url "$RPC_URL" --keypair "$PAYER_KP" >/dev/null
 
-# Create the token using the persistent mint keypair (address stays stable across runs)
-spl-token create-token \
-  --url "$RPC_URL" \
-  --fee-payer "$PAYER_KP" \
-  --mint-authority "$USDC_AUTH_PUBKEY" \
-  --decimals 6 \
-  "$USDC_MINT_KP" >/dev/null
-echo "[dev-local] ✓  mock USDC mint: $USDC_MINT_ADDR"
+# Create the token using the persistent mint keypair (address stays stable across runs).
+# Guard against the rare case where surfpool kept state across restarts.
+if spl-token display "$USDC_MINT_ADDR" --url "$RPC_URL" &>/dev/null; then
+  echo "[dev-local] ✓  mock USDC mint already exists: $USDC_MINT_ADDR"
+else
+  spl-token create-token \
+    --url "$RPC_URL" \
+    --fee-payer "$PAYER_KP" \
+    --mint-authority "$USDC_AUTH_PUBKEY" \
+    --decimals 6 \
+    "$USDC_MINT_KP" >/dev/null
+  echo "[dev-local] ✓  mock USDC mint: $USDC_MINT_ADDR"
+fi
 
 # ── next dev ────────────────────────────────────────────────────────────────
 # Override cluster for the entire Next.js process tree.
@@ -140,8 +151,13 @@ export NEXT_PUBLIC_SPOTR_DEFAULT_SESSION_END_HOUR_UTC=23
 
 # ── db reset + seed ──────────────────────────────────────────────────────────
 echo "[dev-local] resetting database …"
-rm -f "$ROOT/prisma/dev.db"
-npx prisma db push --skip-generate
+# Prisma CLI reads .env but not .env.local — load the local DATABASE_URL explicitly
+# so it hits the local postgres instance, not the cloud database in .env.
+if [ -f "$ROOT/.env.local" ]; then
+  _local_db=$(grep '^DATABASE_URL=' "$ROOT/.env.local" | head -1 | cut -d= -f2- | tr -d '"')
+  [ -n "$_local_db" ] && export DATABASE_URL="$_local_db"
+fi
+PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION="yes" npx prisma db push --force-reset --skip-generate
 node --env-file=.env --env-file=.env.local scripts/seed-spotr.mjs
 echo "[dev-local] ✓  database ready"
 

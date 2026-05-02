@@ -74,7 +74,8 @@ export type EnterPositionInstruction<
   TAccountVaultTokens extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
   TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
-  TAccountTokenProgram extends string | AccountMeta<string> = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  TAccountTokenProgram extends string | AccountMeta<string> =
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TAccountSystemProgram extends string | AccountMeta<string> =
     "11111111111111111111111111111111",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -128,7 +129,7 @@ export type EnterPositionInstructionData = {
 
 export type EnterPositionInstructionDataArgs = {
   side: SideSelectionArgs;
-  wagerUsdcUnits: bigint;
+  wagerUsdcUnits: number | bigint;
 };
 
 export function getEnterPositionInstructionDataEncoder(): FixedSizeEncoder<EnterPositionInstructionDataArgs> {
@@ -232,9 +233,11 @@ export async function getEnterPositionInstructionAsync<
     TAccountSystemProgram
   >
 > {
+  // Program address.
   const programAddress =
     config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
 
+  // Original accounts.
   const originalAccounts = {
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: true },
@@ -243,8 +246,14 @@ export async function getEnterPositionInstructionAsync<
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: false },
-    sessionTreasuryTokens: { value: input.sessionTreasuryTokens ?? null, isWritable: true },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
@@ -253,8 +262,10 @@ export async function getEnterPositionInstructionAsync<
     ResolvedAccount
   >;
 
+  // Original args.
   const args = { ...input };
 
+  // Resolve default values.
   if (!accounts.playerSession.value) {
     accounts.playerSession.value = await findPlayerSessionPda({
       session: expectAddress(accounts.session.value),
@@ -401,9 +412,11 @@ export function getEnterPositionInstruction<
   TAccountTokenProgram,
   TAccountSystemProgram
 > {
+  // Program address.
   const programAddress =
     config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
 
+  // Original accounts.
   const originalAccounts = {
     player: { value: input.player ?? null, isWritable: true },
     session: { value: input.session ?? null, isWritable: true },
@@ -412,8 +425,14 @@ export function getEnterPositionInstruction<
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
-    sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: false },
-    sessionTreasuryTokens: { value: input.sessionTreasuryTokens ?? null, isWritable: true },
+    sessionTreasury: {
+      value: input.sessionTreasury ?? null,
+      isWritable: false,
+    },
+    sessionTreasuryTokens: {
+      value: input.sessionTreasuryTokens ?? null,
+      isWritable: true,
+    },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
@@ -422,8 +441,10 @@ export function getEnterPositionInstruction<
     ResolvedAccount
   >;
 
+  // Original args.
   const args = { ...input };
 
+  // Resolve default values.
   if (!accounts.tokenProgram.value) {
     accounts.tokenProgram.value =
       "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">;
@@ -498,6 +519,7 @@ export function parseEnterPositionInstruction<
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedEnterPositionInstruction<TProgram, TAccountMetas> {
   if (instruction.accounts.length < 11) {
+    // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
   let accountIndex = 0;

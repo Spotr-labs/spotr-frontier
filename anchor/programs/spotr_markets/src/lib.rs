@@ -49,7 +49,6 @@ pub mod spotr_markets {
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
         config.default_buy_in_usdc_units = input.buy_in_usdc_units;
-        config.default_round_stake_usdc_units = input.round_stake_usdc_units;
         config.bump = ctx.bumps.config;
 
         let treasury = &mut ctx.accounts.protocol_treasury;
@@ -70,8 +69,6 @@ pub mod spotr_markets {
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
         config.default_buy_in_usdc_units = input.buy_in_usdc_units;
-        config.default_round_stake_usdc_units = input.round_stake_usdc_units;
-
         Ok(())
     }
 
@@ -88,7 +85,6 @@ pub mod spotr_markets {
         session.round_count = input.round_count;
         session.round_duration_seconds = input.round_duration_seconds;
         session.buy_in_usdc_units = input.buy_in_usdc_units;
-        session.round_stake_usdc_units = input.round_stake_usdc_units;
         session.protocol_fee_bps = input.protocol_fee_bps;
         session.referral_cut_bps = input.referral_cut_bps;
         session.min_wallets = input.min_wallets;
@@ -255,21 +251,20 @@ pub mod spotr_markets {
     }
 
     pub fn create_round(ctx: Context<CreateRound>, input: RoundInput) -> Result<()> {
-        let clock = Clock::get()?;
         let session = &ctx.accounts.session;
-        require!(session.status == SessionStatus::Live, SpotrError::SessionNotLive);
         require!(input.index < session.round_count, SpotrError::InvalidRoundIndex);
 
+        // Rounds open and close with the session — they share the session's
+        // window. The per-round timestamps are stored for telemetry / UI
+        // display only; entry/close gating is now driven by `session.status`
+        // and `session.end_ts`, not these values.
         let round = &mut ctx.accounts.round;
         round.session = session.key();
         round.index = input.index;
         round.state = RoundState::Open;
         round.pair_id = input.pair_id;
-        round.opens_at = clock.unix_timestamp.max(session.start_ts);
-        round.closes_at = round
-            .opens_at
-            .checked_add(session.round_duration_seconds)
-            .ok_or(SpotrError::MathOverflow)?;
+        round.opens_at = session.start_ts;
+        round.closes_at = session.end_ts;
         round.side_a = SideState::default();
         round.side_b = SideState::default();
         round.total_volume_usdc_units = 0;
@@ -288,9 +283,10 @@ pub mod spotr_markets {
         let round = &mut ctx.accounts.round;
         let player_session = &mut ctx.accounts.player_session;
 
+        // The session is the container: every round is open while the session
+        // is Live, and every round closes together when the session ends.
         require!(session.status == SessionStatus::Live, SpotrError::SessionNotLive);
         require!(round.state == RoundState::Open, SpotrError::RoundClosed);
-        require!(clock.unix_timestamp < round.closes_at, SpotrError::RoundClosed);
         require!(
             wager_usdc_units >= MIN_POSITION_USDC_UNITS,
             SpotrError::StakeBelowMinimum
@@ -396,7 +392,9 @@ pub mod spotr_markets {
         Ok(())
     }
 
-    /// PRD §3.6.5 — permissionless, idempotent. Anyone can close an expired round.
+    /// Permissionless, idempotent. Rounds close together with the session:
+    /// once the session has reached its scheduled `end_ts` (or has already
+    /// transitioned out of Live), anyone can flush a round to `Closed`.
     pub fn close_round(ctx: Context<CloseRound>) -> Result<()> {
         let clock = Clock::get()?;
         let round = &mut ctx.accounts.round;
@@ -406,10 +404,10 @@ pub mod spotr_markets {
             return Ok(());
         }
 
-        require!(
-            clock.unix_timestamp >= round.closes_at,
-            SpotrError::RoundStillOpen
-        );
+        let session_ended = clock.unix_timestamp >= session.end_ts
+            || session.status == SessionStatus::Completed
+            || session.status == SessionStatus::Expired;
+        require!(session_ended, SpotrError::RoundStillOpen);
         round.state = RoundState::Closed;
 
         session.rounds_closed = session
@@ -420,6 +418,47 @@ pub mod spotr_markets {
             session.status = SessionStatus::Completed;
         }
 
+        Ok(())
+    }
+
+    /// Admin-only: force-close an open round before its `closes_at`.
+    /// Used when the admin wants to wind a session down early. Closing all
+    /// rounds via this path also flips `Session.status` to `Completed`,
+    /// matching the natural permissionless `close_round` flow.
+    pub fn admin_close_round(ctx: Context<AdminCloseRound>) -> Result<()> {
+        let round = &mut ctx.accounts.round;
+        let session = &mut ctx.accounts.session;
+
+        if round.state == RoundState::Closed {
+            return Ok(());
+        }
+
+        round.state = RoundState::Closed;
+
+        session.rounds_closed = session
+            .rounds_closed
+            .checked_add(1)
+            .ok_or(SpotrError::MathOverflow)?;
+        if session.rounds_closed >= session.round_count {
+            session.status = SessionStatus::Completed;
+        }
+
+        Ok(())
+    }
+
+    /// Admin-only: mark a session `Completed` once every round has been closed.
+    /// `admin_close_round` already does this on the last round, but this is a
+    /// safety hatch if rounds ended via the permissionless path and the
+    /// session-status flip somehow wasn't triggered.
+    pub fn admin_close_session(ctx: Context<AdminCloseSession>) -> Result<()> {
+        let session = &mut ctx.accounts.session;
+        require!(
+            session.rounds_closed >= session.round_count,
+            SpotrError::RoundStillOpen
+        );
+        if session.status != SessionStatus::Completed {
+            session.status = SessionStatus::Completed;
+        }
         Ok(())
     }
 
@@ -611,7 +650,6 @@ pub struct ConfigInput {
     pub round_count: u8,
     pub round_duration_seconds: i64,
     pub buy_in_usdc_units: u64,
-    pub round_stake_usdc_units: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
@@ -620,7 +658,6 @@ pub struct SessionInput {
     pub round_count: u8,
     pub round_duration_seconds: i64,
     pub buy_in_usdc_units: u64,
-    pub round_stake_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub min_wallets: u16,
@@ -683,7 +720,6 @@ pub struct SpotrConfig {
     pub default_round_count: u8,
     pub default_round_duration_seconds: i64,
     pub default_buy_in_usdc_units: u64,
-    pub default_round_stake_usdc_units: u64,
     pub bump: u8,
 }
 
@@ -705,7 +741,6 @@ pub struct Session {
     pub round_count: u8,
     pub round_duration_seconds: i64,
     pub buy_in_usdc_units: u64,
-    pub round_stake_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub min_wallets: u16,
@@ -835,7 +870,6 @@ pub struct CreateSession<'info> {
     #[account(
         seeds = [CONFIG_SEED],
         bump = config.bump,
-        has_one = authority
     )]
     pub config: Account<'info, SpotrConfig>,
     #[account(
@@ -875,11 +909,6 @@ pub struct InitUserVault<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump
-    )]
-    pub config: Account<'info, SpotrConfig>,
-    #[account(
         init,
         payer = owner,
         space = 8 + UserVault::INIT_SPACE,
@@ -896,7 +925,6 @@ pub struct InitUserVault<'info> {
         token::authority = vault,
     )]
     pub vault_tokens: Account<'info, TokenAccount>,
-    #[account(address = config.usdc_mint @ SpotrError::InvalidMint)]
     pub usdc_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -908,11 +936,6 @@ pub struct DepositToVault<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump
-    )]
-    pub config: Account<'info, SpotrConfig>,
-    #[account(
         mut,
         seeds = [USER_VAULT_SEED, owner.key().as_ref()],
         bump = vault.bump,
@@ -927,7 +950,7 @@ pub struct DepositToVault<'info> {
     pub vault_tokens: Account<'info, TokenAccount>,
     #[account(
         mut,
-        constraint = owner_token_account.mint == config.usdc_mint @ SpotrError::InvalidMint,
+        constraint = owner_token_account.mint == vault_tokens.mint @ SpotrError::InvalidMint,
         constraint = owner_token_account.owner == owner.key() @ SpotrError::InvalidMint,
     )]
     pub owner_token_account: Account<'info, TokenAccount>,
@@ -939,11 +962,6 @@ pub struct WithdrawFromVault<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump
-    )]
-    pub config: Account<'info, SpotrConfig>,
-    #[account(
         mut,
         seeds = [USER_VAULT_SEED, owner.key().as_ref()],
         bump = vault.bump,
@@ -958,7 +976,7 @@ pub struct WithdrawFromVault<'info> {
     pub vault_tokens: Account<'info, TokenAccount>,
     #[account(
         mut,
-        constraint = owner_token_account.mint == config.usdc_mint @ SpotrError::InvalidMint,
+        constraint = owner_token_account.mint == vault_tokens.mint @ SpotrError::InvalidMint,
         constraint = owner_token_account.owner == owner.key() @ SpotrError::InvalidMint,
     )]
     pub owner_token_account: Account<'info, TokenAccount>,
@@ -1095,6 +1113,33 @@ pub struct CloseRound<'info> {
 }
 
 #[derive(Accounts)]
+pub struct AdminCloseRound<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        has_one = authority @ SpotrError::InvalidConfig,
+    )]
+    pub session: Account<'info, Session>,
+    #[account(
+        mut,
+        seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
+        bump = round.bump,
+        constraint = round.session == session.key() @ SpotrError::InvalidConfig,
+    )]
+    pub round: Account<'info, Round>,
+}
+
+#[derive(Accounts)]
+pub struct AdminCloseSession<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        has_one = authority @ SpotrError::InvalidConfig,
+    )]
+    pub session: Account<'info, Session>,
+}
+
+#[derive(Accounts)]
 pub struct ClaimRound<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
@@ -1221,7 +1266,6 @@ pub struct WithdrawProtocolFees<'info> {
     #[account(
         seeds = [CONFIG_SEED],
         bump = config.bump,
-        has_one = authority
     )]
     pub config: Account<'info, SpotrConfig>,
     #[account(mut, has_one = authority)]
@@ -1258,15 +1302,6 @@ fn validate_config(input: ConfigInput) -> Result<()> {
     require!(input.round_count > 0, SpotrError::InvalidConfig);
     require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
     require!(input.buy_in_usdc_units > 0, SpotrError::InvalidConfig);
-    require!(input.round_stake_usdc_units > 0, SpotrError::InvalidConfig);
-    require!(
-        input.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
-        SpotrError::StakeBelowMinimum
-    );
-    require!(
-        input.round_stake_usdc_units <= input.buy_in_usdc_units,
-        SpotrError::InvalidConfig
-    );
     Ok(())
 }
 
@@ -1275,17 +1310,6 @@ fn validate_session_input(input: SessionInput) -> Result<()> {
     require!(input.referral_cut_bps <= 10_000, SpotrError::InvalidConfig);
     require!(input.round_count > 0, SpotrError::InvalidConfig);
     require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
-    require!(
-        input.round_stake_usdc_units >= MIN_POSITION_USDC_UNITS,
-        SpotrError::StakeBelowMinimum
-    );
-    // When buy_in > 0, round stake must not exceed the buy-in.
-    if input.buy_in_usdc_units > 0 {
-        require!(
-            input.round_stake_usdc_units <= input.buy_in_usdc_units,
-            SpotrError::InvalidConfig
-        );
-    }
     require!(input.min_wallets > 0, SpotrError::InvalidConfig);
     require!(input.end_ts > input.start_ts, SpotrError::InvalidConfig);
     Ok(())

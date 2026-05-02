@@ -96,8 +96,16 @@ function SessionHeader({
   detail: AdminSessionDetail;
   onRefresh: () => void;
 }) {
-  const { walletAddress, runAction, finalizeSessionOnChain, withdrawProtocolFeesOnChain } =
-    useAdminDashboard();
+  const {
+    walletAddress,
+    runAction,
+    finalizeSessionOnChain,
+    adminCloseRoundOnChain,
+    adminCloseSessionOnChain,
+    submitSignedAction,
+    withdrawProtocolFeesOnChain,
+  } = useAdminDashboard();
+  const openRounds = detail.rounds.filter((r) => r.status !== "closed");
   return (
     <div className="mb-6 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/22 p-4 lg:grid-cols-4">
       <Stat label="Status" value={<StatusBadge label={detail.status} tone={detail.status === "live" ? "success" : detail.status === "completed" ? "primary" : detail.status === "expired" ? "danger" : "warning"} />} />
@@ -154,6 +162,72 @@ function SessionHeader({
             }}
           >
             <FlagOff className="h-3 w-3" /> Finalize chain
+          </Button>
+        ) : null}
+        {detail.chainSessionNumber &&
+        (detail.status === "live" || detail.status === "pending") ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={async () => {
+              if (!walletAddress) {
+                toast.error("Connect an admin wallet first.");
+                return;
+              }
+              const sessionNumber = BigInt(detail.chainSessionNumber!);
+              try {
+                if (openRounds.length > 0) {
+                  toast.info(
+                    `Sign ${openRounds.length} admin_close_round tx${openRounds.length === 1 ? "" : "s"}…`
+                  );
+                  for (const round of openRounds) {
+                    const { signature } = await adminCloseRoundOnChain({
+                      sessionNumber,
+                      roundIndex: round.index,
+                    });
+                    await submitSignedAction(
+                      "/api/admin/sessions/close-round",
+                      "admin-close-round",
+                      {
+                        adminWalletAddress: walletAddress,
+                        sessionId: detail.id,
+                        roundId: round.id,
+                        chainTxSignature: signature,
+                      }
+                    );
+                  }
+                }
+                toast.info("Sign admin_close_session in your wallet…");
+                const { sessionSignature } = await adminCloseSessionOnChain({
+                  sessionNumber,
+                  openRoundIndices: [],
+                });
+                runAction(
+                  "/api/admin/sessions/finalize-chain",
+                  "admin-finalize-session",
+                  {
+                    adminWalletAddress: walletAddress,
+                    sessionId: detail.id,
+                    chainTxSignature: sessionSignature,
+                  },
+                  {
+                    successMessage:
+                      openRounds.length > 0
+                        ? `Closed ${openRounds.length} round${openRounds.length === 1 ? "" : "s"} and session.`
+                        : "Session closed on-chain.",
+                    onSuccess: onRefresh,
+                  }
+                );
+              } catch (error) {
+                toast.error(
+                  error instanceof Error
+                    ? error.message
+                    : "Close session failed."
+                );
+              }
+            }}
+          >
+            <FlagOff className="h-3 w-3" /> Close session
           </Button>
         ) : null}
         {detail.chainSessionNumber && detail.protocolFeeAccruedLamports > 0 ? (

@@ -292,6 +292,7 @@ function DeployOnChainButton({
             sessionNumber,
             startTsSeconds,
             endTsSeconds,
+            pairIds: session.pairIds,
           });
           runAction(
             "/api/admin/sessions/chain-deploy",

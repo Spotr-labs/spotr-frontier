@@ -3,6 +3,8 @@
 import { address, type Address, type TransactionSigner } from "@solana/kit";
 import { createClient } from "@solana/kit-client-rpc";
 import {
+  getAdminCloseRoundInstruction,
+  getAdminCloseSessionInstruction,
   getCloseRoundInstruction,
   getCreateRoundInstruction,
   getFinalizeSessionInstruction,
@@ -46,6 +48,54 @@ export async function submitCloseRoundOnChain(
   const ix = getCloseRoundInstruction({
     session: sessionAddress,
     round: roundAddress,
+  });
+  const txClient = createClient({
+    url: getClusterUrl(params.cluster),
+    rpcSubscriptionsConfig: getClusterWsConfig(params.cluster),
+    payer: params.signer,
+  });
+  const result = await txClient.sendTransaction([ix]);
+  return { signature: String(result.context.signature) };
+}
+
+export type SubmitAdminCloseRoundParams = ChainParams & {
+  sessionNumber: bigint;
+  roundIndex: number;
+};
+
+export async function submitAdminCloseRoundOnChain(
+  params: SubmitAdminCloseRoundParams
+): Promise<{ signature: string }> {
+  const [sessionAddress] = await findSpotrSessionPda(params.sessionNumber);
+  const [roundAddress] = await findSpotrRoundPda({
+    session: sessionAddress,
+    index: params.roundIndex,
+  });
+  const ix = getAdminCloseRoundInstruction({
+    authority: params.signer,
+    session: sessionAddress,
+    round: roundAddress,
+  });
+  const txClient = createClient({
+    url: getClusterUrl(params.cluster),
+    rpcSubscriptionsConfig: getClusterWsConfig(params.cluster),
+    payer: params.signer,
+  });
+  const result = await txClient.sendTransaction([ix]);
+  return { signature: String(result.context.signature) };
+}
+
+export type SubmitAdminCloseSessionParams = ChainParams & {
+  sessionNumber: bigint;
+};
+
+export async function submitAdminCloseSessionOnChain(
+  params: SubmitAdminCloseSessionParams
+): Promise<{ signature: string }> {
+  const [sessionAddress] = await findSpotrSessionPda(params.sessionNumber);
+  const ix = getAdminCloseSessionInstruction({
+    authority: params.signer,
+    session: sessionAddress,
   });
   const txClient = createClient({
     url: getClusterUrl(params.cluster),

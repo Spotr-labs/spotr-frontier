@@ -21,6 +21,7 @@ import {
   getMintToInstruction,
   TOKEN_PROGRAM_ADDRESS,
 } from "@solana-program/token";
+import { findVaultTokensPda } from "../../generated/spotr/pdas/vaultTokens";
 
 export const dynamic = "force-dynamic";
 
@@ -138,8 +139,86 @@ export async function POST(request: Request) {
     return NextResponse.json({ signature: String(sig) });
   }
 
+  // ── USDC → program vault (mints into the user_vault_tokens PDA) ─────────
+  if (type === "usdc-vault") {
+    const mintAddress = process.env.USDC_MINT_ADDRESS;
+    if (!mintAddress) {
+      return NextResponse.json(
+        { error: "USDC_MINT_ADDRESS env var not set. Start with npm run dev:local." },
+        { status: 500 }
+      );
+    }
+
+    const authKeyPath = path.join(process.cwd(), "keys", "usdc-mint-authority.json");
+    let authorityBytes: number[];
+    try {
+      authorityBytes = JSON.parse(readFileSync(authKeyPath, "utf-8")) as number[];
+    } catch {
+      return NextResponse.json(
+        { error: "Could not read mint authority keypair from /keys/." },
+        { status: 500 }
+      );
+    }
+
+    const authoritySigner = await createKeyPairSignerFromBytes(
+      new Uint8Array(authorityBytes)
+    );
+    const mintAddr = address(mintAddress);
+
+    const [vaultTokensPda] = await findVaultTokensPda({ player: walletAddr });
+
+    const accountInfo = await rpc
+      .getAccountInfo(vaultTokensPda, { encoding: "base64" })
+      .send();
+    if (!accountInfo.value) {
+      return NextResponse.json(
+        { error: "Vault not initialized for this wallet." },
+        { status: 400 }
+      );
+    }
+    if (accountInfo.value.owner !== TOKEN_PROGRAM_ADDRESS) {
+      return NextResponse.json(
+        { error: "Vault token account exists but is not owned by the SPL Token program." },
+        { status: 400 }
+      );
+    }
+
+    const usdc = Math.min(Number(amount) || 1_000, USDC_AIRDROP_CAP);
+    const rawAmount = BigInt(Math.floor(usdc * 1e6));
+
+    const mintToIx = getMintToInstruction({
+      mint: mintAddr,
+      token: vaultTokensPda,
+      mintAuthority: authoritySigner,
+      amount: rawAmount,
+    });
+
+    const { value: { blockhash, lastValidBlockHeight } } =
+      await rpc.getLatestBlockhash().send();
+
+    const message = pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(authoritySigner, m),
+      (m) =>
+        setTransactionMessageLifetimeUsingBlockhash(
+          { blockhash, lastValidBlockHeight },
+          m
+        ),
+      (m) => appendTransactionMessageInstructions([mintToIx], m)
+    );
+
+    const signed = await signTransactionMessageWithSigners(message);
+    const encoded = getBase64EncodedWireTransaction(signed);
+
+    const sig = await rpc
+      .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
+      .send();
+
+    return NextResponse.json({ signature: String(sig) });
+  }
+
   return NextResponse.json(
-    { error: `Unknown type: ${type}. Use 'sol' or 'usdc'.` },
+    { error: `Unknown type: ${type}. Use 'sol', 'usdc', or 'usdc-vault'.` },
     { status: 400 }
   );
 }

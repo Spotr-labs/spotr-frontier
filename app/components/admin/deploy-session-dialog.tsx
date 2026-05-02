@@ -61,6 +61,7 @@ export function DeploySessionDialog({
   const [pairIds, setPairIds] = useState<string[]>([]);
   const [overrideStarts, setOverrideStarts] = useState("");
   const [overrideEnds, setOverrideEnds] = useState("");
+  const [isFree, setIsFree] = useState(false);
   const [cardPackItems, setCardPackItems] = useState<CardPackItem[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -134,6 +135,7 @@ export function DeploySessionDialog({
     setPairIds([]);
     setOverrideStarts("");
     setOverrideEnds("");
+    setIsFree(false);
     setCardPackItems([]);
     setSearch("");
     setDebouncedSearch("");
@@ -160,6 +162,7 @@ export function DeploySessionDialog({
 
     setIsSubmitting(true);
     try {
+      const buyInLamports = isFree ? 0 : undefined;
       const dbResult = await submitSignedAction<unknown, DeployResult>(
         "/api/admin/sessions/deploy",
         "admin-deploy-session",
@@ -173,6 +176,7 @@ export function DeploySessionDialog({
           overrideEndsAtIso: overrideEnds
             ? new Date(overrideEnds).toISOString()
             : null,
+          buyInLamports,
           cardPackItems: cardPackItems.length === 0
             ? undefined
             : cardPackItems.map((item) => ({
@@ -194,6 +198,8 @@ export function DeploySessionDialog({
         endTsSeconds: BigInt(
           Math.floor(new Date(dbResult.endsAtIso).getTime() / 1000)
         ),
+        pairIds,
+        buyInUsdcUnits: isFree ? 0n : undefined,
       });
 
       await submitSignedAction(
@@ -237,6 +243,15 @@ export function DeploySessionDialog({
               onChange={(event) => setTitle(event.target.value)}
               placeholder="Auto-generated if empty"
             />
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={isFree}
+                onChange={(e) => setIsFree(e.target.checked)}
+                className="h-4 w-4 rounded border-white/20 accent-primary"
+              />
+              <span className="text-muted">Free session (no buy-in)</span>
+            </label>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-2">

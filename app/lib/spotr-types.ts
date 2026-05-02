@@ -16,7 +16,6 @@ export type SpotrPublicConfig = {
   sessionMinWallets: number;
   sessionMinTotalLamports: number;
   sessionBuyInLamports: number;
-  roundMinStakeLamports: number;
   roundCount: number;
   roundDurationSeconds: number;
   protocolFeeBps: number;
@@ -237,6 +236,7 @@ export type AdminSessionListItem = {
   chainSessionAddress: string | null;
   chainDeployTxSignature: string | null;
   createdAtIso: string;
+  pairIds: string[];
 };
 
 export type AdminSessionListResponse = {
@@ -337,7 +337,6 @@ export type AdminSessionDetail = {
   totalEscrowLamports: number;
   protocolFeeAccruedLamports: number;
   buyInLamports: number;
-  roundStakeLamports: number;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;

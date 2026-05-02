@@ -7,6 +7,8 @@ import { useCluster } from "../cluster-context";
 import { createSignedActionRequest } from "../../lib/wallet/signed-request";
 import { submitDeploySessionOnChain } from "../../lib/chain/spotr-deploy-session";
 import {
+  submitAdminCloseRoundOnChain,
+  submitAdminCloseSessionOnChain,
   submitCloseRoundOnChain,
   submitCreateRoundOnChain,
   submitFinalizeSessionOnChain,
@@ -129,6 +131,44 @@ export function useAdminDashboard() {
     },
     [cluster, signer]
   );
+  const adminCloseRoundOnChain = useCallback(
+    async (params: { sessionNumber: bigint; roundIndex: number }) => {
+      if (!signer) throw new Error("Connect an admin wallet that can sign.");
+      return submitAdminCloseRoundOnChain({
+        cluster,
+        signer,
+        sessionNumber: params.sessionNumber,
+        roundIndex: params.roundIndex,
+      });
+    },
+    [cluster, signer]
+  );
+  const adminCloseSessionOnChain = useCallback(
+    async (params: {
+      sessionNumber: bigint;
+      openRoundIndices: number[];
+    }): Promise<{ roundSignatures: string[]; sessionSignature: string }> => {
+      if (!signer) throw new Error("Connect an admin wallet that can sign.");
+      const roundSignatures: string[] = [];
+      for (const roundIndex of params.openRoundIndices) {
+        const { signature } = await submitAdminCloseRoundOnChain({
+          cluster,
+          signer,
+          sessionNumber: params.sessionNumber,
+          roundIndex,
+        });
+        roundSignatures.push(signature);
+      }
+      const { signature: sessionSignature } =
+        await submitAdminCloseSessionOnChain({
+          cluster,
+          signer,
+          sessionNumber: params.sessionNumber,
+        });
+      return { roundSignatures, sessionSignature };
+    },
+    [cluster, signer]
+  );
   const sweepOrphansOnChain = useCallback(
     async (params: { sessionNumber: bigint; roundIndex: number }) => {
       if (!signer) throw new Error("Connect an admin wallet that can sign.");
@@ -169,6 +209,8 @@ export function useAdminDashboard() {
       sessionNumber: bigint;
       startTsSeconds: bigint;
       endTsSeconds: bigint;
+      pairIds: string[];
+      buyInUsdcUnits?: bigint;
     }) => {
       if (!signer) throw new Error("Connect an admin wallet that can sign.");
       return submitDeploySessionOnChain({
@@ -177,6 +219,8 @@ export function useAdminDashboard() {
         sessionNumber: params.sessionNumber,
         startTsSeconds: params.startTsSeconds,
         endTsSeconds: params.endTsSeconds,
+        pairIds: params.pairIds,
+        buyInUsdcUnits: params.buyInUsdcUnits,
       });
     },
     [cluster, signer]
@@ -206,6 +250,8 @@ export function useAdminDashboard() {
     runAction,
     createRoundOnChain,
     closeRoundOnChain,
+    adminCloseRoundOnChain,
+    adminCloseSessionOnChain,
     sweepOrphansOnChain,
     finalizeSessionOnChain,
     withdrawProtocolFeesOnChain,

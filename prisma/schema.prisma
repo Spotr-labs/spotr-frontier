@@ -74,7 +74,6 @@ model Session {
   roundCount                Int
   roundDurationSeconds      Int
   buyInLamports             BigInt
-  roundStakeLamports        BigInt
   protocolFeeBps            Int
   referralCutBps            Int
   minWallets                Int

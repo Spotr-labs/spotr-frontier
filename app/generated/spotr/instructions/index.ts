@@ -6,6 +6,8 @@
  * @see https://github.com/codama-idl/codama
  */
 
+export * from "./adminCloseRound";
+export * from "./adminCloseSession";
 export * from "./claimRound";
 export * from "./claimSessionBalance";
 export * from "./closeRound";

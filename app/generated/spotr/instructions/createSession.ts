@@ -117,7 +117,6 @@ export type CreateSessionInstructionData = {
   roundCount: number;
   roundDurationSeconds: bigint;
   buyInUsdcUnits: bigint;
-  roundStakeUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
@@ -131,7 +130,6 @@ export type CreateSessionInstructionDataArgs = {
   roundCount: number;
   roundDurationSeconds: number | bigint;
   buyInUsdcUnits: number | bigint;
-  roundStakeUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
@@ -148,7 +146,6 @@ export function getCreateSessionInstructionDataEncoder(): FixedSizeEncoder<Creat
       ["roundCount", getU8Encoder()],
       ["roundDurationSeconds", getI64Encoder()],
       ["buyInUsdcUnits", getU64Encoder()],
-      ["roundStakeUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
       ["minWallets", getU16Encoder()],
@@ -167,7 +164,6 @@ export function getCreateSessionInstructionDataDecoder(): FixedSizeDecoder<Creat
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
     ["buyInUsdcUnits", getU64Decoder()],
-    ["roundStakeUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["minWallets", getU16Decoder()],
@@ -211,7 +207,6 @@ export type CreateSessionAsyncInput<
   roundCount: CreateSessionInstructionDataArgs["roundCount"];
   roundDurationSeconds: CreateSessionInstructionDataArgs["roundDurationSeconds"];
   buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
-  roundStakeUsdcUnits: CreateSessionInstructionDataArgs["roundStakeUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   minWallets: CreateSessionInstructionDataArgs["minWallets"];
@@ -367,7 +362,6 @@ export type CreateSessionInput<
   roundCount: CreateSessionInstructionDataArgs["roundCount"];
   roundDurationSeconds: CreateSessionInstructionDataArgs["roundDurationSeconds"];
   buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
-  roundStakeUsdcUnits: CreateSessionInstructionDataArgs["roundStakeUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   minWallets: CreateSessionInstructionDataArgs["minWallets"];

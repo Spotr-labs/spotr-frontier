@@ -29,6 +29,7 @@ export async function POST(request: Request) {
       pairIds: payload.pairIds,
       overrideStartsAtIso: payload.overrideStartsAtIso,
       overrideEndsAtIso: payload.overrideEndsAtIso,
+      buyInLamports: payload.buyInLamports ?? null,
       cardPackItems: payload.cardPackItems,
     });
 

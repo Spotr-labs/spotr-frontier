@@ -299,6 +299,7 @@ async function createSessionWithPairs(
     startsAt: Date;
     endsAt: Date;
     pairIds: string[];
+    buyInLamports?: number;
   }
 ) {
   const session = await tx.session.create({
@@ -312,8 +313,7 @@ async function createSessionWithPairs(
       endsAt: input.endsAt,
       roundCount: publicSpotrConfig.roundCount,
       roundDurationSeconds: publicSpotrConfig.roundDurationSeconds,
-      buyInLamports: BigInt(publicSpotrConfig.sessionBuyInLamports),
-      roundStakeLamports: BigInt(publicSpotrConfig.roundMinStakeLamports),
+      buyInLamports: BigInt(input.buyInLamports ?? publicSpotrConfig.sessionBuyInLamports),
       protocolFeeBps: publicSpotrConfig.protocolFeeBps,
       referralCutBps: publicSpotrConfig.referralCutBps,
       minWallets: publicSpotrConfig.sessionMinWallets,
@@ -478,12 +478,11 @@ async function syncSessionState(tx: Tx, sessionId: string) {
   }
 
   if (activatedAt) {
+    // Rounds share the session's window: every round opens together when the
+    // session activates and every round closes together when the session ends.
+    const opensAt = activatedAt;
+    const closesAt = session.endsAt;
     for (const round of session.rounds) {
-      const opensAt = new Date(
-        activatedAt.getTime() +
-          (round.roundIndex - 1) * session.roundDurationSeconds * 1000
-      );
-      const closesAt = new Date(opensAt.getTime() + session.roundDurationSeconds * 1000);
       if (
         round.opensAt?.toISOString() !== opensAt.toISOString() ||
         round.closesAt?.toISOString() !== closesAt.toISOString()
@@ -500,11 +499,7 @@ async function syncSessionState(tx: Tx, sessionId: string) {
   if (!thresholdMet && now > session.endsAt) {
     nextStatus = "EXPIRED";
   } else if (activatedAt) {
-    const sessionDurationMs = session.roundCount * session.roundDurationSeconds * 1000;
-    const naturalCloseAt = new Date(activatedAt.getTime() + sessionDurationMs);
-    const boundedCloseAt = naturalCloseAt < session.endsAt ? naturalCloseAt : session.endsAt;
-
-    if (now >= boundedCloseAt) {
+    if (now >= session.endsAt) {
       nextStatus = "COMPLETED";
     } else if (now >= activatedAt) {
       nextStatus = "LIVE";
@@ -1351,7 +1346,7 @@ export async function joinSpotrSession(input: {
       });
     }
 
-    return buildDashboardPayload(tx, walletAddress);
+    return buildDashboardPayload(tx, walletAddress, sessionId);
   }, { timeout: 30_000 });
 }
 
@@ -1780,6 +1775,7 @@ export async function deployAdminSession(input: {
   pairIds: string[];
   overrideStartsAtIso?: string | null;
   overrideEndsAtIso?: string | null;
+  buyInLamports?: number | null;
   cardPackItems?: Array<{
     kind: RewardInventoryItem["kind"];
     title: string;
@@ -1867,6 +1863,7 @@ export async function deployAdminSession(input: {
       startsAt,
       endsAt,
       pairIds,
+      buyInLamports: input.buyInLamports ?? undefined,
     });
 
     if (cardPackItems.length > 0) {
@@ -2496,6 +2493,7 @@ export async function listAdminSessions(input: {
     orderBy: [{ startsAt: "desc" }, { createdAt: "desc" }],
     skip,
     take: pageSize + 1,
+    include: { rounds: { orderBy: { roundIndex: "asc" }, select: { pairId: true } } },
   });
   const hasMore = items.length > pageSize;
   const slice = hasMore ? items.slice(0, pageSize) : items;
@@ -2522,6 +2520,7 @@ export async function listAdminSessions(input: {
       chainSessionAddress: session.chainSessionAddress ?? null,
       chainDeployTxSignature: session.chainDeployTxSignature ?? null,
       createdAtIso: session.createdAt.toISOString(),
+      pairIds: session.rounds.map((r) => r.pairId),
     })),
     nextCursor: hasMore ? encodeListCursor(skip + pageSize) : null,
   };
@@ -2580,7 +2579,6 @@ export async function getAdminSessionDetail(input: {
       totalEscrowLamports: toNumber(session.totalEscrowLamports),
       protocolFeeAccruedLamports: toNumber(session.protocolFeeAccruedLamports),
       buyInLamports: toNumber(session.buyInLamports),
-      roundStakeLamports: toNumber(session.roundStakeLamports),
       protocolFeeBps: session.protocolFeeBps,
       referralCutBps: session.referralCutBps,
       minWallets: session.minWallets,

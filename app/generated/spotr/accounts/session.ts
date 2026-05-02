@@ -65,7 +65,6 @@ export type Session = {
   roundCount: number;
   roundDurationSeconds: bigint;
   buyInUsdcUnits: bigint;
-  roundStakeUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
@@ -86,7 +85,6 @@ export type SessionArgs = {
   roundCount: number;
   roundDurationSeconds: number | bigint;
   buyInUsdcUnits: number | bigint;
-  roundStakeUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
   minWallets: number;
@@ -111,7 +109,6 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
       ["roundCount", getU8Encoder()],
       ["roundDurationSeconds", getI64Encoder()],
       ["buyInUsdcUnits", getU64Encoder()],
-      ["roundStakeUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
       ["minWallets", getU16Encoder()],
@@ -138,7 +135,6 @@ export function getSessionDecoder(): FixedSizeDecoder<Session> {
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
     ["buyInUsdcUnits", getU64Decoder()],
-    ["roundStakeUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["minWallets", getU16Decoder()],
@@ -212,5 +208,5 @@ export async function fetchAllMaybeSession(
 }
 
 export function getSessionSize(): number {
-  return 124;
+  return 116;
 }

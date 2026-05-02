@@ -29,7 +29,6 @@ export type ConfigInput = {
   roundCount: number;
   roundDurationSeconds: bigint;
   buyInUsdcUnits: bigint;
-  roundStakeUsdcUnits: bigint;
 };
 
 export type ConfigInputArgs = {
@@ -38,7 +37,6 @@ export type ConfigInputArgs = {
   roundCount: number;
   roundDurationSeconds: number | bigint;
   buyInUsdcUnits: number | bigint;
-  roundStakeUsdcUnits: number | bigint;
 };
 
 export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
@@ -48,7 +46,6 @@ export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
     ["roundCount", getU8Encoder()],
     ["roundDurationSeconds", getI64Encoder()],
     ["buyInUsdcUnits", getU64Encoder()],
-    ["roundStakeUsdcUnits", getU64Encoder()],
   ]);
 }
 
@@ -59,7 +56,6 @@ export function getConfigInputDecoder(): FixedSizeDecoder<ConfigInput> {
     ["roundCount", getU8Decoder()],
     ["roundDurationSeconds", getI64Decoder()],
     ["buyInUsdcUnits", getU64Decoder()],
-    ["roundStakeUsdcUnits", getU64Decoder()],
   ]);
 }
 

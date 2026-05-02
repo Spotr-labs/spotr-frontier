@@ -91,13 +91,12 @@ function makeTxClient(cluster: ClusterMoniker, payer: TransactionSigner) {
 
 /**
  * Ensures the player's UserVault is ready (initialized + funded) then
- * submits the join_session instruction.
+ * submits the join_session instruction — all in a single atomic transaction.
  *
- * Each step is sent as its own transaction so intra-tx account visibility
- * is never an issue:
- *   TX 1 (if needed): init_user_vault
- *   TX 2 (if needed): deposit_to_vault
- *   TX 3:             join_session  ← signature returned to backend
+ * Instructions batched (conditionally):
+ *   ix 0 (if needed): init_user_vault
+ *   ix 1 (if needed): deposit_to_vault
+ *   ix N:             join_session  ← signature returned to backend
  *
  * If the PlayerSession PDA already exists the whole flow is skipped and
  * the "already-joined" sentinel is returned.
@@ -134,7 +133,9 @@ export async function submitJoinSessionOnChain(params: {
     );
   }
 
-  // ── TX 1: init vault if missing ──────────────────────────────────────────
+  // ── collect instructions ─────────────────────────────────────────────────
+  const ixs = [];
+
   const [vaultPda] = await findDepositToVaultVaultPda({
     owner: params.player.address,
   });
@@ -142,16 +143,12 @@ export async function submitJoinSessionOnChain(params: {
   console.log("[SPOTR] join: vault already on-chain =", vaultExists);
 
   if (!vaultExists) {
-    console.log("[SPOTR] join: TX1 — initializing user vault…");
-    const initIx = await getInitUserVaultInstructionAsync({
-      owner: params.player,
-      usdcMint,
-    });
-    await txClient.sendTransaction([initIx]);
-    console.log("[SPOTR] join: vault initialized ✓");
+    console.log("[SPOTR] join: will init user vault in batch…");
+    ixs.push(
+      await getInitUserVaultInstructionAsync({ owner: params.player, usdcMint })
+    );
   }
 
-  // ── TX 2: deposit if vault is underfunded ────────────────────────────────
   const [vaultTokensPda] = await findDepositToVaultVaultTokensPda({
     owner: params.player.address,
   });
@@ -160,30 +157,31 @@ export async function submitJoinSessionOnChain(params: {
 
   if (vaultBalance < params.buyInAmount) {
     const depositAmount = params.buyInAmount - vaultBalance;
-    console.log("[SPOTR] join: TX2 — depositing", depositAmount.toString(), "into vault…");
-
+    console.log("[SPOTR] join: will deposit", depositAmount.toString(), "in batch…");
     const [playerAta] = await findAssociatedTokenPda({
       owner: params.player.address,
       mint: usdcMint,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
     });
-
-    const depositIx = await getDepositToVaultInstructionAsync({
-      owner: params.player,
-      ownerTokenAccount: playerAta,
-      amount: depositAmount,
-    });
-    await txClient.sendTransaction([depositIx]);
-    console.log("[SPOTR] join: deposit confirmed ✓");
+    ixs.push(
+      await getDepositToVaultInstructionAsync({
+        owner: params.player,
+        ownerTokenAccount: playerAta,
+        amount: depositAmount,
+      })
+    );
   }
 
-  // ── TX 3: join session ───────────────────────────────────────────────────
-  console.log("[SPOTR] join: TX3 — joining session…");
-  const joinIx = await getJoinSessionInstructionAsync({
-    player: params.player,
-    session: sessionAddress,
-  });
-  const result = await txClient.sendTransaction([joinIx]);
+  ixs.push(
+    await getJoinSessionInstructionAsync({
+      player: params.player,
+      session: sessionAddress,
+    })
+  );
+
+  // ── single atomic TX ─────────────────────────────────────────────────────
+  console.log("[SPOTR] join: sending", ixs.length, "instruction(s) in one TX…");
+  const result = await txClient.sendTransaction(ixs);
   const signature = String(result.context.signature);
   console.log("[SPOTR] join: joined ✓ signature =", signature);
   return { signature, sessionAddress };

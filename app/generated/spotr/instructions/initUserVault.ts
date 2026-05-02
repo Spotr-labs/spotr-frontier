@@ -31,7 +31,6 @@ import {
   type WritableSignerAccount,
 } from "@solana/kit";
 import {
-  findConfigPda,
   findDepositToVaultVaultPda,
   findDepositToVaultVaultTokensPda,
 } from "../pdas";
@@ -55,7 +54,6 @@ export function getInitUserVaultDiscriminatorBytes() {
 export type InitUserVaultInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
   TAccountOwner extends string | AccountMeta<string> = string,
-  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
   TAccountVaultTokens extends string | AccountMeta<string> = string,
   TAccountUsdcMint extends string | AccountMeta<string> = string,
@@ -74,9 +72,6 @@ export type InitUserVaultInstruction<
         ? WritableSignerAccount<TAccountOwner> &
             AccountSignerMeta<TAccountOwner>
         : TAccountOwner,
-      TAccountConfig extends string
-        ? ReadonlyAccount<TAccountConfig>
-        : TAccountConfig,
       TAccountVault extends string
         ? WritableAccount<TAccountVault>
         : TAccountVault,
@@ -130,7 +125,6 @@ export function getInitUserVaultInstructionDataCodec(): FixedSizeCodec<
 
 export type InitUserVaultAsyncInput<
   TAccountOwner extends string = string,
-  TAccountConfig extends string = string,
   TAccountVault extends string = string,
   TAccountVaultTokens extends string = string,
   TAccountUsdcMint extends string = string,
@@ -139,7 +133,6 @@ export type InitUserVaultAsyncInput<
   TAccountRent extends string = string,
 > = {
   owner: TransactionSigner<TAccountOwner>;
-  config?: Address<TAccountConfig>;
   vault?: Address<TAccountVault>;
   vaultTokens?: Address<TAccountVaultTokens>;
   usdcMint: Address<TAccountUsdcMint>;
@@ -150,7 +143,6 @@ export type InitUserVaultAsyncInput<
 
 export async function getInitUserVaultInstructionAsync<
   TAccountOwner extends string,
-  TAccountConfig extends string,
   TAccountVault extends string,
   TAccountVaultTokens extends string,
   TAccountUsdcMint extends string,
@@ -161,7 +153,6 @@ export async function getInitUserVaultInstructionAsync<
 >(
   input: InitUserVaultAsyncInput<
     TAccountOwner,
-    TAccountConfig,
     TAccountVault,
     TAccountVaultTokens,
     TAccountUsdcMint,
@@ -174,7 +165,6 @@ export async function getInitUserVaultInstructionAsync<
   InitUserVaultInstruction<
     TProgramAddress,
     TAccountOwner,
-    TAccountConfig,
     TAccountVault,
     TAccountVaultTokens,
     TAccountUsdcMint,
@@ -190,7 +180,6 @@ export async function getInitUserVaultInstructionAsync<
   // Original accounts.
   const originalAccounts = {
     owner: { value: input.owner ?? null, isWritable: true },
-    config: { value: input.config ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     usdcMint: { value: input.usdcMint ?? null, isWritable: false },
@@ -204,9 +193,6 @@ export async function getInitUserVaultInstructionAsync<
   >;
 
   // Resolve default values.
-  if (!accounts.config.value) {
-    accounts.config.value = await findConfigPda();
-  }
   if (!accounts.vault.value) {
     accounts.vault.value = await findDepositToVaultVaultPda({
       owner: expectAddress(accounts.owner.value),
@@ -234,7 +220,6 @@ export async function getInitUserVaultInstructionAsync<
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.owner),
-      getAccountMeta(accounts.config),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.vaultTokens),
       getAccountMeta(accounts.usdcMint),
@@ -247,7 +232,6 @@ export async function getInitUserVaultInstructionAsync<
   } as InitUserVaultInstruction<
     TProgramAddress,
     TAccountOwner,
-    TAccountConfig,
     TAccountVault,
     TAccountVaultTokens,
     TAccountUsdcMint,
@@ -259,7 +243,6 @@ export async function getInitUserVaultInstructionAsync<
 
 export type InitUserVaultInput<
   TAccountOwner extends string = string,
-  TAccountConfig extends string = string,
   TAccountVault extends string = string,
   TAccountVaultTokens extends string = string,
   TAccountUsdcMint extends string = string,
@@ -268,7 +251,6 @@ export type InitUserVaultInput<
   TAccountRent extends string = string,
 > = {
   owner: TransactionSigner<TAccountOwner>;
-  config: Address<TAccountConfig>;
   vault: Address<TAccountVault>;
   vaultTokens: Address<TAccountVaultTokens>;
   usdcMint: Address<TAccountUsdcMint>;
@@ -279,7 +261,6 @@ export type InitUserVaultInput<
 
 export function getInitUserVaultInstruction<
   TAccountOwner extends string,
-  TAccountConfig extends string,
   TAccountVault extends string,
   TAccountVaultTokens extends string,
   TAccountUsdcMint extends string,
@@ -290,7 +271,6 @@ export function getInitUserVaultInstruction<
 >(
   input: InitUserVaultInput<
     TAccountOwner,
-    TAccountConfig,
     TAccountVault,
     TAccountVaultTokens,
     TAccountUsdcMint,
@@ -302,7 +282,6 @@ export function getInitUserVaultInstruction<
 ): InitUserVaultInstruction<
   TProgramAddress,
   TAccountOwner,
-  TAccountConfig,
   TAccountVault,
   TAccountVaultTokens,
   TAccountUsdcMint,
@@ -317,7 +296,6 @@ export function getInitUserVaultInstruction<
   // Original accounts.
   const originalAccounts = {
     owner: { value: input.owner ?? null, isWritable: true },
-    config: { value: input.config ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     usdcMint: { value: input.usdcMint ?? null, isWritable: false },
@@ -348,7 +326,6 @@ export function getInitUserVaultInstruction<
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.owner),
-      getAccountMeta(accounts.config),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.vaultTokens),
       getAccountMeta(accounts.usdcMint),
@@ -361,7 +338,6 @@ export function getInitUserVaultInstruction<
   } as InitUserVaultInstruction<
     TProgramAddress,
     TAccountOwner,
-    TAccountConfig,
     TAccountVault,
     TAccountVaultTokens,
     TAccountUsdcMint,
@@ -378,13 +354,12 @@ export type ParsedInitUserVaultInstruction<
   programAddress: Address<TProgram>;
   accounts: {
     owner: TAccountMetas[0];
-    config: TAccountMetas[1];
-    vault: TAccountMetas[2];
-    vaultTokens: TAccountMetas[3];
-    usdcMint: TAccountMetas[4];
-    systemProgram: TAccountMetas[5];
-    tokenProgram: TAccountMetas[6];
-    rent: TAccountMetas[7];
+    vault: TAccountMetas[1];
+    vaultTokens: TAccountMetas[2];
+    usdcMint: TAccountMetas[3];
+    systemProgram: TAccountMetas[4];
+    tokenProgram: TAccountMetas[5];
+    rent: TAccountMetas[6];
   };
   data: InitUserVaultInstructionData;
 };
@@ -397,7 +372,7 @@ export function parseInitUserVaultInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedInitUserVaultInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 8) {
+  if (instruction.accounts.length < 7) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -411,7 +386,6 @@ export function parseInitUserVaultInstruction<
     programAddress: instruction.programAddress,
     accounts: {
       owner: getNextAccount(),
-      config: getNextAccount(),
       vault: getNextAccount(),
       vaultTokens: getNextAccount(),
       usdcMint: getNextAccount(),

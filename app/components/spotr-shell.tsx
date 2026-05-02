@@ -19,8 +19,9 @@ import { useCluster } from "./cluster-context";
 import { useWallet } from "../lib/wallet/context";
 import { createSignedActionRequest } from "../lib/wallet/signed-request";
 import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
+import { useVaultBalance } from "../lib/hooks/use-vault-balance";
 import { submitJoinSessionOnChain } from "../lib/chain/spotr-join-session";
-import { submitEnterPositionOnChain } from "../lib/chain/spotr-enter-position";
+import { submitEnterPositionOnChain, INSUFFICIENT_VAULT_ERROR } from "../lib/chain/spotr-enter-position";
 import { cn } from "../lib/utils";
 import { ellipsify } from "../lib/explorer";
 import {
@@ -126,6 +127,8 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedSide, setSelectedSide] = useState<"A" | "B" | null>(null);
   const [wagerMicro, setWagerMicro] = useState<bigint | null>(null);
+  const [lastSettledRoundId, setLastSettledRoundId] = useState<string | null>(null);
+  const [dismissedRoundIds, setDismissedRoundIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const walletAddress = wallet?.account.address ?? null;
   const canSignActions = Boolean(wallet?.signMessage);
@@ -134,10 +137,14 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const selectedSession =
     admin.sessionHistory.find((s) => s.id === selectedSessionId) ?? null;
 
+  // All rounds open and close together with the session; pick the next one
+  // the player has not yet entered.
   const activeRound =
-    session.rounds.find((round) => round.status === "open") ??
-    session.rounds.find((round) => round.status === "upcoming") ??
-    session.rounds.at(-1) ??
+    session.rounds.find(
+      (round) => round.status === "open" && !round.lockedSide && !dismissedRoundIds.has(round.id)
+    ) ??
+    session.rounds.find((round) => round.status === "open" && !dismissedRoundIds.has(round.id)) ??
+    session.rounds.find((round) => round.status === "upcoming" && !dismissedRoundIds.has(round.id)) ??
     null;
   const activeFaultLine =
     faultLines.find((pair) => pair.roundId === activeRound?.id) ?? faultLines[0] ?? null;
@@ -165,29 +172,36 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     });
   }, [walletAddress]);
 
+  // Per-round countdown: each round gets a fresh `roundDurationSeconds`
+  // window that starts when the round becomes active for this player. The
+  // countdown is purely UI — on-chain the whole session shares one window —
+  // so it resets every time `activeRound.id` changes.
+  const [roundStartMs, setRoundStartMs] = useState(() => Date.now());
   useEffect(() => {
-    const closesAtIso = activeRound?.closesAtIso;
-    if (!closesAtIso || activeRound?.status !== "open") {
-      return;
-    }
+    if (activeRound?.status !== "open") return;
+    setRoundStartMs(Date.now());
+    setClockMs(Date.now());
+  }, [activeRoundId, activeRound?.status]);
 
+  useEffect(() => {
+    if (!activeRoundId || activeRound?.status !== "open") return;
     const timer = window.setInterval(() => {
       setClockMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [activeRound?.closesAtIso, activeRound?.status]);
+  }, [activeRoundId, activeRound?.status]);
 
   const countdown = useMemo(() => {
-    const closesAtIso = activeRound?.closesAtIso;
-    if (!closesAtIso || activeRound?.status !== "open") {
-      return null;
-    }
-
-    return Math.max(
-      0,
-      Math.ceil((new Date(closesAtIso).getTime() - clockMs) / 1000)
-    );
-  }, [activeRound?.closesAtIso, activeRound?.status, clockMs]);
+    if (!activeRoundId || activeRound?.status !== "open") return null;
+    const elapsed = Math.floor((clockMs - roundStartMs) / 1000);
+    return Math.max(0, config.roundDurationSeconds - elapsed);
+  }, [
+    activeRoundId,
+    activeRound?.status,
+    clockMs,
+    roundStartMs,
+    config.roundDurationSeconds,
+  ]);
 
   const sessionProgress = useMemo(() => {
     return session.totalEscrowLamports / config.sessionMinTotalLamports;
@@ -241,21 +255,19 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     successMessage: string,
     onSuccess?: (nextData: SpotrDashboardPayload) => void
   ) {
-    startTransition(() => {
-      void (async () => {
-        try {
-          const nextData = await submitSignedAction(url, action, payload);
-          setData(nextData);
-          onSuccess?.(nextData);
-          setNotice({ tone: "success", message: successMessage });
-          toast.success(successMessage);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "SPOTR action failed.";
-          setNotice({ tone: "error", message });
-          toast.error(message);
-        }
-      })();
+    startTransition(async () => {
+      try {
+        const nextData = await submitSignedAction(url, action, payload);
+        setData(nextData);
+        onSuccess?.(nextData);
+        setNotice({ tone: "success", message: successMessage });
+        toast.success(successMessage);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "SPOTR action failed.";
+        setNotice({ tone: "error", message });
+        toast.error(message);
+      }
     });
   }
 
@@ -281,45 +293,43 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       return;
     }
 
-    startTransition(() => {
-      void (async () => {
-        try {
-          setNotice({
-            tone: "info",
-            message: "Registering your seat on-chain…",
-          });
-          const sessionBuyIn = selectedSession?.buyInLamports ?? 0;
-          const { signature } = await submitJoinSessionOnChain({
-            cluster,
-            sessionNumber: BigInt(activeChainSessionNumber),
-            player: signer,
-            buyInAmount: BigInt(sessionBuyIn),
-          });
-          setNotice({
-            tone: "info",
-            message: "Transaction confirmed on-chain. Finalising your seat…",
-          });
-          const nextData = await submitSignedAction(
-            "/api/session/join",
-            "join-session",
-            {
-              walletAddress,
-              referrerWallet: null,
-              chainTxSignature: signature,
-              sessionId: selectedSession?.id ?? data.session.id,
-            }
-          );
-          setData(nextData);
-          setNotice({ tone: "success", message: "Session joined." });
-          toast.success("Session joined.");
-        } catch (error) {
-          console.error("[SPOTR] join session failed:", error);
-          const message =
-            error instanceof Error ? error.message : "Could not join session.";
-          setNotice({ tone: "error", message });
-          toast.error(message);
-        }
-      })();
+    startTransition(async () => {
+      try {
+        setNotice({
+          tone: "info",
+          message: "Registering your seat on-chain…",
+        });
+        const sessionBuyIn = selectedSession?.buyInLamports ?? 0;
+        const { signature } = await submitJoinSessionOnChain({
+          cluster,
+          sessionNumber: BigInt(activeChainSessionNumber),
+          player: signer,
+          buyInAmount: BigInt(sessionBuyIn),
+        });
+        setNotice({
+          tone: "info",
+          message: "Transaction confirmed on-chain. Finalising your seat…",
+        });
+        const nextData = await submitSignedAction(
+          "/api/session/join",
+          "join-session",
+          {
+            walletAddress,
+            referrerWallet: null,
+            chainTxSignature: signature,
+            sessionId: selectedSession?.id ?? data.session.id,
+          }
+        );
+        setData(nextData);
+        setNotice({ tone: "success", message: "Session joined." });
+        toast.success("Session joined.");
+      } catch (error) {
+        console.error("[SPOTR] join session failed:", error);
+        const message =
+          error instanceof Error ? error.message : "Could not join session.";
+        setNotice({ tone: "error", message });
+        toast.error(message);
+      }
     });
   };
 
@@ -348,41 +358,49 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       return;
     }
 
-    startTransition(() => {
-      void (async () => {
-        try {
-          setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
-          const { txSignature } = await submitEnterPositionOnChain({
-            cluster,
-            sessionNumber: BigInt(chainSessionNumber),
-            roundIndex: activeRound.index,
-            pairId: activeRound.pairId,
-            player: signer,
+    startTransition(async () => {
+      try {
+        setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
+        const { txSignature } = await submitEnterPositionOnChain({
+          cluster,
+          sessionNumber: BigInt(chainSessionNumber),
+          roundIndex: activeRound.index,
+          pairId: activeRound.pairId,
+          player: signer,
+          side: selectedSide,
+          wagerUsdcUnits: wagerMicro,
+        });
+        const nextData = await submitSignedAction(
+          "/api/rounds/enter",
+          "enter-round",
+          {
+            walletAddress,
+            roundId: activeRound.id,
             side: selectedSide,
-            wagerUsdcUnits: wagerMicro,
+            wagerLamports: Number(wagerMicro),
+            chainTxSignature: txSignature,
+          }
+        );
+        const enteredRoundId = activeRound.id;
+        setData(nextData);
+        setSelectedSide(null);
+        setWagerMicro(null);
+        setLastSettledRoundId(enteredRoundId);
+        setNotice({ tone: "success", message: `Position locked on side ${selectedSide}.` });
+        toast.success(`Position locked on side ${selectedSide}.`);
+      } catch (error) {
+        if (error instanceof Error && error.name === INSUFFICIENT_VAULT_ERROR) {
+          setNotice({ tone: "error", message: "Not enough USDC in vault." });
+          toast.error("Not enough USDC in your vault to place this wager.", {
+            action: { label: "Top up", onClick: () => window.open("/airdrop", "_self") },
+            duration: 8000,
           });
-          const nextData = await submitSignedAction(
-            "/api/rounds/enter",
-            "enter-round",
-            {
-              walletAddress,
-              roundId: activeRound.id,
-              side: selectedSide,
-              wagerLamports: Number(wagerMicro),
-              chainTxSignature: txSignature,
-            }
-          );
-          setData(nextData);
-          setSelectedSide(null);
-          setWagerMicro(null);
-          setNotice({ tone: "success", message: `Position locked on side ${selectedSide}.` });
-          toast.success(`Position locked on side ${selectedSide}.`);
-        } catch (error) {
+        } else {
           const message = error instanceof Error ? error.message : "Failed to enter position.";
           setNotice({ tone: "error", message });
           toast.error(message);
         }
-      })();
+      }
     });
   };
 
@@ -408,19 +426,17 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
 
 
   const refresh = useCallback(() => {
-    startTransition(() => {
-      void (async () => {
-        try {
-          const query = walletAddress
-            ? `?wallet=${encodeURIComponent(walletAddress)}`
-            : "";
-          const response = await fetch(`/api/bootstrap${query}`, { cache: "no-store" });
-          const payload = await readJson<SpotrDashboardPayload>(response);
-          setData(payload);
-        } catch {
-          // silently ignore — UI keeps last good state
-        }
-      })();
+    startTransition(async () => {
+      try {
+        const query = walletAddress
+          ? `?wallet=${encodeURIComponent(walletAddress)}`
+          : "";
+        const response = await fetch(`/api/bootstrap${query}`, { cache: "no-store" });
+        const payload = await readJson<SpotrDashboardPayload>(response);
+        setData(payload);
+      } catch {
+        // silently ignore — UI keeps last good state
+      }
     });
   }, [walletAddress]);
 
@@ -457,6 +473,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     setSelectedSide,
     wagerMicro,
     setWagerMicro,
+    lastSettledRoundId,
+    clearLastSettledRoundId: () => setLastSettledRoundId(null),
+    dismissRound: (id: string) => setDismissedRoundIds((prev) => new Set([...prev, id])),
   };
 }
 
@@ -643,7 +662,8 @@ function Redirect({ to }: { to: string }) {
 
 export function SpotrShell({ config, initialData }: SpotrShellProps) {
   const state = useSpotrDashboard(config, initialData);
-  const balance = useUsdcBalance(state.walletAddress);
+  const vault = useVaultBalance(state.walletAddress);
+  const balance = { microUsdc: vault.microUsdc };
   const [introSeen, setIntroSeen] = useState(() => {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem("spotr-player-intro-v1") === "seen";
@@ -664,30 +684,62 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     return () => window.clearTimeout(timer);
   }, [showSplash]);
 
+  // PnL trigger: wager confirmed
   useEffect(() => {
-    const roundId = state.activeRound?.id;
-    if (
-      state.countdown === 0 &&
-      state.activeRound?.status === "open" &&
-      !showPnl &&
-      roundId !== undefined &&
-      pnlShownRoundRef.current !== roundId
-    ) {
-      pnlShownRoundRef.current = roundId;
-      setSettledRound(state.activeRound);
-      setShowPnl(true);
-      const t = window.setTimeout(() => {
-        setShowPnl(false);
-        state.refresh();
-      }, 5000);
-      return () => window.clearTimeout(t);
-    }
-  }, [state.countdown, state.activeRound, showPnl, state.refresh]);
+    const settledId = state.lastSettledRoundId;
+    if (!settledId || pnlShownRoundRef.current === settledId || showPnl) return;
+    const settled = state.session.rounds.find((r) => r.id === settledId);
+    if (!settled) return;
+    pnlShownRoundRef.current = settledId;
+    setSettledRound(settled);
+    setShowPnl(true);
+    void vault.mutate?.();
+    const t = window.setTimeout(() => {
+      setShowPnl(false);
+      state.clearLastSettledRoundId();
+      state.dismissRound(settledId);
+      state.refresh();
+    }, 5000);
+    return () => window.clearTimeout(t);
+  }, [
+    state.lastSettledRoundId,
+    state.session.rounds,
+    state.refresh,
+    state.clearLastSettledRoundId,
+    state.dismissRound,
+    showPnl,
+    vault,
+  ]);
+
+  // PnL trigger: countdown elapsed (no wager placed, or round timed out)
+  useEffect(() => {
+    if (state.countdown !== 0 || !state.activeRound || showPnl) return;
+    const roundId = state.activeRound.id;
+    if (pnlShownRoundRef.current === roundId) return;
+    pnlShownRoundRef.current = roundId;
+    const round = state.activeRound;
+    setSettledRound(round);
+    setShowPnl(true);
+    const t = window.setTimeout(() => {
+      setShowPnl(false);
+      state.dismissRound(roundId);
+      state.refresh();
+    }, 5000);
+    return () => window.clearTimeout(t);
+  }, [
+    state.countdown,
+    state.activeRound,
+    state.dismissRound,
+    state.refresh,
+    showPnl,
+  ]);
 
   const rewardList = state.profile?.rewards ?? [];
   let screen: PlayerScreen =
     state.session.status === "completed" && state.session.joined
       ? "season"
+      : state.session.joined && !state.activeRound
+        ? "season"
       : state.session.joined
         ? "live"
         : !introSeen && showSplash
@@ -719,7 +771,12 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
         round={settledRound}
         totalRounds={config.roundCount}
         activeFaultLine={state.activeFaultLine}
-        onContinue={() => { setShowPnl(false); state.refresh(); }}
+        onContinue={() => {
+          setShowPnl(false);
+          state.clearLastSettledRoundId();
+          state.dismissRound(settledRound.id);
+          state.refresh();
+        }}
       />
     );
   }
@@ -771,7 +828,7 @@ function HowItWorksScreen({ onContinue }: { onContinue: () => void }) {
         </div>
         <OnboardingHero
           title="How it works"
-          body="Seven rounds. Real culture. No wrong answers, only early ones."
+          body="Seven rounds. Real culture. No wrong opinions, only early ones."
         />
         <div className="mt-8">
           <StepList items={steps} />
@@ -1097,22 +1154,20 @@ function ConfirmSessionScreen({
             : "Register your seat to start playing."
         }
         action={
-          !state.isPending ? (
-            <div className="flex w-full flex-col gap-2">
-              <Button
-                type="button"
-                variant="gold"
-                size="block"
-                onClick={state.handleJoin}
-                disabled={!state.canSignActions}
-              >
-                Join Session
-              </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={onBack}>
-                ← Back to sessions
-              </Button>
-            </div>
-          ) : undefined
+          <div className="flex w-full flex-col gap-2">
+            <Button
+              type="button"
+              variant="gold"
+              size="block"
+              onClick={state.handleJoin}
+              disabled={!state.canSignActions || state.isPending}
+            >
+              {state.isPending ? "Confirming on Solana…" : "Join Session"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={onBack} disabled={state.isPending}>
+              ← Back to sessions
+            </Button>
+          </div>
         }
       />
     </StageScaffold>
@@ -1162,6 +1217,10 @@ function WagerPicker({
   onConfirm: () => void;
   isPending: boolean;
 }) {
+  const [customInput, setCustomInput] = useState("");
+  const isCustomSelected =
+    selectedWager != null && !WAGER_PRESETS_MICRO.includes(selectedWager);
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-center text-[11px] font-semibold uppercase tracking-[0.18em] text-white/40">
@@ -1180,7 +1239,7 @@ function WagerPicker({
             <button
               key={amount.toString()}
               type="button"
-              onClick={() => onSelect(amount)}
+              onClick={() => { setCustomInput(""); onSelect(amount); }}
               disabled={tooLarge || isPending}
               className={cn(
                 "rounded-xl border py-2.5 text-[12px] font-bold transition",
@@ -1196,6 +1255,28 @@ function WagerPicker({
           );
         })}
       </div>
+      <input
+        type="number"
+        min="1"
+        step="1"
+        placeholder="Custom amount ($)"
+        value={customInput}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setCustomInput(raw);
+          const dollars = parseFloat(raw);
+          if (!isNaN(dollars) && dollars >= 1) {
+            onSelect(BigInt(Math.floor(dollars)) * 1_000_000n);
+          }
+        }}
+        disabled={isPending}
+        className={cn(
+          "w-full rounded-xl border bg-white/5 px-3 py-2.5 text-center text-[12px] font-bold text-white placeholder-white/30 outline-none transition",
+          isCustomSelected
+            ? "border-primary text-primary"
+            : "border-white/10 hover:border-primary/50"
+        )}
+      />
       <Button
         type="button"
         variant="gold"
@@ -1507,9 +1588,11 @@ export function SessionEndedScreen({
   const maxAbs = hasData ? rawMax : 1;
 
   const cardRef = useRef<HTMLDivElement>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   async function handleDownload() {
-    if (!cardRef.current) return;
+    if (!cardRef.current || isDownloading) return;
+    setIsDownloading(true);
     try {
       const dataUrl = await toPng(cardRef.current, { pixelRatio: 3 });
       const a = document.createElement("a");
@@ -1518,6 +1601,8 @@ export function SessionEndedScreen({
       a.click();
     } catch {
       toast.error("Could not export card");
+    } finally {
+      setIsDownloading(false);
     }
   }
 
@@ -1694,9 +1779,10 @@ export function SessionEndedScreen({
         <button
           type="button"
           onClick={() => void handleDownload()}
-          className="py-2 text-center text-[12px] text-white/40 underline underline-offset-2 transition hover:text-white/70"
+          disabled={isDownloading}
+          className="py-2 text-center text-[12px] text-white/40 underline underline-offset-2 transition hover:text-white/70 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Download conviction card
+          {isDownloading ? "Downloading…" : "Download conviction card"}
         </button>
       </div>
     </StageScaffold>
@@ -1714,6 +1800,7 @@ export function SeasonScreen({
 }) {
   const [phase, setPhase] = useState<"arrive" | "hold" | "tearing" | "revealed">("arrive");
   const holdTimer = useRef<number | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
 
   const mockPrizes = [
     { id: "mock-1", kind: "nft" as const, title: "SPOTR Genesis NFT", subtitle: "Season 1 · Limited edition", status: "claimable" as const },
@@ -1742,30 +1829,36 @@ export function SeasonScreen({
   }
 
   async function handleShareHaul() {
-    const pnlSign = cumPnl >= 0 ? "+" : "-";
-    const pnlStr = `${pnlSign}${lamportsToSol(Math.abs(cumPnl))} SOL`;
-    const prizeLines = prizeList.map((p) => `• ${p.title}`).join("\n");
-    const sessionWord = roundsSettled === 1 ? "session" : "sessions";
-    const text = [
-      "I just cracked my SPOTR haul 🎯",
-      "",
-      prizeLines,
-      "",
-      `PnL: ${pnlStr} across ${roundsSettled} ${sessionWord}`,
-      "Play at spotrmarkets.xyz",
-    ].join("\n");
+    if (isSharing) return;
+    setIsSharing(true);
+    try {
+      const pnlSign = cumPnl >= 0 ? "+" : "-";
+      const pnlStr = `${pnlSign}${lamportsToSol(Math.abs(cumPnl))} SOL`;
+      const prizeLines = prizeList.map((p) => `• ${p.title}`).join("\n");
+      const sessionWord = roundsSettled === 1 ? "session" : "sessions";
+      const text = [
+        "I just cracked my SPOTR haul 🎯",
+        "",
+        prizeLines,
+        "",
+        `PnL: ${pnlStr} across ${roundsSettled} ${sessionWord}`,
+        "Play at spotrmarkets.xyz",
+      ].join("\n");
 
-    if (typeof navigator.share === "function") {
-      try {
-        await navigator.share({ text });
-        return;
-      } catch {
-        // user cancelled or API failed — fall through to clipboard
+      if (typeof navigator.share === "function") {
+        try {
+          await navigator.share({ text });
+          return;
+        } catch {
+          // user cancelled or API failed — fall through to clipboard
+        }
       }
-    }
 
-    await navigator.clipboard.writeText(text);
-    toast.success("Haul copied to clipboard");
+      await navigator.clipboard.writeText(text);
+      toast.success("Haul copied to clipboard");
+    } finally {
+      setIsSharing(false);
+    }
   }
 
   const pnlTone = cumPnl >= 0 ? "text-success" : "text-destructive";
@@ -1862,10 +1955,11 @@ export function SeasonScreen({
             </Button>
             <button
               type="button"
-              onClick={handleShareHaul}
-              className="focus-ring w-full rounded-[14px] border-[1.5px] border-white/40 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-white/10"
+              onClick={() => void handleShareHaul()}
+              disabled={isSharing}
+              className="focus-ring w-full rounded-[14px] border-[1.5px] border-white/40 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Share my haul
+              {isSharing ? "Sharing…" : "Share my haul"}
             </button>
           </div>
         ) : null}
@@ -1876,6 +1970,7 @@ export function SeasonScreen({
 
 export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
   const state = useSpotrDashboard(config, initialData);
+  const vault = useVaultBalance(state.walletAddress ?? null);
 
   return (
     <NarrowPageShell notice={state.notice}>
@@ -2021,6 +2116,83 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
                 />
               </div>
             </div>
+          </SurfaceCard>
+
+          <SurfaceCard>
+            <SectionHeading
+              eyebrow="Program vault"
+              title="On-chain UserVault state"
+              description="The vault PDA holds USDC the program signs against when you join sessions. Active sessions block withdrawals."
+            />
+            {vault.microUsdc === null && vault.activeSessions === null ? (
+              <div className="mt-4 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4 text-sm text-muted">
+                Vault not initialized. The vault is created automatically the
+                first time this wallet joins a session, or via the Faucet.
+              </div>
+            ) : (
+              <>
+                <div className="mt-4 rounded-[1rem] border border-primary/25 bg-primary/10 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+                    Vault USDC
+                  </p>
+                  <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
+                    {microUsdcToDisplay(Number(vault.microUsdc ?? 0n))} USDC
+                  </p>
+                </div>
+                <div className="mt-4 grid gap-3 grid-cols-2">
+                  <LedgerPill
+                    label="Active sessions"
+                    value={String(vault.activeSessions ?? 0)}
+                  />
+                  <LedgerPill
+                    label="Withdraw status"
+                    value={(vault.activeSessions ?? 0) > 0 ? "Locked" : "Available"}
+                    tone={(vault.activeSessions ?? 0) > 0 ? "accent" : undefined}
+                  />
+                  <LedgerPill
+                    label="Lifetime deposited"
+                    value={`${microUsdcToDisplay(Number(vault.totalDeposited ?? 0n))} USDC`}
+                  />
+                  <LedgerPill
+                    label="Lifetime withdrawn"
+                    value={`${microUsdcToDisplay(Number(vault.totalWithdrawn ?? 0n))} USDC`}
+                  />
+                </div>
+                <div className="mt-4 space-y-3">
+                  <WalletDataRow
+                    label="Vault PDA"
+                    value={
+                      vault.vaultAddress
+                        ? ellipsify(String(vault.vaultAddress), 6)
+                        : "—"
+                    }
+                    subvalue={
+                      vault.vaultAddress ? String(vault.vaultAddress) : undefined
+                    }
+                  />
+                  <WalletDataRow
+                    label="Vault tokens PDA"
+                    value={
+                      vault.vaultTokensAddress
+                        ? ellipsify(String(vault.vaultTokensAddress), 6)
+                        : "—"
+                    }
+                    subvalue={
+                      vault.vaultTokensAddress
+                        ? String(vault.vaultTokensAddress)
+                        : undefined
+                    }
+                  />
+                </div>
+                <p className="mt-4 text-xs leading-relaxed text-muted">
+                  Lifetime deposited counts only user-signed
+                  <code className="mx-1 rounded bg-white/8 px-1 py-0.5 font-mono text-[11px]">
+                    deposit_to_vault
+                  </code>
+                  calls. Faucet mints into the vault directly do not increment it.
+                </p>
+              </>
+            )}
           </SurfaceCard>
 
           <SurfaceCard>
@@ -2238,40 +2410,38 @@ export function SpotrSessionDetailShell({
       return;
     }
 
-    startTransition(() => {
-      void (async () => {
-        try {
-          setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
-          const { signature } = await submitJoinSessionOnChain({
-            cluster,
-            sessionNumber: BigInt(session.chainSessionNumber!),
-            player: signer,
-            buyInAmount: BigInt(session.buyInLamports),
-          });
-          setNotice({ tone: "info", message: "Transaction confirmed. Registering your seat…" });
-          const signedRequest = await createSignedActionRequest(wallet, "join-session", {
-            walletAddress,
-            referrerWallet: null,
-            chainTxSignature: signature,
-            sessionId,
-          });
-          const response = await fetch("/api/session/join", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(signedRequest),
-          });
-          const body = (await response.json()) as SpotrDashboardPayload & { error?: string };
-          if (!response.ok || body.error) throw new Error(body.error ?? "Join failed.");
-          setJoinedData(body);
-          toast.success("Session joined.");
-          setShowGame(true);
-        } catch (error) {
-          console.error("[SPOTR] session detail join failed:", error);
-          const message = error instanceof Error ? error.message : "Could not join session.";
-          setNotice({ tone: "error", message });
-          toast.error(message);
-        }
-      })();
+    startTransition(async () => {
+      try {
+        setNotice({ tone: "info", message: "Sign the transaction in your wallet…" });
+        const { signature } = await submitJoinSessionOnChain({
+          cluster,
+          sessionNumber: BigInt(session.chainSessionNumber!),
+          player: signer,
+          buyInAmount: BigInt(session.buyInLamports),
+        });
+        setNotice({ tone: "info", message: "Transaction confirmed. Registering your seat…" });
+        const signedRequest = await createSignedActionRequest(wallet, "join-session", {
+          walletAddress,
+          referrerWallet: null,
+          chainTxSignature: signature,
+          sessionId,
+        });
+        const response = await fetch("/api/session/join", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(signedRequest),
+        });
+        const body = (await response.json()) as SpotrDashboardPayload & { error?: string };
+        if (!response.ok || body.error) throw new Error(body.error ?? "Join failed.");
+        setJoinedData(body);
+        toast.success("Session joined.");
+        setShowGame(true);
+      } catch (error) {
+        console.error("[SPOTR] session detail join failed:", error);
+        const message = error instanceof Error ? error.message : "Could not join session.";
+        setNotice({ tone: "error", message });
+        toast.error(message);
+      }
     });
   };
 

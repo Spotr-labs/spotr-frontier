@@ -32,9 +32,6 @@ const publicConfig = {
   sessionBuyInLamports: Number(
     requireEnv("NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS")
   ),
-  roundMinStakeLamports: Number(
-    requireEnv("NEXT_PUBLIC_SPOTR_ROUND_MIN_STAKE_LAMPORTS")
-  ),
   roundCount: Number(requireEnv("NEXT_PUBLIC_SPOTR_ROUND_COUNT")),
   roundDurationSeconds: Number(
     requireEnv("NEXT_PUBLIC_SPOTR_ROUND_DURATION_SECONDS")

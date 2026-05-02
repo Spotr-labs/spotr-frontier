@@ -126,6 +126,18 @@ export function parseSignedEnvelope<TPayload>(
   };
 }
 
+function optionalNonNegativeInt(
+  record: Record<string, unknown>,
+  key: string
+): number | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new ValidationError(`${key} must be a non-negative integer.`);
+  }
+  return value;
+}
+
 function requirePositiveInt(
   record: Record<string, unknown>,
   key: string,
@@ -481,12 +493,14 @@ export function parseAdminDeploySessionPayload(record: Record<string, unknown>) 
       parseCardPackItem(value, `cardPackItems[${index}]`)
     );
   }
+  const buyInLamports = optionalNonNegativeInt(record, "buyInLamports");
   return {
     adminWalletAddress,
     title: title ?? null,
     pairIds,
     overrideStartsAtIso,
     overrideEndsAtIso,
+    buyInLamports,
     cardPackItems,
   };
 }

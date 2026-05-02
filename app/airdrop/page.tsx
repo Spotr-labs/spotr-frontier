@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { address } from "@solana/kit";
+import { createClient } from "@solana/kit-client-rpc";
 import { useWallet } from "../lib/wallet/context";
 import { useCluster } from "../components/cluster-context";
 import { WalletButton } from "../components/wallet-button";
@@ -15,12 +16,17 @@ import {
 } from "../components/spotr-ui/system";
 import { useBalance } from "../lib/hooks/use-balance";
 import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
+import { useVaultBalance } from "../lib/hooks/use-vault-balance";
 import { lamportsToSol } from "../lib/format";
 import { microUsdcToDisplay } from "../lib/usdc";
+import { getClusterUrl, getClusterWsConfig } from "../lib/solana-client";
+import { getInitUserVaultInstructionAsync } from "../generated/spotr/instructions";
 
 type AirdropStatus = "idle" | "pending" | "ok" | "err";
 
-function useAirdrop(type: "sol" | "usdc") {
+type AirdropType = "sol" | "usdc" | "usdc-vault";
+
+function useAirdrop(type: AirdropType) {
   const [status, setStatus] = useState<AirdropStatus>("idle");
   const [sig, setSig] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -127,10 +133,11 @@ function AirdropCard({
 }
 
 export default function AirdropPage() {
-  const { wallet, status: walletStatus } = useWallet();
+  const { wallet, status: walletStatus, signer } = useWallet();
   const { cluster } = useCluster();
   const sol = useAirdrop("sol");
   const usdc = useAirdrop("usdc");
+  const usdcVault = useAirdrop("usdc-vault");
 
   const walletAddr = wallet?.account.address ?? null;
   const isLocalnet = cluster === "localnet";
@@ -139,6 +146,17 @@ export default function AirdropPage() {
 
   const solBalance = useBalance(walletAddr ? address(walletAddr) : undefined);
   const usdcBalance = useUsdcBalance(walletAddr);
+  const vault = useVaultBalance(walletAddr);
+
+  const vaultMissing =
+    walletAddr != null &&
+    !vault.isLoading &&
+    vault.microUsdc === null &&
+    vault.activeSessions === null;
+
+  const [initStatus, setInitStatus] = useState<AirdropStatus>("idle");
+  const [initSig, setInitSig] = useState<string | null>(null);
+  const [initErr, setInitErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (sol.status === "ok") void solBalance.mutate();
@@ -147,6 +165,50 @@ export default function AirdropPage() {
   useEffect(() => {
     if (usdc.status === "ok") void usdcBalance.mutate();
   }, [usdc.status]);
+
+  useEffect(() => {
+    if (usdcVault.status !== "ok") return;
+    void vault.mutate();
+    // Retry after a short delay in case surfpool hasn't indexed the mint yet.
+    const t = setTimeout(() => void vault.mutate(), 1500);
+    return () => clearTimeout(t);
+  }, [usdcVault.status]);
+
+  const initVault = async (): Promise<boolean> => {
+    if (!signer || !walletAddr || !usdcMint) return false;
+    setInitStatus("pending");
+    setInitSig(null);
+    setInitErr(null);
+    try {
+      const txClient = createClient({
+        url: getClusterUrl(cluster),
+        rpcSubscriptionsConfig: getClusterWsConfig(cluster),
+        payer: signer,
+      });
+      const initIx = await getInitUserVaultInstructionAsync({
+        owner: signer,
+        usdcMint: address(usdcMint),
+      });
+      const result = await txClient.sendTransaction([initIx]);
+      setInitSig(String(result.context.signature));
+      setInitStatus("ok");
+      await vault.mutate();
+      return true;
+    } catch (e) {
+      setInitErr(e instanceof Error ? e.message : String(e));
+      setInitStatus("err");
+      return false;
+    }
+  };
+
+  const requestVaultUsdc = async (amt: number) => {
+    if (!walletAddr) return;
+    if (vaultMissing) {
+      const ok = await initVault();
+      if (!ok) return;
+    }
+    usdcVault.request(walletAddr, amt);
+  };
 
   return (
     <AppPage
@@ -194,7 +256,7 @@ export default function AirdropPage() {
             <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
               Balances
             </p>
-            <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="mt-4 grid grid-cols-3 gap-3">
               <div className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
                   SOL
@@ -219,6 +281,23 @@ export default function AirdropPage() {
                       : "0.00"}
                 </p>
               </div>
+              <div className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+                  Vault USDC
+                </p>
+                <p className="mt-2 font-mono text-lg font-semibold tabular-nums text-foreground">
+                  {vault.isLoading
+                    ? "—"
+                    : vault.microUsdc != null
+                      ? microUsdcToDisplay(Number(vault.microUsdc))
+                      : "—"}
+                </p>
+                <p className="mt-1 text-[10px] uppercase tracking-[0.22em] text-muted">
+                  {vault.activeSessions != null
+                    ? `active sessions: ${vault.activeSessions}`
+                    : "—"}
+                </p>
+              </div>
             </div>
             <div className="mt-4 border-t border-white/8 pt-4">
               <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
@@ -238,8 +317,9 @@ export default function AirdropPage() {
           </SurfaceCard>
         ) : null}
 
+
         {isLocalnet && connected ? (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-3">
             <AirdropCard
               label="Solana"
               symbol="SOL"
@@ -263,6 +343,29 @@ export default function AirdropPage() {
               status={usdc.status}
               sig={usdc.sig}
               err={usdc.err}
+            />
+            <AirdropCard
+              label="Vault USDC"
+              symbol="USDC"
+              defaultAmount={1000}
+              max={10000}
+              description="Mint mock USDC straight into your vault. Skips the deposit tx when joining a session."
+              disabled={
+                !connected ||
+                !usdcMint ||
+                vault.isLoading ||
+                initStatus === "pending"
+              }
+              onRequest={(amt) => void requestVaultUsdc(amt)}
+              status={
+                initStatus === "pending"
+                  ? "pending"
+                  : initStatus === "err"
+                    ? "err"
+                    : usdcVault.status
+              }
+              sig={usdcVault.sig}
+              err={initStatus === "err" ? initErr : usdcVault.err}
             />
           </div>
         ) : null}

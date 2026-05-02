@@ -17,6 +17,8 @@ import {
   type ReadonlyUint8Array,
 } from "@solana/kit";
 import {
+  parseAdminCloseRoundInstruction,
+  parseAdminCloseSessionInstruction,
   parseClaimRoundInstruction,
   parseClaimSessionBalanceInstruction,
   parseCloseRoundInstruction,
@@ -32,6 +34,8 @@ import {
   parseUpdateConfigInstruction,
   parseWithdrawFromVaultInstruction,
   parseWithdrawProtocolFeesInstruction,
+  type ParsedAdminCloseRoundInstruction,
+  type ParsedAdminCloseSessionInstruction,
   type ParsedClaimRoundInstruction,
   type ParsedClaimSessionBalanceInstruction,
   type ParsedCloseRoundInstruction,
@@ -161,6 +165,8 @@ export function identifySpotrMarketsAccount(
 }
 
 export enum SpotrMarketsInstruction {
+  AdminCloseRound,
+  AdminCloseSession,
   ClaimRound,
   ClaimSessionBalance,
   CloseRound,
@@ -182,6 +188,28 @@ export function identifySpotrMarketsInstruction(
   instruction: { data: ReadonlyUint8Array } | ReadonlyUint8Array,
 ): SpotrMarketsInstruction {
   const data = "data" in instruction ? instruction.data : instruction;
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([66, 210, 165, 132, 223, 67, 241, 200]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.AdminCloseRound;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([49, 66, 156, 195, 137, 12, 102, 74]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.AdminCloseSession;
+  }
   if (
     containsBytes(
       data,
@@ -356,6 +384,12 @@ export type ParsedSpotrMarketsInstruction<
   TProgram extends string = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk",
 > =
   | ({
+      instructionType: SpotrMarketsInstruction.AdminCloseRound;
+    } & ParsedAdminCloseRoundInstruction<TProgram>)
+  | ({
+      instructionType: SpotrMarketsInstruction.AdminCloseSession;
+    } & ParsedAdminCloseSessionInstruction<TProgram>)
+  | ({
       instructionType: SpotrMarketsInstruction.ClaimRound;
     } & ParsedClaimRoundInstruction<TProgram>)
   | ({
@@ -406,6 +440,20 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
 ): ParsedSpotrMarketsInstruction<TProgram> {
   const instructionType = identifySpotrMarketsInstruction(instruction);
   switch (instructionType) {
+    case SpotrMarketsInstruction.AdminCloseRound: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.AdminCloseRound,
+        ...parseAdminCloseRoundInstruction(instruction),
+      };
+    }
+    case SpotrMarketsInstruction.AdminCloseSession: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.AdminCloseSession,
+        ...parseAdminCloseSessionInstruction(instruction),
+      };
+    }
     case SpotrMarketsInstruction.ClaimRound: {
       assertIsInstructionWithAccounts(instruction);
       return {

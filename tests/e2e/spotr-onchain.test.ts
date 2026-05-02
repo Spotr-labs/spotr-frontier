@@ -254,7 +254,6 @@ async function main() {
       roundCount: 1,
       roundDurationSeconds: ROUND_DURATION_SECONDS,
       buyInUsdcUnits: BUY_IN_USDC_UNITS,
-      roundStakeUsdcUnits: ROUND_STAKE_USDC_UNITS,
     },
   });
   const createIx = await getCreateSessionInstructionAsync({
@@ -265,7 +264,6 @@ async function main() {
     roundCount: 1,
     roundDurationSeconds: ROUND_DURATION_SECONDS,
     buyInUsdcUnits: BigInt(0), // free join — wager paid per-round at enter_position
-    roundStakeUsdcUnits: ROUND_STAKE_USDC_UNITS,
     protocolFeeBps: 0,
     referralCutBps: 0,
     minWallets: 3,
