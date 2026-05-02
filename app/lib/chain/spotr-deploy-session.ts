@@ -15,6 +15,16 @@ import { findSpotrRoundPda } from "./round-pda";
 import type { ClusterMoniker } from "../solana-client";
 
 const USDC_MINT_ADDRESS = process.env.NEXT_PUBLIC_USDC_MINT_ADDRESS ?? null;
+
+function buildAuthorities(adminSigner: Address): [Address, Address, Address] {
+  const fromEnv = (process.env.NEXT_PUBLIC_SPOTR_ADMIN_WALLETS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const deduped = [...new Set([...fromEnv, adminSigner])];
+  while (deduped.length < 3) deduped.push(adminSigner);
+  return [address(deduped[0]), address(deduped[1]), address(deduped[2])];
+}
 function requireUsdcMint(): Address {
   if (!USDC_MINT_ADDRESS) {
     throw new Error(
@@ -98,11 +108,12 @@ export async function submitDeploySessionOnChain(
         authority: params.admin,
         usdcMint,
         input: {
+          authorities: buildAuthorities(params.admin.address as Address),
           protocolFeeBps: publicSpotrConfig.protocolFeeBps,
           referralCutBps: publicSpotrConfig.referralCutBps,
           roundCount: publicSpotrConfig.roundCount,
           roundDurationSeconds: BigInt(publicSpotrConfig.roundDurationSeconds),
-          buyInUsdcUnits: BigInt(publicSpotrConfig.sessionBuyInLamports),
+          buyInUsdcUnits: 0n,
         },
       })
     );

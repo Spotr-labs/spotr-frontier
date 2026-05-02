@@ -249,6 +249,7 @@ async function main() {
     authority: admin,
     usdcMint: USDC_MINT,
     input: {
+      authorities: [admin.address, admin.address, admin.address],
       protocolFeeBps: 0,
       referralCutBps: 0,
       roundCount: 1,

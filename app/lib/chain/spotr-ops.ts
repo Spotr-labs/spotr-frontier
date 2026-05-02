@@ -11,6 +11,7 @@ import {
   getSweepOrphansInstructionAsync,
   getWithdrawProtocolFeesInstructionAsync,
 } from "../../generated/spotr/instructions";
+import { findConfigPda } from "../../generated/spotr/pdas";
 import { getClusterUrl, getClusterWsConfig } from "../solana-client";
 import { findSpotrSessionPda } from "./session-pda";
 import { findSpotrRoundPda } from "./round-pda";
@@ -71,8 +72,10 @@ export async function submitAdminCloseRoundOnChain(
     session: sessionAddress,
     index: params.roundIndex,
   });
+  const [configAddress] = await findConfigPda();
   const ix = getAdminCloseRoundInstruction({
     authority: params.signer,
+    config: configAddress,
     session: sessionAddress,
     round: roundAddress,
   });
@@ -93,8 +96,10 @@ export async function submitAdminCloseSessionOnChain(
   params: SubmitAdminCloseSessionParams
 ): Promise<{ signature: string }> {
   const [sessionAddress] = await findSpotrSessionPda(params.sessionNumber);
+  const [configAddress] = await findConfigPda();
   const ix = getAdminCloseSessionInstruction({
     authority: params.signer,
+    config: configAddress,
     session: sessionAddress,
   });
   const txClient = createClient({
