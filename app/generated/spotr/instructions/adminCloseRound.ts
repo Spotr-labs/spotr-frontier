@@ -24,11 +24,13 @@ import {
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
+  type ReadonlyAccount,
   type ReadonlySignerAccount,
   type ReadonlyUint8Array,
   type TransactionSigner,
   type WritableAccount,
 } from "@solana/kit";
+import { findConfigPda } from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import { getAccountMetaFactory, type ResolvedAccount } from "../shared";
 
@@ -45,6 +47,7 @@ export function getAdminCloseRoundDiscriminatorBytes() {
 export type AdminCloseRoundInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
   TAccountAuthority extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountRound extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -56,6 +59,9 @@ export type AdminCloseRoundInstruction<
         ? ReadonlySignerAccount<TAccountAuthority> &
             AccountSignerMeta<TAccountAuthority>
         : TAccountAuthority,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
       TAccountSession extends string
         ? WritableAccount<TAccountSession>
         : TAccountSession,
@@ -95,24 +101,103 @@ export function getAdminCloseRoundInstructionDataCodec(): FixedSizeCodec<
   );
 }
 
-export type AdminCloseRoundInput<
+export type AdminCloseRoundAsyncInput<
   TAccountAuthority extends string = string,
+  TAccountConfig extends string = string,
   TAccountSession extends string = string,
   TAccountRound extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
+  config?: Address<TAccountConfig>;
+  session: Address<TAccountSession>;
+  round: Address<TAccountRound>;
+};
+
+export async function getAdminCloseRoundInstructionAsync<
+  TAccountAuthority extends string,
+  TAccountConfig extends string,
+  TAccountSession extends string,
+  TAccountRound extends string,
+  TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+>(
+  input: AdminCloseRoundAsyncInput<
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession,
+    TAccountRound
+  >,
+  config?: { programAddress?: TProgramAddress },
+): Promise<
+  AdminCloseRoundInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession,
+    TAccountRound
+  >
+> {
+  // Program address.
+  const programAddress =
+    config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
+
+  // Original accounts.
+  const originalAccounts = {
+    authority: { value: input.authority ?? null, isWritable: false },
+    config: { value: input.config ?? null, isWritable: false },
+    session: { value: input.session ?? null, isWritable: true },
+    round: { value: input.round ?? null, isWritable: true },
+  };
+  const accounts = originalAccounts as Record<
+    keyof typeof originalAccounts,
+    ResolvedAccount
+  >;
+
+  // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
+
+  const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
+  return Object.freeze({
+    accounts: [
+      getAccountMeta(accounts.authority),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.session),
+      getAccountMeta(accounts.round),
+    ],
+    data: getAdminCloseRoundInstructionDataEncoder().encode({}),
+    programAddress,
+  } as AdminCloseRoundInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession,
+    TAccountRound
+  >);
+}
+
+export type AdminCloseRoundInput<
+  TAccountAuthority extends string = string,
+  TAccountConfig extends string = string,
+  TAccountSession extends string = string,
+  TAccountRound extends string = string,
+> = {
+  authority: TransactionSigner<TAccountAuthority>;
+  config: Address<TAccountConfig>;
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
 };
 
 export function getAdminCloseRoundInstruction<
   TAccountAuthority extends string,
+  TAccountConfig extends string,
   TAccountSession extends string,
   TAccountRound extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: AdminCloseRoundInput<
     TAccountAuthority,
+    TAccountConfig,
     TAccountSession,
     TAccountRound
   >,
@@ -120,6 +205,7 @@ export function getAdminCloseRoundInstruction<
 ): AdminCloseRoundInstruction<
   TProgramAddress,
   TAccountAuthority,
+  TAccountConfig,
   TAccountSession,
   TAccountRound
 > {
@@ -130,6 +216,7 @@ export function getAdminCloseRoundInstruction<
   // Original accounts.
   const originalAccounts = {
     authority: { value: input.authority ?? null, isWritable: false },
+    config: { value: input.config ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
     round: { value: input.round ?? null, isWritable: true },
   };
@@ -142,6 +229,7 @@ export function getAdminCloseRoundInstruction<
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.authority),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.round),
     ],
@@ -150,6 +238,7 @@ export function getAdminCloseRoundInstruction<
   } as AdminCloseRoundInstruction<
     TProgramAddress,
     TAccountAuthority,
+    TAccountConfig,
     TAccountSession,
     TAccountRound
   >);
@@ -162,8 +251,9 @@ export type ParsedAdminCloseRoundInstruction<
   programAddress: Address<TProgram>;
   accounts: {
     authority: TAccountMetas[0];
-    session: TAccountMetas[1];
-    round: TAccountMetas[2];
+    config: TAccountMetas[1];
+    session: TAccountMetas[2];
+    round: TAccountMetas[3];
   };
   data: AdminCloseRoundInstructionData;
 };
@@ -176,7 +266,7 @@ export function parseAdminCloseRoundInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedAdminCloseRoundInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 3) {
+  if (instruction.accounts.length < 4) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -190,6 +280,7 @@ export function parseAdminCloseRoundInstruction<
     programAddress: instruction.programAddress,
     accounts: {
       authority: getNextAccount(),
+      config: getNextAccount(),
       session: getNextAccount(),
       round: getNextAccount(),
     },

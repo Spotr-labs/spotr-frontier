@@ -15,8 +15,6 @@ import {
   fetchEncodedAccounts,
   fixDecoderSize,
   fixEncoderSize,
-  getAddressDecoder,
-  getAddressEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getI64Decoder,
@@ -59,7 +57,6 @@ export function getSessionDiscriminatorBytes() {
 
 export type Session = {
   discriminator: ReadonlyUint8Array;
-  authority: Address;
   sessionNumber: bigint;
   status: SessionStatus;
   roundCount: number;
@@ -79,7 +76,6 @@ export type Session = {
 };
 
 export type SessionArgs = {
-  authority: Address;
   sessionNumber: number | bigint;
   status: SessionStatusArgs;
   roundCount: number;
@@ -103,7 +99,6 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
   return transformEncoder(
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
-      ["authority", getAddressEncoder()],
       ["sessionNumber", getU64Encoder()],
       ["status", getSessionStatusEncoder()],
       ["roundCount", getU8Encoder()],
@@ -129,7 +124,6 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
 export function getSessionDecoder(): FixedSizeDecoder<Session> {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
-    ["authority", getAddressDecoder()],
     ["sessionNumber", getU64Decoder()],
     ["status", getSessionStatusDecoder()],
     ["roundCount", getU8Decoder()],
@@ -208,5 +202,5 @@ export async function fetchAllMaybeSession(
 }
 
 export function getSessionSize(): number {
-  return 116;
+  return 84;
 }

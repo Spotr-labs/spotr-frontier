@@ -42,7 +42,7 @@ pub mod spotr_markets {
         validate_config(input)?;
 
         let config = &mut ctx.accounts.config;
-        config.authority = ctx.accounts.authority.key();
+        config.authorities = input.authorities;
         config.usdc_mint = ctx.accounts.usdc_mint.key();
         config.protocol_fee_bps = input.protocol_fee_bps;
         config.referral_cut_bps = input.referral_cut_bps;
@@ -52,7 +52,7 @@ pub mod spotr_markets {
         config.bump = ctx.bumps.config;
 
         let treasury = &mut ctx.accounts.protocol_treasury;
-        treasury.authority = ctx.accounts.authority.key();
+        treasury.authorities = input.authorities;
         treasury.total_collected_usdc_units = 0;
         treasury.bump = ctx.bumps.protocol_treasury;
         treasury.token_bump = ctx.bumps.protocol_treasury_tokens;
@@ -62,8 +62,13 @@ pub mod spotr_markets {
 
     pub fn update_config(ctx: Context<UpdateConfig>, input: ConfigInput) -> Result<()> {
         validate_config(input)?;
+        require!(
+            is_admin(&ctx.accounts.authority.key(), &ctx.accounts.config.authorities),
+            SpotrError::InvalidConfig
+        );
 
         let config = &mut ctx.accounts.config;
+        config.authorities = input.authorities;
         config.protocol_fee_bps = input.protocol_fee_bps;
         config.referral_cut_bps = input.referral_cut_bps;
         config.default_round_count = input.round_count;
@@ -79,7 +84,10 @@ pub mod spotr_markets {
         validate_session_input(input)?;
 
         let session = &mut ctx.accounts.session;
-        session.authority = ctx.accounts.authority.key();
+        require!(
+            is_admin(&ctx.accounts.authority.key(), &ctx.accounts.config.authorities),
+            SpotrError::InvalidConfig
+        );
         session.session_number = input.session_number;
         session.status = SessionStatus::Pending;
         session.round_count = input.round_count;
@@ -426,6 +434,10 @@ pub mod spotr_markets {
     /// rounds via this path also flips `Session.status` to `Completed`,
     /// matching the natural permissionless `close_round` flow.
     pub fn admin_close_round(ctx: Context<AdminCloseRound>) -> Result<()> {
+        require!(
+            is_admin(&ctx.accounts.authority.key(), &ctx.accounts.config.authorities),
+            SpotrError::InvalidConfig
+        );
         let round = &mut ctx.accounts.round;
         let session = &mut ctx.accounts.session;
 
@@ -451,6 +463,10 @@ pub mod spotr_markets {
     /// safety hatch if rounds ended via the permissionless path and the
     /// session-status flip somehow wasn't triggered.
     pub fn admin_close_session(ctx: Context<AdminCloseSession>) -> Result<()> {
+        require!(
+            is_admin(&ctx.accounts.authority.key(), &ctx.accounts.config.authorities),
+            SpotrError::InvalidConfig
+        );
         let session = &mut ctx.accounts.session;
         require!(
             session.rounds_closed >= session.round_count,
@@ -619,6 +635,10 @@ pub mod spotr_markets {
     }
 
     pub fn withdraw_protocol_fees(ctx: Context<WithdrawProtocolFees>) -> Result<()> {
+        require!(
+            is_admin(&ctx.accounts.authority.key(), &ctx.accounts.config.authorities),
+            SpotrError::InvalidConfig
+        );
         let amount = ctx.accounts.session.protocol_fee_accrued_usdc_units;
         require!(amount > 0, SpotrError::NothingToClaim);
 
@@ -645,6 +665,7 @@ pub mod spotr_markets {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
 pub struct ConfigInput {
+    pub authorities: [Pubkey; 3],
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
     pub round_count: u8,
@@ -713,7 +734,7 @@ pub struct SideState {
 #[account]
 #[derive(InitSpace)]
 pub struct SpotrConfig {
-    pub authority: Pubkey,
+    pub authorities: [Pubkey; 3],
     pub usdc_mint: Pubkey,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
@@ -726,7 +747,7 @@ pub struct SpotrConfig {
 #[account]
 #[derive(InitSpace)]
 pub struct ProtocolTreasury {
-    pub authority: Pubkey,
+    pub authorities: [Pubkey; 3],
     pub total_collected_usdc_units: u64,
     pub bump: u8,
     pub token_bump: u8,
@@ -735,7 +756,6 @@ pub struct ProtocolTreasury {
 #[account]
 #[derive(InitSpace)]
 pub struct Session {
-    pub authority: Pubkey,
     pub session_number: u64,
     pub status: SessionStatus,
     pub round_count: u8,
@@ -857,7 +877,6 @@ pub struct UpdateConfig<'info> {
         mut,
         seeds = [CONFIG_SEED],
         bump = config.bump,
-        has_one = authority
     )]
     pub config: Account<'info, SpotrConfig>,
 }
@@ -1115,10 +1134,9 @@ pub struct CloseRound<'info> {
 #[derive(Accounts)]
 pub struct AdminCloseRound<'info> {
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        has_one = authority @ SpotrError::InvalidConfig,
-    )]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    #[account(mut)]
     pub session: Account<'info, Session>,
     #[account(
         mut,
@@ -1132,10 +1150,9 @@ pub struct AdminCloseRound<'info> {
 #[derive(Accounts)]
 pub struct AdminCloseSession<'info> {
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        has_one = authority @ SpotrError::InvalidConfig,
-    )]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    #[account(mut)]
     pub session: Account<'info, Session>,
 }
 
@@ -1268,7 +1285,7 @@ pub struct WithdrawProtocolFees<'info> {
         bump = config.bump,
     )]
     pub config: Account<'info, SpotrConfig>,
-    #[account(mut, has_one = authority)]
+    #[account(mut)]
     pub session: Account<'info, Session>,
     #[account(
         seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
@@ -1296,12 +1313,19 @@ pub struct WithdrawProtocolFees<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+fn is_admin(signer: &Pubkey, authorities: &[Pubkey; 3]) -> bool {
+    *signer != Pubkey::default() && authorities.iter().any(|a| a == signer)
+}
+
 fn validate_config(input: ConfigInput) -> Result<()> {
+    require!(
+        input.authorities.iter().any(|a| *a != Pubkey::default()),
+        SpotrError::InvalidConfig
+    );
     require!(input.protocol_fee_bps <= 10_000, SpotrError::InvalidConfig);
     require!(input.referral_cut_bps <= 10_000, SpotrError::InvalidConfig);
     require!(input.round_count > 0, SpotrError::InvalidConfig);
     require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
-    require!(input.buy_in_usdc_units > 0, SpotrError::InvalidConfig);
     Ok(())
 }
 
@@ -1564,5 +1588,102 @@ mod tests {
     fn first_depositor_entitlement_uses_zero_cum_prior_safely() {
         let entries = vec![entry(1, 123_456, 0)];
         assert_eq!(compute_lazy_entitlement(&entries, 0).unwrap(), 0);
+    }
+
+    fn pubkey(byte: u8) -> Pubkey {
+        Pubkey::new_from_array([byte; 32])
+    }
+
+    fn authorities(a: u8, b: u8, c: u8) -> [Pubkey; 3] {
+        [pubkey(a), pubkey(b), pubkey(c)]
+    }
+
+    // --- is_admin happy paths ---
+
+    #[test]
+    fn is_admin_recognises_first_slot() {
+        let auths = authorities(1, 2, 3);
+        assert!(is_admin(&pubkey(1), &auths));
+    }
+
+    #[test]
+    fn is_admin_recognises_second_slot() {
+        let auths = authorities(1, 2, 3);
+        assert!(is_admin(&pubkey(2), &auths));
+    }
+
+    #[test]
+    fn is_admin_recognises_third_slot() {
+        let auths = authorities(1, 2, 3);
+        assert!(is_admin(&pubkey(3), &auths));
+    }
+
+    #[test]
+    fn is_admin_works_with_only_one_slot_filled() {
+        // Other two slots are default (all-zeros).
+        let auths = authorities(1, 0, 0);
+        assert!(is_admin(&pubkey(1), &auths));
+    }
+
+    // --- is_admin sad paths ---
+
+    #[test]
+    fn is_admin_rejects_non_admin() {
+        let auths = authorities(1, 2, 3);
+        assert!(!is_admin(&pubkey(99), &auths));
+    }
+
+    #[test]
+    fn is_admin_rejects_default_pubkey_as_admin() {
+        // Passing Pubkey::default() must not grant access even if a slot is empty.
+        let auths = authorities(1, 0, 0);
+        assert!(!is_admin(&Pubkey::default(), &auths));
+    }
+
+    #[test]
+    fn is_admin_rejects_all_zeros_authorities() {
+        let auths = [Pubkey::default(); 3];
+        assert!(!is_admin(&pubkey(1), &auths));
+    }
+
+    // --- validate_config authority checks ---
+
+    #[test]
+    fn validate_config_rejects_all_default_authorities() {
+        let input = ConfigInput {
+            authorities: [Pubkey::default(); 3],
+            protocol_fee_bps: 100,
+            referral_cut_bps: 50,
+            round_count: 3,
+            round_duration_seconds: 3600,
+            buy_in_usdc_units: 1_000_000,
+        };
+        assert!(validate_config(input).is_err());
+    }
+
+    #[test]
+    fn validate_config_accepts_one_valid_authority() {
+        let input = ConfigInput {
+            authorities: [pubkey(1), Pubkey::default(), Pubkey::default()],
+            protocol_fee_bps: 100,
+            referral_cut_bps: 50,
+            round_count: 3,
+            round_duration_seconds: 3600,
+            buy_in_usdc_units: 1_000_000,
+        };
+        assert!(validate_config(input).is_ok());
+    }
+
+    #[test]
+    fn validate_config_accepts_three_valid_authorities() {
+        let input = ConfigInput {
+            authorities: authorities(1, 2, 3),
+            protocol_fee_bps: 100,
+            referral_cut_bps: 50,
+            round_count: 3,
+            round_duration_seconds: 3600,
+            buy_in_usdc_units: 1_000_000,
+        };
+        assert!(validate_config(input).is_ok());
     }
 }

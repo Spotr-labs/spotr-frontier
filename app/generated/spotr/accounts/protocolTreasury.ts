@@ -17,6 +17,8 @@ import {
   fixEncoderSize,
   getAddressDecoder,
   getAddressEncoder,
+  getArrayDecoder,
+  getArrayEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getStructDecoder,
@@ -51,14 +53,14 @@ export function getProtocolTreasuryDiscriminatorBytes() {
 
 export type ProtocolTreasury = {
   discriminator: ReadonlyUint8Array;
-  authority: Address;
+  authorities: Array<Address>;
   totalCollectedUsdcUnits: bigint;
   bump: number;
   tokenBump: number;
 };
 
 export type ProtocolTreasuryArgs = {
-  authority: Address;
+  authorities: Array<Address>;
   totalCollectedUsdcUnits: number | bigint;
   bump: number;
   tokenBump: number;
@@ -69,7 +71,7 @@ export function getProtocolTreasuryEncoder(): FixedSizeEncoder<ProtocolTreasuryA
   return transformEncoder(
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
-      ["authority", getAddressEncoder()],
+      ["authorities", getArrayEncoder(getAddressEncoder(), { size: 3 })],
       ["totalCollectedUsdcUnits", getU64Encoder()],
       ["bump", getU8Encoder()],
       ["tokenBump", getU8Encoder()],
@@ -82,7 +84,7 @@ export function getProtocolTreasuryEncoder(): FixedSizeEncoder<ProtocolTreasuryA
 export function getProtocolTreasuryDecoder(): FixedSizeDecoder<ProtocolTreasury> {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
-    ["authority", getAddressDecoder()],
+    ["authorities", getArrayDecoder(getAddressDecoder(), { size: 3 })],
     ["totalCollectedUsdcUnits", getU64Decoder()],
     ["bump", getU8Decoder()],
     ["tokenBump", getU8Decoder()],
@@ -164,5 +166,5 @@ export async function fetchAllMaybeProtocolTreasury(
 }
 
 export function getProtocolTreasurySize(): number {
-  return 50;
+  return 114;
 }

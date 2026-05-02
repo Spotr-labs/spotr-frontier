@@ -17,6 +17,8 @@ import {
   fixEncoderSize,
   getAddressDecoder,
   getAddressEncoder,
+  getArrayDecoder,
+  getArrayEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getI64Decoder,
@@ -55,7 +57,7 @@ export function getSpotrConfigDiscriminatorBytes() {
 
 export type SpotrConfig = {
   discriminator: ReadonlyUint8Array;
-  authority: Address;
+  authorities: Array<Address>;
   usdcMint: Address;
   protocolFeeBps: number;
   referralCutBps: number;
@@ -66,7 +68,7 @@ export type SpotrConfig = {
 };
 
 export type SpotrConfigArgs = {
-  authority: Address;
+  authorities: Array<Address>;
   usdcMint: Address;
   protocolFeeBps: number;
   referralCutBps: number;
@@ -81,7 +83,7 @@ export function getSpotrConfigEncoder(): FixedSizeEncoder<SpotrConfigArgs> {
   return transformEncoder(
     getStructEncoder([
       ["discriminator", fixEncoderSize(getBytesEncoder(), 8)],
-      ["authority", getAddressEncoder()],
+      ["authorities", getArrayEncoder(getAddressEncoder(), { size: 3 })],
       ["usdcMint", getAddressEncoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
@@ -98,7 +100,7 @@ export function getSpotrConfigEncoder(): FixedSizeEncoder<SpotrConfigArgs> {
 export function getSpotrConfigDecoder(): FixedSizeDecoder<SpotrConfig> {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
-    ["authority", getAddressDecoder()],
+    ["authorities", getArrayDecoder(getAddressDecoder(), { size: 3 })],
     ["usdcMint", getAddressDecoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
@@ -171,5 +173,5 @@ export async function fetchAllMaybeSpotrConfig(
 }
 
 export function getSpotrConfigSize(): number {
-  return 94;
+  return 158;
 }

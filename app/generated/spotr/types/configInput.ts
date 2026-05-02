@@ -8,6 +8,10 @@
 
 import {
   combineCodec,
+  getAddressDecoder,
+  getAddressEncoder,
+  getArrayDecoder,
+  getArrayEncoder,
   getI64Decoder,
   getI64Encoder,
   getStructDecoder,
@@ -18,12 +22,14 @@ import {
   getU64Encoder,
   getU8Decoder,
   getU8Encoder,
+  type Address,
   type FixedSizeCodec,
   type FixedSizeDecoder,
   type FixedSizeEncoder,
 } from "@solana/kit";
 
 export type ConfigInput = {
+  authorities: Array<Address>;
   protocolFeeBps: number;
   referralCutBps: number;
   roundCount: number;
@@ -32,6 +38,7 @@ export type ConfigInput = {
 };
 
 export type ConfigInputArgs = {
+  authorities: Array<Address>;
   protocolFeeBps: number;
   referralCutBps: number;
   roundCount: number;
@@ -41,6 +48,7 @@ export type ConfigInputArgs = {
 
 export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
   return getStructEncoder([
+    ["authorities", getArrayEncoder(getAddressEncoder(), { size: 3 })],
     ["protocolFeeBps", getU16Encoder()],
     ["referralCutBps", getU16Encoder()],
     ["roundCount", getU8Encoder()],
@@ -51,6 +59,7 @@ export function getConfigInputEncoder(): FixedSizeEncoder<ConfigInputArgs> {
 
 export function getConfigInputDecoder(): FixedSizeDecoder<ConfigInput> {
   return getStructDecoder([
+    ["authorities", getArrayDecoder(getAddressDecoder(), { size: 3 })],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
     ["roundCount", getU8Decoder()],

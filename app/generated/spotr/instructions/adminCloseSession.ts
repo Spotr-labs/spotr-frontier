@@ -24,11 +24,13 @@ import {
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
+  type ReadonlyAccount,
   type ReadonlySignerAccount,
   type ReadonlyUint8Array,
   type TransactionSigner,
   type WritableAccount,
 } from "@solana/kit";
+import { findConfigPda } from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import { getAccountMetaFactory, type ResolvedAccount } from "../shared";
 
@@ -45,6 +47,7 @@ export function getAdminCloseSessionDiscriminatorBytes() {
 export type AdminCloseSessionInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
   TAccountAuthority extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
@@ -55,6 +58,9 @@ export type AdminCloseSessionInstruction<
         ? ReadonlySignerAccount<TAccountAuthority> &
             AccountSignerMeta<TAccountAuthority>
         : TAccountAuthority,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
       TAccountSession extends string
         ? WritableAccount<TAccountSession>
         : TAccountSession,
@@ -91,24 +97,99 @@ export function getAdminCloseSessionInstructionDataCodec(): FixedSizeCodec<
   );
 }
 
-export type AdminCloseSessionInput<
+export type AdminCloseSessionAsyncInput<
   TAccountAuthority extends string = string,
+  TAccountConfig extends string = string,
   TAccountSession extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
+  config?: Address<TAccountConfig>;
+  session: Address<TAccountSession>;
+};
+
+export async function getAdminCloseSessionInstructionAsync<
+  TAccountAuthority extends string,
+  TAccountConfig extends string,
+  TAccountSession extends string,
+  TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+>(
+  input: AdminCloseSessionAsyncInput<
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession
+  >,
+  config?: { programAddress?: TProgramAddress },
+): Promise<
+  AdminCloseSessionInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession
+  >
+> {
+  // Program address.
+  const programAddress =
+    config?.programAddress ?? SPOTR_MARKETS_PROGRAM_ADDRESS;
+
+  // Original accounts.
+  const originalAccounts = {
+    authority: { value: input.authority ?? null, isWritable: false },
+    config: { value: input.config ?? null, isWritable: false },
+    session: { value: input.session ?? null, isWritable: true },
+  };
+  const accounts = originalAccounts as Record<
+    keyof typeof originalAccounts,
+    ResolvedAccount
+  >;
+
+  // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
+
+  const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
+  return Object.freeze({
+    accounts: [
+      getAccountMeta(accounts.authority),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.session),
+    ],
+    data: getAdminCloseSessionInstructionDataEncoder().encode({}),
+    programAddress,
+  } as AdminCloseSessionInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession
+  >);
+}
+
+export type AdminCloseSessionInput<
+  TAccountAuthority extends string = string,
+  TAccountConfig extends string = string,
+  TAccountSession extends string = string,
+> = {
+  authority: TransactionSigner<TAccountAuthority>;
+  config: Address<TAccountConfig>;
   session: Address<TAccountSession>;
 };
 
 export function getAdminCloseSessionInstruction<
   TAccountAuthority extends string,
+  TAccountConfig extends string,
   TAccountSession extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
-  input: AdminCloseSessionInput<TAccountAuthority, TAccountSession>,
+  input: AdminCloseSessionInput<
+    TAccountAuthority,
+    TAccountConfig,
+    TAccountSession
+  >,
   config?: { programAddress?: TProgramAddress },
 ): AdminCloseSessionInstruction<
   TProgramAddress,
   TAccountAuthority,
+  TAccountConfig,
   TAccountSession
 > {
   // Program address.
@@ -118,6 +199,7 @@ export function getAdminCloseSessionInstruction<
   // Original accounts.
   const originalAccounts = {
     authority: { value: input.authority ?? null, isWritable: false },
+    config: { value: input.config ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
@@ -129,6 +211,7 @@ export function getAdminCloseSessionInstruction<
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.authority),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.session),
     ],
     data: getAdminCloseSessionInstructionDataEncoder().encode({}),
@@ -136,6 +219,7 @@ export function getAdminCloseSessionInstruction<
   } as AdminCloseSessionInstruction<
     TProgramAddress,
     TAccountAuthority,
+    TAccountConfig,
     TAccountSession
   >);
 }
@@ -147,7 +231,8 @@ export type ParsedAdminCloseSessionInstruction<
   programAddress: Address<TProgram>;
   accounts: {
     authority: TAccountMetas[0];
-    session: TAccountMetas[1];
+    config: TAccountMetas[1];
+    session: TAccountMetas[2];
   };
   data: AdminCloseSessionInstructionData;
 };
@@ -160,7 +245,7 @@ export function parseAdminCloseSessionInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedAdminCloseSessionInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 2) {
+  if (instruction.accounts.length < 3) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -172,7 +257,11 @@ export function parseAdminCloseSessionInstruction<
   };
   return {
     programAddress: instruction.programAddress,
-    accounts: { authority: getNextAccount(), session: getNextAccount() },
+    accounts: {
+      authority: getNextAccount(),
+      config: getNextAccount(),
+      session: getNextAccount(),
+    },
     data: getAdminCloseSessionInstructionDataDecoder().decode(instruction.data),
   };
 }
