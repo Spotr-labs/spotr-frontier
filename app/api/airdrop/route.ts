@@ -35,6 +35,20 @@ const RPC_URL = RPC_URLS[CLUSTER] ?? null;
 const SOL_AIRDROP_CAP = 10;
 const USDC_AIRDROP_CAP = 10_000;
 
+function loadMintAuthorityBytes(): number[] {
+  const fromEnv = process.env.USDC_MINT_AUTHORITY_KEYPAIR;
+  if (fromEnv) return JSON.parse(fromEnv) as number[];
+  try {
+    return JSON.parse(
+      readFileSync(path.join(process.cwd(), "keys", "usdc-mint-authority.json"), "utf-8")
+    ) as number[];
+  } catch {
+    throw new Error(
+      "USDC mint authority not available. Set USDC_MINT_AUTHORITY_KEYPAIR env var or ensure keys/usdc-mint-authority.json exists."
+    );
+  }
+}
+
 export async function POST(request: Request) {
   if (CLUSTER === "mainnet" || !RPC_URL) {
     return NextResponse.json(
@@ -64,10 +78,17 @@ export async function POST(request: Request) {
   // ── SOL ─────────────────────────────────────────────────────────────────
   if (type === "sol") {
     const sol = Math.min(Number(amount) || 2, SOL_AIRDROP_CAP);
-    const sig = await rpc
-      .requestAirdrop(walletAddr, lamports(BigInt(Math.floor(sol * 1e9))))
-      .send();
-    return NextResponse.json({ signature: String(sig) });
+    try {
+      const sig = await rpc
+        .requestAirdrop(walletAddr, lamports(BigInt(Math.floor(sol * 1e9))))
+        .send();
+      return NextResponse.json({ signature: String(sig) });
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : "SOL airdrop failed." },
+        { status: 500 }
+      );
+    }
   }
 
   // ── USDC (mocked SPL token) ──────────────────────────────────────────────
@@ -75,18 +96,17 @@ export async function POST(request: Request) {
     const mintAddress = process.env.USDC_MINT_ADDRESS;
     if (!mintAddress) {
       return NextResponse.json(
-        { error: "USDC_MINT_ADDRESS env var not set. Start with npm run dev:local." },
+        { error: "USDC_MINT_ADDRESS env var not set." },
         { status: 500 }
       );
     }
 
-    const authKeyPath = path.join(process.cwd(), "keys", "usdc-mint-authority.json");
     let authorityBytes: number[];
     try {
-      authorityBytes = JSON.parse(readFileSync(authKeyPath, "utf-8")) as number[];
-    } catch {
+      authorityBytes = loadMintAuthorityBytes();
+    } catch (e) {
       return NextResponse.json(
-        { error: "Could not read mint authority keypair from /keys/." },
+        { error: e instanceof Error ? e.message : "Could not load mint authority." },
         { status: 500 }
       );
     }
@@ -147,18 +167,17 @@ export async function POST(request: Request) {
     const mintAddress = process.env.USDC_MINT_ADDRESS;
     if (!mintAddress) {
       return NextResponse.json(
-        { error: "USDC_MINT_ADDRESS env var not set. Start with npm run dev:local." },
+        { error: "USDC_MINT_ADDRESS env var not set." },
         { status: 500 }
       );
     }
 
-    const authKeyPath = path.join(process.cwd(), "keys", "usdc-mint-authority.json");
     let authorityBytes: number[];
     try {
-      authorityBytes = JSON.parse(readFileSync(authKeyPath, "utf-8")) as number[];
-    } catch {
+      authorityBytes = loadMintAuthorityBytes();
+    } catch (e) {
       return NextResponse.json(
-        { error: "Could not read mint authority keypair from /keys/." },
+        { error: e instanceof Error ? e.message : "Could not load mint authority." },
         { status: 500 }
       );
     }
