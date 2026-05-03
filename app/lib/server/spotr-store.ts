@@ -64,6 +64,7 @@ import type {
 } from "../spotr-types";
 import { prisma } from "./db";
 import { launchFaultLineSeeds } from "./launch-seed";
+import { getSessionWindowForDate } from "../spotr-config/session-window";
 
 const REWARD_SCALE = 1_000_000_000n;
 
@@ -150,19 +151,6 @@ function mapRewardStatus(status: RewardStatus): RewardInventoryItem["status"] {
   }
 }
 
-function getSessionWindowForDate(anchor: Date, config: SpotrPublicConfig) {
-  const startsAt = new Date(anchor);
-  startsAt.setUTCHours(config.defaultSessionStartHourUtc, 0, 0, 0);
-
-  const endsAt = new Date(startsAt);
-  endsAt.setUTCHours(config.defaultSessionEndHourUtc, 0, 0, 0);
-  if (endsAt <= startsAt) {
-    endsAt.setUTCDate(endsAt.getUTCDate() + 1);
-  }
-
-  return { startsAt, endsAt };
-}
-
 function getLaunchWindow(config: SpotrPublicConfig) {
   return getSessionWindowForDate(new Date(config.launchIso), config);
 }
@@ -176,24 +164,6 @@ function getSessionTitle(seasonLabel: string, ordinal?: number) {
 function getSessionSlug(seasonLabel: string, startsAt: Date, ordinal?: number) {
   const base = `${slugify(seasonLabel)}-${startsAt.toISOString().slice(0, 10)}`;
   return ordinal == null ? base : `${base}-s${ordinal}`;
-}
-
-function getNextDeployWindow(config: SpotrPublicConfig, reference = new Date()) {
-  const current = new Date(reference);
-  const todayWindow = getSessionWindowForDate(current, config);
-  if (current < todayWindow.startsAt) {
-    return todayWindow;
-  }
-  if (current < todayWindow.endsAt) {
-    return {
-      startsAt: current,
-      endsAt: todayWindow.endsAt,
-    };
-  }
-
-  const nextDay = new Date(current);
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  return getSessionWindowForDate(nextDay, config);
 }
 
 function getProbabilities(
@@ -458,7 +428,7 @@ async function loadSessionWithRounds(tx: Tx, sessionId: string): Promise<Session
 
 async function syncSessionState(tx: Tx, sessionId: string) {
   const now = new Date();
-  let session = await loadSessionWithRounds(tx, sessionId);
+  const session = await loadSessionWithRounds(tx, sessionId);
 
   const participantAggregate = await tx.sessionParticipant.aggregate({
     where: { sessionId },
@@ -472,81 +442,113 @@ async function syncSessionState(tx: Tx, sessionId: string) {
     joinedWallets >= session.minWallets ||
     totalEscrowLamports >= session.minTotalLamports;
 
+  // Activation is time-based: once startsAt arrives, the session is live
+  // regardless of how many wallets joined. The min-wallet/min-escrow gate
+  // still distinguishes COMPLETED (met) from EXPIRED (not met) at endsAt.
   let activatedAt = session.activatedAt;
-  if (!activatedAt && thresholdMet) {
-    activatedAt = now < session.startsAt ? session.startsAt : now;
+  if (!activatedAt && now >= session.startsAt) {
+    activatedAt = session.startsAt;
   }
+
+  let nextStatus: PrismaSessionStatus = "PENDING";
+  if (activatedAt) {
+    if (now >= session.endsAt) {
+      nextStatus = thresholdMet ? "COMPLETED" : "EXPIRED";
+    } else {
+      nextStatus = "LIVE";
+    }
+  }
+
+  let mutated = false;
+  const writes: Array<Promise<unknown>> = [];
 
   if (activatedAt) {
     // Rounds share the session's window: every round opens together when the
     // session activates and every round closes together when the session ends.
     const opensAt = activatedAt;
     const closesAt = session.endsAt;
-    for (const round of session.rounds) {
-      if (
-        round.opensAt?.toISOString() !== opensAt.toISOString() ||
-        round.closesAt?.toISOString() !== closesAt.toISOString()
-      ) {
-        await tx.sessionRound.update({
-          where: { id: round.id },
+    const roundIdsToReschedule = session.rounds
+      .filter(
+        (round) =>
+          round.opensAt?.toISOString() !== opensAt.toISOString() ||
+          round.closesAt?.toISOString() !== closesAt.toISOString()
+      )
+      .map((round) => round.id);
+    if (roundIdsToReschedule.length > 0) {
+      writes.push(
+        tx.sessionRound.updateMany({
+          where: { id: { in: roundIdsToReschedule } },
           data: { opensAt, closesAt },
-        });
-      }
+        })
+      );
+      mutated = true;
     }
   }
 
-  let nextStatus: PrismaSessionStatus = "PENDING";
-  if (!thresholdMet && now > session.endsAt) {
-    nextStatus = "EXPIRED";
-  } else if (activatedAt) {
-    if (now >= session.endsAt) {
-      nextStatus = "COMPLETED";
-    } else if (now >= activatedAt) {
-      nextStatus = "LIVE";
-    }
-  }
-
-  if (
+  const sessionFieldsChanged =
     session.joinedWallets !== joinedWallets ||
     session.totalEscrowLamports !== totalEscrowLamports ||
     session.status !== nextStatus ||
-    session.activatedAt?.toISOString() !== activatedAt?.toISOString()
-  ) {
-    await tx.session.update({
-      where: { id: sessionId },
-      data: {
-        joinedWallets,
-        totalEscrowLamports,
-        status: nextStatus,
-        activatedAt,
-        completedAt:
-          nextStatus === "COMPLETED"
-            ? session.completedAt ?? now
-            : nextStatus === "EXPIRED"
-              ? null
-              : session.completedAt,
-      },
-    });
+    session.activatedAt?.toISOString() !== activatedAt?.toISOString();
+
+  if (sessionFieldsChanged) {
+    writes.push(
+      tx.session.update({
+        where: { id: sessionId },
+        data: {
+          joinedWallets,
+          totalEscrowLamports,
+          status: nextStatus,
+          activatedAt,
+          completedAt:
+            nextStatus === "COMPLETED"
+              ? session.completedAt ?? now
+              : nextStatus === "EXPIRED"
+                ? null
+                : session.completedAt,
+        },
+      })
+    );
+    mutated = true;
   }
 
-  session = await loadSessionWithRounds(tx, sessionId);
-
+  // Group round status flips by target status so we can issue at most one
+  // updateMany per status (most calls produce zero or one).
+  const roundStatusUpdates = new Map<RoundStatus, string[]>();
   for (const round of session.rounds) {
-    const derivedStatus = deriveRoundStatus(
-      session.status,
-      round.opensAt,
-      round.closesAt,
-      now
-    );
+    const opensAt = activatedAt ?? round.opensAt;
+    const closesAt = activatedAt ? session.endsAt : round.closesAt;
+    const derivedStatus = deriveRoundStatus(nextStatus, opensAt, closesAt, now);
     if (round.status !== derivedStatus) {
-      await tx.sessionRound.update({
-        where: { id: round.id },
-        data: { status: derivedStatus },
-      });
+      const list = roundStatusUpdates.get(derivedStatus) ?? [];
+      list.push(round.id);
+      roundStatusUpdates.set(derivedStatus, list);
     }
   }
 
-  await promoteClaimableReferrals(tx, sessionId, now);
+  for (const [status, ids] of roundStatusUpdates) {
+    writes.push(
+      tx.sessionRound.updateMany({
+        where: { id: { in: ids } },
+        data: { status },
+      })
+    );
+    mutated = true;
+  }
+
+  // Only promote referrals when the session is actually live or completed —
+  // earlier statuses cannot have promotable accruals.
+  if (nextStatus === "LIVE" || nextStatus === "COMPLETED") {
+    writes.push(promoteClaimableReferrals(tx, sessionId, now));
+  }
+
+  if (writes.length > 0) {
+    await Promise.all(writes);
+  }
+
+  if (!mutated) {
+    return session;
+  }
 
   return loadSessionWithRounds(tx, sessionId);
 }
@@ -558,18 +560,38 @@ async function buildProfileSummary(
 ): Promise<ProfileSummary> {
   const participants = await tx.sessionParticipant.findMany({
     where: { walletAddress },
-    include: {
-      session: true,
+    select: {
+      remainingEscrowLamports: true,
+      session: { select: { status: true } },
       positions: {
-        include: {
+        select: {
+          roundId: true,
+          side: true,
+          stakeLamports: true,
+          claimedLamports: true,
+          shares: true,
+          rewardDebtLamports: true,
           round: {
-            include: {
-              session: true,
+            select: {
+              opensAt: true,
+              closesAt: true,
+              sideARewardPerShare: true,
+              sideBRewardPerShare: true,
+              session: { select: { status: true } },
             },
           },
         },
       },
-      rewards: true,
+      rewards: {
+        select: {
+          id: true,
+          kind: true,
+          title: true,
+          subtitle: true,
+          status: true,
+          assignedAt: true,
+        },
+      },
     },
   });
 
@@ -679,6 +701,28 @@ async function buildAdminSummary(
     normalizedWalletAddress != null &&
     serverSpotrConfig.adminWallets.includes(normalizedWalletAddress);
 
+  if (!authorized) {
+    return {
+      authorized: false,
+      lowPairAlert: false,
+      activePairs: 0,
+      availablePairs: 0,
+      liveSessions: 0,
+      pendingSessions: 0,
+      protocolFeesLamports: 0,
+      pendingReferralLamports: 0,
+      assignedRewards: 0,
+      claimableRewards: 0,
+      recentTransactions: [],
+      recentRewards: [],
+      participants: [],
+      pairLibrary: [],
+      sessionHistory: [],
+      nextSessionsCursor: null,
+      referralBalances: [],
+    };
+  }
+
   const { skip: sessionsSkip } = decodeListCursor(sessionsCursor ?? null);
   const [
     allPairs,
@@ -759,41 +803,53 @@ async function buildAdminSummary(
     assigned: assignedPairIds.has(pair.id),
   }));
 
+  const [perPairTotals, paidOutTotals] = await Promise.all([
+    tx.referralAccrual.groupBy({
+      by: ["referrerWallet", "refereeWallet"],
+      _sum: { amountLamports: true },
+    }),
+    tx.referralAccrual.groupBy({
+      by: ["referrerWallet"],
+      where: { status: "CLAIMED" },
+      _sum: { amountLamports: true },
+    }),
+  ]);
+
+  const paidByReferrer = new Map<string, bigint>();
+  for (const row of paidOutTotals) {
+    paidByReferrer.set(row.referrerWallet, row._sum.amountLamports ?? 0n);
+  }
+
   const referralBalanceMap = new Map<
     string,
     {
       referees: Set<string>;
       totalAccruedLamports: bigint;
-      paidOutLamports: bigint;
     }
   >();
-  const referralRows = await tx.referralAccrual.findMany({
-    orderBy: [{ createdAt: "desc" }],
-  });
-  for (const accrual of referralRows) {
-    const current = referralBalanceMap.get(accrual.referrerWallet) ?? {
+  for (const row of perPairTotals) {
+    const current = referralBalanceMap.get(row.referrerWallet) ?? {
       referees: new Set<string>(),
       totalAccruedLamports: 0n,
-      paidOutLamports: 0n,
     };
-    current.referees.add(accrual.refereeWallet);
-    current.totalAccruedLamports += accrual.amountLamports;
-    if (accrual.status === "CLAIMED") {
-      current.paidOutLamports += accrual.amountLamports;
-    }
-    referralBalanceMap.set(accrual.referrerWallet, current);
+    current.referees.add(row.refereeWallet);
+    current.totalAccruedLamports += row._sum.amountLamports ?? 0n;
+    referralBalanceMap.set(row.referrerWallet, current);
   }
 
   const referralBalances = Array.from(referralBalanceMap.entries())
-    .map<AdminReferralBalance>(([referrerWallet, totals]) => ({
-      referrerWallet,
-      referredWallets: totals.referees.size,
-      totalAccruedLamports: toNumber(totals.totalAccruedLamports),
-      paidOutLamports: toNumber(totals.paidOutLamports),
-      balanceDueLamports: toNumber(
-        totals.totalAccruedLamports - totals.paidOutLamports
-      ),
-    }))
+    .map<AdminReferralBalance>(([referrerWallet, totals]) => {
+      const paidOutLamports = paidByReferrer.get(referrerWallet) ?? 0n;
+      return {
+        referrerWallet,
+        referredWallets: totals.referees.size,
+        totalAccruedLamports: toNumber(totals.totalAccruedLamports),
+        paidOutLamports: toNumber(paidOutLamports),
+        balanceDueLamports: toNumber(
+          totals.totalAccruedLamports - paidOutLamports
+        ),
+      };
+    })
     .sort((left, right) => right.balanceDueLamports - left.balanceDueLamports);
 
   return {
@@ -852,9 +908,16 @@ async function buildAdminSummary(
   };
 }
 
-async function buildDashboardPayload(tx: Tx, normalizedWalletAddress?: string | null, overrideSessionId?: string | null) {
+async function buildDashboardPayload(
+  tx: Tx,
+  normalizedWalletAddress?: string | null,
+  overrideSessionId?: string | null,
+  options?: { skipSync?: boolean }
+) {
   const sessionId = overrideSessionId ?? await getPrimarySessionId(tx);
-  const session = await syncSessionState(tx, sessionId);
+  const session = options?.skipSync
+    ? await loadSessionWithRounds(tx, sessionId)
+    : await syncSessionState(tx, sessionId);
   const now = new Date();
 
   const participant = normalizedWalletAddress
@@ -945,6 +1008,27 @@ async function buildDashboardPayload(tx: Tx, normalizedWalletAddress?: string | 
     rounds.find((round) => round.status === "upcoming") ??
     null;
 
+  const availableSessionRows = await tx.session.findMany({
+    where: { status: { in: ["PENDING", "LIVE"] } },
+    orderBy: [{ status: "asc" }, { startsAt: "asc" }],
+    take: 50,
+  });
+  const availableSessions: AdminSessionCard[] = availableSessionRows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    status: mapSessionStatus(row.status),
+    startsAtIso: row.startsAt.toISOString(),
+    endsAtIso: row.endsAt.toISOString(),
+    walletsJoined: row.joinedWallets,
+    totalEscrowLamports: toNumber(row.totalEscrowLamports),
+    buyInLamports: toNumber(row.buyInLamports),
+    chainSessionNumber:
+      row.chainSessionNumber == null ? null : row.chainSessionNumber.toString(),
+    chainSessionAddress: row.chainSessionAddress ?? null,
+    chainDeployTxSignature: row.chainDeployTxSignature ?? null,
+    createdAtIso: row.createdAt.toISOString(),
+  }));
+
   return {
     session: {
       id: session.id,
@@ -977,6 +1061,7 @@ async function buildDashboardPayload(tx: Tx, normalizedWalletAddress?: string | 
       ? await buildProfileSummary(tx, normalizedWalletAddress, now)
       : null,
     admin: await buildAdminSummary(tx, session.id, normalizedWalletAddress),
+    availableSessions,
     faultLines,
   } satisfies SpotrDashboardPayload;
 }
@@ -1202,10 +1287,39 @@ async function getEligibleReferralShareLamports(
   return (feeLamports * BigInt(session.referralCutBps)) / 10_000n;
 }
 
+export async function sessionExists(sessionId: string): Promise<boolean> {
+  const id = sessionId?.trim();
+  if (!id) return false;
+  const row = await prisma.session.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  return row != null;
+}
+
 export async function getSpotrDashboardPayload(walletAddress?: string | null, sessionId?: string | null) {
   await syncFaultLineSeeds();
-  return prisma.$transaction((tx) =>
-    buildDashboardPayload(tx, normalizeWalletAddress(walletAddress), sessionId)
+  const normalizedWallet = normalizeWalletAddress(walletAddress);
+  // If a sessionId is passed but the row no longer exists (e.g. a stale tab
+  // after a DB reset), fall back to the primary session instead of letting
+  // Prisma's findUniqueOrThrow surface as a 500.
+  const requestedSessionId = sessionId?.trim() ? sessionId.trim() : null;
+  const sessionStillExists = requestedSessionId
+    ? await sessionExists(requestedSessionId)
+    : false;
+  const resolvedSessionId =
+    sessionStillExists && requestedSessionId
+      ? requestedSessionId
+      : (await prisma.$transaction((tx) => getPrimarySessionId(tx), { timeout: 5_000 }));
+  // Write-side state advance runs in its own short tx so the read tx below
+  // does not hold a write lock while assembling the dashboard payload.
+  await prisma.$transaction(
+    (tx) => syncSessionState(tx, resolvedSessionId),
+    { timeout: 15_000 }
+  );
+  return prisma.$transaction(
+    (tx) => buildDashboardPayload(tx, normalizedWallet, resolvedSessionId, { skipSync: true }),
+    { timeout: 15_000 }
   );
 }
 
@@ -1276,13 +1390,16 @@ export async function joinSpotrSession(input: {
   }
 
   await syncFaultLineSeeds();
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     const session = await syncSessionState(tx, sessionId);
 
     const now = new Date();
 
     if (session.status === "EXPIRED" || session.status === "COMPLETED") {
       throw new Error("This session is not joinable anymore.");
+    }
+    if (now < session.startsAt) {
+      throw new Error("This session has not started yet.");
     }
     if (now > session.endsAt) {
       throw new Error("The session window has already closed.");
@@ -1345,9 +1462,9 @@ export async function joinSpotrSession(input: {
         },
       });
     }
-
-    return buildDashboardPayload(tx, walletAddress, sessionId);
   }, { timeout: 30_000 });
+
+  return getSpotrDashboardPayload(walletAddress, sessionId);
 }
 
 export async function enterSpotrRoundPosition(input: {
@@ -1365,7 +1482,7 @@ export async function enterSpotrRoundPosition(input: {
     throw new Error("Side must be either A or B.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     const sessionId = await getPrimarySessionId(tx);
     const session = await syncSessionState(tx, sessionId);
     if (session.status !== "LIVE") {
@@ -1530,9 +1647,9 @@ export async function enterSpotrRoundPosition(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, walletAddress);
-  });
+  return getSpotrDashboardPayload(walletAddress);
 }
 
 export async function claimSpotrRoundProceeds(input: { walletAddress: string }) {
@@ -1541,7 +1658,7 @@ export async function claimSpotrRoundProceeds(input: { walletAddress: string }) 
     throw new Error("A wallet address is required to claim round proceeds.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     const sessionId = await getPrimarySessionId(tx);
     await syncSessionState(tx, sessionId);
     const now = new Date();
@@ -1602,9 +1719,9 @@ export async function claimSpotrRoundProceeds(input: { walletAddress: string }) 
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, walletAddress);
-  });
+  return getSpotrDashboardPayload(walletAddress);
 }
 
 export async function claimSpotrSessionBalance(input: { walletAddress: string }) {
@@ -1613,7 +1730,7 @@ export async function claimSpotrSessionBalance(input: { walletAddress: string })
     throw new Error("A wallet address is required to claim session balance.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     const sessionId = await getPrimarySessionId(tx);
     await syncSessionState(tx, sessionId);
 
@@ -1658,9 +1775,9 @@ export async function claimSpotrSessionBalance(input: { walletAddress: string })
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, walletAddress);
-  });
+  return getSpotrDashboardPayload(walletAddress);
 }
 
 export async function importAdminPairs(input: {
@@ -1677,7 +1794,7 @@ export async function importAdminPairs(input: {
     throw new Error("Pair CSV content is required.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
     const rows = parsePairCsv(csv);
@@ -1718,9 +1835,9 @@ export async function importAdminPairs(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
-  });
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
 export async function updateAdminPairState(input: {
@@ -1738,7 +1855,7 @@ export async function updateAdminPairState(input: {
     throw new Error("A pair id is required.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
     const pair = await tx.faultLinePair.findUnique({
@@ -1764,29 +1881,33 @@ export async function updateAdminPairState(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
-  });
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
-export async function deployAdminSession(input: {
+export async function deployAdminSessionWithChain(input: {
   adminWalletAddress: string;
   title?: string | null;
   pairIds: string[];
-  overrideStartsAtIso?: string | null;
-  overrideEndsAtIso?: string | null;
+  startsAtIso: string;
+  endsAtIso: string;
   buyInLamports?: number | null;
   cardPackItems?: Array<{
     kind: RewardInventoryItem["kind"];
     title: string;
     subtitle: string;
   }>;
+  chainTxSignature: string;
+  chainSessionNumber: string;
 }) {
   const adminWalletAddress = normalizeWalletAddress(input.adminWalletAddress);
   const title = input.title?.trim() ?? "";
   const pairIds = Array.from(
     new Set(input.pairIds.map((pairId) => pairId.trim()).filter(Boolean))
   );
+  const chainTxSignature = input.chainTxSignature.trim();
+  const chainSessionNumberStr = input.chainSessionNumber.trim();
 
   if (!adminWalletAddress) {
     throw new Error("An admin wallet address is required.");
@@ -1796,23 +1917,33 @@ export async function deployAdminSession(input: {
       `Select exactly ${publicSpotrConfig.roundCount} active pairs for a session.`
     );
   }
+  if (!chainTxSignature) {
+    throw new Error("chainTxSignature is required.");
+  }
+  if (!chainSessionNumberStr) {
+    throw new Error("chainSessionNumber is required.");
+  }
 
-  let overrideStartsAt: Date | null = null;
-  let overrideEndsAt: Date | null = null;
-  if (input.overrideStartsAtIso) {
-    overrideStartsAt = new Date(input.overrideStartsAtIso);
-    if (Number.isNaN(overrideStartsAt.getTime())) {
-      throw new Error("overrideStartsAtIso is not a valid timestamp.");
-    }
+  let chainSessionNumber: bigint;
+  try {
+    chainSessionNumber = BigInt(chainSessionNumberStr);
+  } catch {
+    throw new Error("chainSessionNumber must be a u64-compatible integer.");
   }
-  if (input.overrideEndsAtIso) {
-    overrideEndsAt = new Date(input.overrideEndsAtIso);
-    if (Number.isNaN(overrideEndsAt.getTime())) {
-      throw new Error("overrideEndsAtIso is not a valid timestamp.");
-    }
+  if (chainSessionNumber <= 0n) {
+    throw new Error("chainSessionNumber must be a positive integer.");
   }
-  if (overrideStartsAt && overrideEndsAt && overrideEndsAt <= overrideStartsAt) {
-    throw new Error("overrideEndsAtIso must be later than overrideStartsAtIso.");
+
+  const startsAt = new Date(input.startsAtIso);
+  const endsAt = new Date(input.endsAtIso);
+  if (Number.isNaN(startsAt.getTime())) {
+    throw new Error("startsAtIso is not a valid timestamp.");
+  }
+  if (Number.isNaN(endsAt.getTime())) {
+    throw new Error("endsAtIso is not a valid timestamp.");
+  }
+  if (endsAt <= startsAt) {
+    throw new Error("Session end time must be after the start time.");
   }
 
   const cardPackItems = (input.cardPackItems ?? []).map((item) => ({
@@ -1825,15 +1956,37 @@ export async function deployAdminSession(input: {
     if (!item.subtitle) throw new Error("Card-pack item subtitle is required.");
   }
 
-  await syncFaultLineSeeds();
-  return prisma.$transaction(async (tx) => {
-    assertAdminWallet(adminWalletAddress);
+  assertAdminWallet(adminWalletAddress);
 
+  // The on-chain tx is the authorization proof: it must exist, be signed by
+  // the named admin, and reference the same session_number derived PDA.
+  const { verifyCreateSessionTx } = await import("./chain-verifier");
+  const verified = await verifyCreateSessionTx({
+    cluster: publicSpotrConfig.cluster,
+    signature: chainTxSignature,
+    expectedAdmin: adminWalletAddress,
+    expectedSessionNumber: chainSessionNumber,
+  });
+
+  await syncFaultLineSeeds();
+  // Keep the write transaction tight: the dashboard read uses a parallel
+  // `Promise.all` of ~14 queries which Prisma Accelerate refuses to run
+  // inside an interactive transaction. Run writes here, then assemble the
+  // dashboard with its own (properly-scoped) read tx afterwards.
+  await prisma.$transaction(async (tx) => {
     const liveSessionCount = await tx.session.count({
       where: { status: "LIVE" },
     });
     if (liveSessionCount > 0) {
       throw new Error("Complete or expire the live session before deploying another.");
+    }
+
+    const existingByNumber = await tx.session.findUnique({
+      where: { chainSessionNumber },
+      select: { id: true },
+    });
+    if (existingByNumber) {
+      throw new Error("This on-chain session number is already bound to a Postgres session.");
     }
 
     const pairs = await tx.faultLinePair.findMany({
@@ -1847,12 +2000,6 @@ export async function deployAdminSession(input: {
     }
 
     const sessionOrdinal = (await tx.session.count()) + 1;
-    const defaultWindow = getNextDeployWindow(publicSpotrConfig);
-    const startsAt = overrideStartsAt ?? defaultWindow.startsAt;
-    const endsAt = overrideEndsAt ?? defaultWindow.endsAt;
-    if (endsAt <= startsAt) {
-      throw new Error("Session end time must be after the start time.");
-    }
     const sessionTitle =
       title || getSessionTitle(publicSpotrConfig.seasonLabel, sessionOrdinal);
     const sessionId = await createSessionWithPairs(tx, {
@@ -1864,6 +2011,15 @@ export async function deployAdminSession(input: {
       endsAt,
       pairIds,
       buyInLamports: input.buyInLamports ?? undefined,
+    });
+
+    await tx.session.update({
+      where: { id: sessionId },
+      data: {
+        chainSessionNumber,
+        chainSessionAddress: verified.sessionAddress,
+        chainDeployTxSignature: chainTxSignature,
+      },
     });
 
     if (cardPackItems.length > 0) {
@@ -1885,29 +2041,23 @@ export async function deployAdminSession(input: {
         metadataJson: JSON.stringify({
           pairIds,
           roundCount: pairIds.length,
+          chainTxSignature,
+          chainSessionNumber: chainSessionNumber.toString(),
+          chainSessionAddress: verified.sessionAddress,
+          chainSlot: verified.slot,
           payloadSnapshot: {
             title: sessionTitle,
             pairIds,
-            overrideStartsAtIso: overrideStartsAt?.toISOString() ?? null,
-            overrideEndsAtIso: overrideEndsAt?.toISOString() ?? null,
+            startsAtIso: startsAt.toISOString(),
+            endsAtIso: endsAt.toISOString(),
             cardPackItems: cardPackItems.length,
           },
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    const created = await tx.session.findUniqueOrThrow({
-      where: { id: sessionId },
-      select: { createdAt: true },
-    });
-
-    return {
-      sessionId,
-      createdAtIso: created.createdAt.toISOString(),
-      startsAtIso: startsAt.toISOString(),
-      endsAtIso: endsAt.toISOString(),
-    };
-  });
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
 export async function payOutAdminReferralBalance(input: {
@@ -1924,7 +2074,7 @@ export async function payOutAdminReferralBalance(input: {
     throw new Error("A referrer wallet address is required.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
     const accruals = await tx.referralAccrual.findMany({
@@ -1977,9 +2127,9 @@ export async function payOutAdminReferralBalance(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
-  });
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
 export async function assignAdminReward(input: {
@@ -2008,7 +2158,7 @@ export async function assignAdminReward(input: {
     throw new Error("Reward subtitle is required.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
     const sessionId =
@@ -2057,9 +2207,9 @@ export async function assignAdminReward(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
-  });
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
 export async function updateAdminRewardStatus(input: {
@@ -2077,7 +2227,7 @@ export async function updateAdminRewardStatus(input: {
     throw new Error("Reward id is required.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     assertAdminWallet(adminWalletAddress);
 
     const reward = await tx.rewardInventory.findUnique({
@@ -2109,106 +2259,9 @@ export async function updateAdminRewardStatus(input: {
         }),
       },
     });
+  }, { timeout: 15_000 });
 
-    return buildDashboardPayload(tx, adminWalletAddress);
-  });
-}
-
-export async function recordChainDeployedSession(input: {
-  adminWalletAddress: string;
-  sessionId: string;
-  chainTxSignature: string;
-  chainSessionNumber: string;
-}) {
-  const adminWalletAddress = normalizeWalletAddress(input.adminWalletAddress);
-  const sessionId = input.sessionId.trim();
-  const chainTxSignature = input.chainTxSignature.trim();
-  const chainSessionNumberStr = input.chainSessionNumber.trim();
-
-  if (!adminWalletAddress) {
-    throw new Error("An admin wallet address is required.");
-  }
-  if (!sessionId) {
-    throw new Error("sessionId is required.");
-  }
-  if (!chainTxSignature) {
-    throw new Error("chainTxSignature is required.");
-  }
-  if (!chainSessionNumberStr) {
-    throw new Error("chainSessionNumber is required.");
-  }
-
-  let chainSessionNumber: bigint;
-  try {
-    chainSessionNumber = BigInt(chainSessionNumberStr);
-  } catch {
-    throw new Error("chainSessionNumber must be a u64-compatible integer.");
-  }
-  if (chainSessionNumber <= 0n) {
-    throw new Error("chainSessionNumber must be a positive integer.");
-  }
-
-  assertAdminWallet(adminWalletAddress);
-
-  const existing = await prisma.session.findUnique({
-    where: { id: sessionId },
-    select: {
-      id: true,
-      chainSessionNumber: true,
-      chainSessionAddress: true,
-      chainDeployTxSignature: true,
-    },
-  });
-  if (!existing) {
-    throw new Error("Session does not exist.");
-  }
-  if (
-    existing.chainSessionNumber != null &&
-    existing.chainSessionNumber !== chainSessionNumber
-  ) {
-    throw new Error(
-      "This Postgres session is already bound to a different on-chain session."
-    );
-  }
-
-  const { verifyCreateSessionTx } = await import("./chain-verifier");
-  const verified = await verifyCreateSessionTx({
-    cluster: publicSpotrConfig.cluster,
-    signature: chainTxSignature,
-    expectedAdmin: adminWalletAddress,
-    expectedSessionNumber: chainSessionNumber,
-  });
-
-  await prisma.session.update({
-    where: { id: sessionId },
-    data: {
-      chainSessionNumber,
-      chainSessionAddress: verified.sessionAddress,
-      chainDeployTxSignature: chainTxSignature,
-    },
-  });
-  await prisma.transactionLog.create({
-    data: {
-      sessionId,
-      walletAddress: adminWalletAddress,
-      kind: "admin_chain_deploy_session",
-      metadataJson: JSON.stringify({
-        chainTxSignature,
-        chainSessionNumber: chainSessionNumber.toString(),
-        chainSessionAddress: verified.sessionAddress,
-        chainSlot: verified.slot,
-        payloadSnapshot: {
-          sessionId,
-          chainTxSignature,
-          chainSessionNumber: chainSessionNumber.toString(),
-        },
-      }),
-    },
-  });
-
-  return prisma.$transaction((tx) =>
-    buildDashboardPayload(tx, adminWalletAddress)
-  );
+  return getSpotrDashboardPayload(adminWalletAddress);
 }
 
 export async function getSessionPublicResults(
@@ -2444,7 +2497,7 @@ export async function getAdminOverview(
       recentTransactions: recentTransactionsRaw.map(mapAdminTransaction),
       liveSessionTitles: liveSessions.map((row) => row.title),
     };
-  });
+  }, { timeout: 15_000 });
 }
 
 export async function listAdminSessions(input: {

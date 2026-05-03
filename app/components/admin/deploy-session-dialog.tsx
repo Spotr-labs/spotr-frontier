@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { ChevronDown, Plus, Search, Trash2 } from "lucide-react";
@@ -23,6 +23,7 @@ import type {
   SpotrPublicConfig,
 } from "../../lib/spotr-types";
 import { useAdminDashboard } from "./use-admin-dashboard";
+import { getNextDeployWindow } from "../../lib/spotr-config/session-window";
 
 type CardPackItem = {
   kind: "nft" | "merch" | "gift-card" | "voucher";
@@ -54,13 +55,15 @@ export function DeploySessionDialog({
   trigger,
   onDeployed,
 }: DeploySessionDialogProps) {
-  const { walletAddress, submitSignedAction, deploySessionOnChain } = useAdminDashboard();
+  const { walletAddress, deploySessionOnChain } = useAdminDashboard();
   const [open, setOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [title, setTitle] = useState("");
   const [pairIds, setPairIds] = useState<string[]>([]);
   const [overrideStarts, setOverrideStarts] = useState("");
   const [overrideEnds, setOverrideEnds] = useState("");
+  const [showStartCustom, setShowStartCustom] = useState(false);
+  const [showEndCustom, setShowEndCustom] = useState(false);
   const [isFree, setIsFree] = useState(false);
   const [cardPackItems, setCardPackItems] = useState<CardPackItem[]>([]);
   const [search, setSearch] = useState("");
@@ -130,11 +133,41 @@ export function DeploySessionDialog({
     });
   };
 
+  // datetime-local expects YYYY-MM-DDTHH:MM in *local* time. The naive
+  // `toISOString` is UTC, so we offset before slicing.
+  function toDatetimeLocalValue(date: Date) {
+    const tzOffsetMs = date.getTimezoneOffset() * 60_000;
+    return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16);
+  }
+
+  function setStartIn(minutes: number) {
+    setOverrideStarts(toDatetimeLocalValue(new Date(Date.now() + minutes * 60_000)));
+  }
+
+  function setEndAfterStart(minutes: number) {
+    const base = overrideStarts ? new Date(overrideStarts) : new Date();
+    setOverrideEnds(toDatetimeLocalValue(new Date(base.getTime() + minutes * 60_000)));
+  }
+
+  function formatResolved(value: string): string | null {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
   function reset() {
     setTitle("");
     setPairIds([]);
     setOverrideStarts("");
     setOverrideEnds("");
+    setShowStartCustom(false);
+    setShowEndCustom(false);
     setIsFree(false);
     setCardPackItems([]);
     setSearch("");
@@ -142,13 +175,6 @@ export function DeploySessionDialog({
     setAllPairs([]);
     setNextCursor(null);
   }
-
-  type DeployResult = {
-    sessionId: string;
-    createdAtIso: string;
-    startsAtIso: string;
-    endsAtIso: string;
-  };
 
   async function submit() {
     if (!walletAddress) {
@@ -163,55 +189,67 @@ export function DeploySessionDialog({
     setIsSubmitting(true);
     try {
       const buyInLamports = isFree ? 0 : undefined;
-      const dbResult = await submitSignedAction<unknown, DeployResult>(
-        "/api/admin/sessions/deploy",
-        "admin-deploy-session",
-        {
-          adminWalletAddress: walletAddress,
-          title: title.trim() || null,
-          pairIds,
-          overrideStartsAtIso: overrideStarts
-            ? new Date(overrideStarts).toISOString()
-            : null,
-          overrideEndsAtIso: overrideEnds
-            ? new Date(overrideEnds).toISOString()
-            : null,
-          buyInLamports,
-          cardPackItems: cardPackItems.length === 0
-            ? undefined
-            : cardPackItems.map((item) => ({
-                kind: uiKindToServer(item.kind),
-                title: item.title,
-                subtitle: item.subtitle,
-              })),
-        }
-      );
 
-      toast.info("Session created — sign the transaction to deploy on-chain…");
+      // Resolve session window client-side so we can build the on-chain tx
+      // before any backend round-trip — that way the admin signs only once.
+      const defaultWindow = getNextDeployWindow(config);
+      const startsAt = overrideStarts
+        ? new Date(overrideStarts)
+        : defaultWindow.startsAt;
+      const endsAt = overrideEnds
+        ? new Date(overrideEnds)
+        : defaultWindow.endsAt;
+      if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+        toast.error("Invalid start/end timestamp.");
+        return;
+      }
+      if (endsAt <= startsAt) {
+        toast.error("End time must be after start time.");
+        return;
+      }
 
-      const sessionNumber = BigInt(new Date(dbResult.createdAtIso).getTime());
+      // Microsecond timestamp gives a u64 session number that's unique per
+      // tab; collisions only matter if two admins click Deploy in the same
+      // microsecond, which is fine.
+      const sessionNumber = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
+
+      toast.info("Sign the deploy transaction…");
       const { signature } = await deploySessionOnChain({
         sessionNumber,
-        startTsSeconds: BigInt(
-          Math.floor(new Date(dbResult.startsAtIso).getTime() / 1000)
-        ),
-        endTsSeconds: BigInt(
-          Math.floor(new Date(dbResult.endsAtIso).getTime() / 1000)
-        ),
+        startTsSeconds: BigInt(Math.floor(startsAt.getTime() / 1000)),
+        endTsSeconds: BigInt(Math.floor(endsAt.getTime() / 1000)),
         pairIds,
         buyInUsdcUnits: isFree ? 0n : undefined,
       });
 
-      await submitSignedAction(
-        "/api/admin/sessions/chain-deploy",
-        "admin-chain-deploy-session",
-        {
+      const response = await fetch("/api/admin/sessions/deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           adminWalletAddress: walletAddress,
-          sessionId: dbResult.sessionId,
+          title: title.trim() || null,
+          pairIds,
+          startsAtIso: startsAt.toISOString(),
+          endsAtIso: endsAt.toISOString(),
+          buyInLamports,
+          cardPackItems:
+            cardPackItems.length === 0
+              ? undefined
+              : cardPackItems.map((item) => ({
+                  kind: uiKindToServer(item.kind),
+                  title: item.title,
+                  subtitle: item.subtitle,
+                })),
           chainTxSignature: signature,
           chainSessionNumber: sessionNumber.toString(),
-        }
-      );
+        }),
+      });
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(error.error ?? `Deploy failed: HTTP ${response.status}`);
+      }
 
       toast.success("Session deployed on-chain.");
       reset();
@@ -255,22 +293,103 @@ export function DeploySessionDialog({
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="override-starts">Override start (UTC)</Label>
-              <Input
-                id="override-starts"
-                type="datetime-local"
-                value={overrideStarts}
-                onChange={(event) => setOverrideStarts(event.target.value)}
-              />
+              <Label>Override start (local)</Label>
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { label: "Now", minutes: 0 },
+                  { label: "+5 min", minutes: 5 },
+                  { label: "+30 min", minutes: 30 },
+                ].map(({ label, minutes }) => (
+                  <Button
+                    key={label}
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setStartIn(minutes)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={showStartCustom ? "secondary" : "ghost"}
+                  onClick={() => setShowStartCustom((v) => !v)}
+                >
+                  Custom…
+                </Button>
+                {overrideStarts ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setOverrideStarts("")}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
+              </div>
+              {showStartCustom ? (
+                <Input
+                  id="override-starts"
+                  type="datetime-local"
+                  value={overrideStarts}
+                  onChange={(event) => setOverrideStarts(event.target.value)}
+                />
+              ) : null}
+              <p className="text-[11px] text-muted">
+                {formatResolved(overrideStarts) ?? "Uses default launch window."}
+              </p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="override-ends">Override end (UTC)</Label>
-              <Input
-                id="override-ends"
-                type="datetime-local"
-                value={overrideEnds}
-                onChange={(event) => setOverrideEnds(event.target.value)}
-              />
+              <Label>Override end (local)</Label>
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { label: "+15 min", minutes: 15 },
+                  { label: "+1 hour", minutes: 60 },
+                  { label: "+6 hours", minutes: 360 },
+                  { label: "+24 hours", minutes: 1440 },
+                ].map(({ label, minutes }) => (
+                  <Button
+                    key={label}
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setEndAfterStart(minutes)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={showEndCustom ? "secondary" : "ghost"}
+                  onClick={() => setShowEndCustom((v) => !v)}
+                >
+                  Custom…
+                </Button>
+                {overrideEnds ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setOverrideEnds("")}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
+              </div>
+              {showEndCustom ? (
+                <Input
+                  id="override-ends"
+                  type="datetime-local"
+                  value={overrideEnds}
+                  onChange={(event) => setOverrideEnds(event.target.value)}
+                />
+              ) : null}
+              <p className="text-[11px] text-muted">
+                {formatResolved(overrideEnds) ?? "Uses default launch window."}
+              </p>
             </div>
           </div>
         </div>

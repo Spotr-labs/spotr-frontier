@@ -24,11 +24,13 @@ export function SpotrLogo({ size = 30, className = "" }: { size?: number; classN
       <g fill="none" stroke="currentColor" strokeLinecap="round">
         {[18, 36, 54, 72, 108, 126, 144, 162, 198, 216, 234, 252, 288, 306, 324, 342].map(
           (angle) => {
+            // Round to fixed precision: Node and V8 implement Math.cos/sin
+            // differently in their last bits, which drifts SSR vs client.
             const rad = (angle * Math.PI) / 180;
-            const x1 = 24 + Math.cos(rad) * 15;
-            const y1 = 24 + Math.sin(rad) * 15;
-            const x2 = 24 + Math.cos(rad) * 20;
-            const y2 = 24 + Math.sin(rad) * 20;
+            const x1 = (24 + Math.cos(rad) * 15).toFixed(4);
+            const y1 = (24 + Math.sin(rad) * 15).toFixed(4);
+            const x2 = (24 + Math.cos(rad) * 20).toFixed(4);
+            const y2 = (24 + Math.sin(rad) * 20).toFixed(4);
             return <line key={angle} x1={x1} y1={y1} x2={x2} y2={y2} strokeWidth="2" />;
           }
         )}

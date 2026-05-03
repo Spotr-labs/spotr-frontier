@@ -134,8 +134,11 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const canSignActions = Boolean(wallet?.signMessage);
   const { session, profile, admin, faultLines } = data;
 
+  const availableSessions = data.availableSessions ?? [];
   const selectedSession =
-    admin.sessionHistory.find((s) => s.id === selectedSessionId) ?? null;
+    availableSessions.find((s) => s.id === selectedSessionId) ??
+    admin.sessionHistory.find((s) => s.id === selectedSessionId) ??
+    null;
 
   // All rounds open and close together with the session; pick the next one
   // the player has not yet entered.
@@ -2276,7 +2279,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
 
 export function SpotrSessionsListShell({ config, initialData }: SpotrShellProps) {
   const [allSessions, setAllSessions] = useState<AdminSessionCard[]>(() =>
-    initialData.admin.sessionHistory.filter(
+    (initialData.availableSessions ?? []).filter(
       (s) => s.status === "pending" || s.status === "live"
     )
   );
@@ -2387,9 +2390,46 @@ export function SpotrSessionDetailShell({
     initialData.session.id === sessionId && initialData.session.joined
   );
   const [joinedData, setJoinedData] = useState<SpotrDashboardPayload | null>(null);
+  const [isCheckingMembership, setIsCheckingMembership] = useState(false);
 
   const session =
-    initialData.admin.sessionHistory.find((s) => s.id === sessionId) ?? null;
+    (initialData.availableSessions ?? []).find((s) => s.id === sessionId) ??
+    initialData.admin.sessionHistory.find((s) => s.id === sessionId) ??
+    null;
+
+  // Once the wallet hydrates client-side, re-fetch the dashboard scoped to
+  // this session so we can skip the join CTA if the wallet is already a
+  // participant. The SSR pass has no wallet, so it always returns
+  // joined: false.
+  useEffect(() => {
+    if (!walletAddress || showGame) return;
+    let cancelled = false;
+    setIsCheckingMembership(true);
+    fetch(
+      `/api/bootstrap?wallet=${encodeURIComponent(walletAddress)}&session=${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" }
+    )
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<SpotrDashboardPayload>;
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        if (payload.session.id === sessionId && payload.session.joined) {
+          setJoinedData(payload);
+          setShowGame(true);
+        }
+      })
+      .catch(() => {
+        // membership check is best-effort; if it fails, we just show the join CTA
+      })
+      .finally(() => {
+        if (!cancelled) setIsCheckingMembership(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, sessionId, showGame]);
 
   const alreadyJoined =
     initialData.session.id === sessionId && initialData.session.joined;
@@ -2462,6 +2502,9 @@ export function SpotrSessionDetailShell({
 
   const startDate = new Date(session.startsAtIso);
   const endDate = new Date(session.endsAtIso);
+  const nowMs = Date.now();
+  const hasStarted = nowMs >= startDate.getTime();
+  const hasEnded = nowMs >= endDate.getTime();
 
   return (
     <NarrowPageShell notice={notice}>
@@ -2516,7 +2559,7 @@ export function SpotrSessionDetailShell({
             </Button>
           </div>
         </SurfaceCard>
-      ) : session.status === "completed" ? (
+      ) : session.status === "completed" || hasEnded ? (
         <SurfaceCard>
           <p className="mb-3 text-sm text-muted">This session has ended.</p>
           <Link
@@ -2526,10 +2569,35 @@ export function SpotrSessionDetailShell({
             View Recap →
           </Link>
         </SurfaceCard>
+      ) : !hasStarted ? (
+        <SurfaceCard>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
+            Not open yet
+          </p>
+          <p className="text-sm text-foreground">
+            Joining opens at{" "}
+            {startDate.toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+            .
+          </p>
+          <div className="mt-4">
+            <Button type="button" variant="gold" size="block" disabled>
+              Session hasn&apos;t started
+            </Button>
+          </div>
+        </SurfaceCard>
       ) : !isConnected ? (
         <SurfaceCard>
           <p className="mb-3 text-sm text-muted">Connect a wallet to join this session.</p>
           <WalletButton />
+        </SurfaceCard>
+      ) : isCheckingMembership ? (
+        <SurfaceCard>
+          <p className="text-sm text-muted">Checking your participation…</p>
         </SurfaceCard>
       ) : (
         <SurfaceCard>

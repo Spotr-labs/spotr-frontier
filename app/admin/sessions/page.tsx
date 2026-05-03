@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Plus, Rocket } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AdminSectionHeader } from "../../components/admin/section-header";
 import { DataTable } from "../../components/admin/data-table";
@@ -40,7 +40,7 @@ const STATUS_FILTERS: Array<{ value: "all" | SessionStatus; label: string }> = [
 ];
 
 export default function AdminSessionsPage() {
-  const { walletAddress, isPending } = useAdminDashboard();
+  const { walletAddress } = useAdminDashboard();
   const [statusFilter, setStatusFilter] = useState<"all" | SessionStatus>("all");
   const [range, setRange] = useState({ from: "", to: "" });
 
@@ -139,11 +139,7 @@ export default function AdminSessionsPage() {
               #{row.original.chainSessionNumber}
             </span>
           ) : (
-            <DeployOnChainButton
-              session={row.original}
-              onSuccess={() => mutate()}
-              disabled={isPending}
-            />
+            <span className="text-[11px] text-muted">—</span>
           ),
       },
       {
@@ -164,7 +160,7 @@ export default function AdminSessionsPage() {
         ),
       },
     ],
-    [isPending, mutate]
+    [mutate]
   );
 
   return (
@@ -257,67 +253,6 @@ function buildSessionsListKey(
     params.set("dateTo", end.toISOString());
   }
   return `/api/admin/sessions/list?${params.toString()}`;
-}
-
-function DeployOnChainButton({
-  session,
-  onSuccess,
-  disabled,
-}: {
-  session: AdminSessionListItem;
-  onSuccess: () => void;
-  disabled?: boolean;
-}) {
-  const { walletAddress, deploySessionOnChain, runAction } = useAdminDashboard();
-  return (
-    <Button
-      size="sm"
-      variant="secondary"
-      disabled={disabled}
-      onClick={async () => {
-        if (!walletAddress) {
-          toast.error("Connect an admin wallet first.");
-          return;
-        }
-        try {
-          const sessionNumber = BigInt(new Date(session.createdAtIso).getTime());
-          const startTsSeconds = BigInt(
-            Math.floor(new Date(session.startsAtIso).getTime() / 1000)
-          );
-          const endTsSeconds = BigInt(
-            Math.floor(new Date(session.endsAtIso).getTime() / 1000)
-          );
-          toast.info(`Sign deploy tx for "${session.title}"…`);
-          const { signature } = await deploySessionOnChain({
-            sessionNumber,
-            startTsSeconds,
-            endTsSeconds,
-            pairIds: session.pairIds,
-          });
-          runAction(
-            "/api/admin/sessions/chain-deploy",
-            "admin-chain-deploy-session",
-            {
-              adminWalletAddress: walletAddress,
-              sessionId: session.id,
-              chainTxSignature: signature,
-              chainSessionNumber: sessionNumber.toString(),
-            },
-            {
-              successMessage: "Session deployed on-chain.",
-              onSuccess,
-            }
-          );
-        } catch (error) {
-          toast.error(
-            error instanceof Error ? error.message : "Deploy failed."
-          );
-        }
-      }}
-    >
-      <Rocket className="h-3 w-3" /> Deploy chain
-    </Button>
-  );
 }
 
 function ExpireSessionButton({

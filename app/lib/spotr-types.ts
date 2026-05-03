@@ -191,6 +191,8 @@ export type SpotrDashboardPayload = {
   faultLines: FaultLinePair[];
   profile: ProfileSummary | null;
   admin: AdminSummary;
+  // Pending + live sessions visible to anyone (drives the /play browse list).
+  availableSessions: AdminSessionCard[];
 };
 
 export type SessionRoundResult = {

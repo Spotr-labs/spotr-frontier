@@ -7,8 +7,6 @@ export type SpotrSignedActionName =
   | "admin-toggle-pair"
   | "admin-toggle-pair-bulk"
   | "admin-edit-pair"
-  | "admin-deploy-session"
-  | "admin-chain-deploy-session"
   | "admin-payout-referrals"
   | "admin-payout-referrals-bulk"
   | "admin-assign-reward"

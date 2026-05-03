@@ -192,27 +192,6 @@ export function parseWalletOnlyPayload(record: Record<string, unknown>) {
   return { walletAddress };
 }
 
-export function parseAdminChainDeployPayload(record: Record<string, unknown>) {
-  const adminWalletAddress = requireWallet(record, "adminWalletAddress");
-  const sessionId = requireString(record, "sessionId", { maxLength: 64 });
-  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) {
-    throw new ValidationError("sessionId contains invalid characters.");
-  }
-  const chainTxSignature = requireString(record, "chainTxSignature", {
-    maxLength: 128,
-  });
-  if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(chainTxSignature)) {
-    throw new ValidationError("chainTxSignature is not a valid signature.");
-  }
-  const chainSessionNumber = requireString(record, "chainSessionNumber", {
-    maxLength: 32,
-  });
-  if (!/^\d+$/.test(chainSessionNumber)) {
-    throw new ValidationError("chainSessionNumber must be an integer string.");
-  }
-  return { adminWalletAddress, sessionId, chainTxSignature, chainSessionNumber };
-}
-
 function requireBoolean(record: Record<string, unknown>, key: string): boolean {
   if (typeof record[key] !== "boolean") {
     throw new ValidationError(`${key} must be a boolean.`);
@@ -462,47 +441,6 @@ export function parseAdminAssignRewardBulkPayload(
     };
   });
   return { adminWalletAddress, items };
-}
-
-export function parseAdminDeploySessionPayload(record: Record<string, unknown>) {
-  const adminWalletAddress = requireWallet(record, "adminWalletAddress");
-  const title = optionalString(record, "title", { maxLength: 200 });
-  const pairIds = requireStringArray(record, "pairIds", {
-    maxItems: 32,
-    itemMaxLength: 64,
-  });
-  for (let index = 0; index < pairIds.length; index += 1) {
-    if (!/^[A-Za-z0-9_-]+$/.test(pairIds[index])) {
-      throw new ValidationError(`pairIds[${index}] contains invalid characters.`);
-    }
-  }
-  const overrideStartsAtIso = optionalIsoDateString(record, "overrideStartsAtIso");
-  const overrideEndsAtIso = optionalIsoDateString(record, "overrideEndsAtIso");
-  const cardPackItemsRaw = record.cardPackItems;
-  let cardPackItems:
-    | Array<{ kind: "nft" | "merch" | "gift-card" | "voucher"; title: string; subtitle: string }>
-    | undefined;
-  if (cardPackItemsRaw !== undefined && cardPackItemsRaw !== null) {
-    if (!Array.isArray(cardPackItemsRaw)) {
-      throw new ValidationError("cardPackItems must be an array.");
-    }
-    if (cardPackItemsRaw.length > 50) {
-      throw new ValidationError("cardPackItems must contain at most 50 entries.");
-    }
-    cardPackItems = cardPackItemsRaw.map((value, index) =>
-      parseCardPackItem(value, `cardPackItems[${index}]`)
-    );
-  }
-  const buyInLamports = optionalNonNegativeInt(record, "buyInLamports");
-  return {
-    adminWalletAddress,
-    title: title ?? null,
-    pairIds,
-    overrideStartsAtIso,
-    overrideEndsAtIso,
-    buyInLamports,
-    cardPackItems,
-  };
 }
 
 export function parseAdminSyncSessionsPayload(

@@ -95,6 +95,18 @@ export async function POST(request: Request) {
         .send();
       return NextResponse.json({ signature: String(sig) });
     } catch (e) {
+      const ctx = (e as { context?: { statusCode?: number; headers?: Headers } })?.context;
+      if (ctx?.statusCode === 429) {
+        const retryAfter = ctx.headers?.get?.("retry-after") ?? null;
+        return NextResponse.json(
+          {
+            error:
+              "Devnet faucet rate-limited this wallet/IP. Use the web faucet at https://faucet.solana.com instead.",
+            retryAfterSeconds: retryAfter ? Number(retryAfter) : null,
+          },
+          { status: 429 }
+        );
+      }
       return NextResponse.json(
         { error: e instanceof Error ? e.message : "SOL airdrop failed." },
         { status: 500 }
@@ -112,65 +124,82 @@ export async function POST(request: Request) {
       );
     }
 
-    let authorityBytes: number[];
     try {
-      authorityBytes = loadMintAuthorityBytes();
+      let authorityBytes: number[];
+      try {
+        authorityBytes = loadMintAuthorityBytes();
+      } catch (e) {
+        return NextResponse.json(
+          { error: e instanceof Error ? e.message : "Could not load mint authority." },
+          { status: 500 }
+        );
+      }
+
+      const authoritySigner = await createKeyPairSignerFromBytes(
+        new Uint8Array(authorityBytes)
+      );
+      const mintAddr = address(mintAddress);
+
+      const authorityBalance = await rpc.getBalance(authoritySigner.address).send();
+      if (authorityBalance.value < 5_000_000n) {
+        return NextResponse.json(
+          {
+            error: `Mint authority ${authoritySigner.address} is out of SOL on devnet (balance ${authorityBalance.value} lamports). Fund it via https://faucet.solana.com so it can pay tx fees.`,
+          },
+          { status: 500 }
+        );
+      }
+
+      const [ata] = await findAssociatedTokenPda({
+        owner: walletAddr,
+        mint: mintAddr,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const usdc = Math.min(Number(amount) || 1_000, USDC_AIRDROP_CAP);
+      const rawAmount = BigInt(Math.floor(usdc * 1e6));
+
+      const createAtaIx = getCreateAssociatedTokenIdempotentInstruction({
+        payer: authoritySigner,
+        owner: walletAddr,
+        ata,
+        mint: mintAddr,
+      });
+      const mintToIx = getMintToInstruction({
+        mint: mintAddr,
+        token: ata,
+        mintAuthority: authoritySigner,
+        amount: rawAmount,
+      });
+
+      const { value: { blockhash, lastValidBlockHeight } } =
+        await rpc.getLatestBlockhash().send();
+
+      const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        (m) => setTransactionMessageFeePayerSigner(authoritySigner, m),
+        (m) =>
+          setTransactionMessageLifetimeUsingBlockhash(
+            { blockhash, lastValidBlockHeight },
+            m
+          ),
+        (m) => appendTransactionMessageInstructions([createAtaIx, mintToIx], m)
+      );
+
+      const signed = await signTransactionMessageWithSigners(message);
+      const encoded = getBase64EncodedWireTransaction(signed);
+
+      const sig = await rpc
+        .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
+        .send();
+
+      return NextResponse.json({ signature: String(sig) });
     } catch (e) {
       return NextResponse.json(
-        { error: e instanceof Error ? e.message : "Could not load mint authority." },
+        { error: e instanceof Error ? e.message : "USDC airdrop failed." },
         { status: 500 }
       );
     }
-
-    const authoritySigner = await createKeyPairSignerFromBytes(
-      new Uint8Array(authorityBytes)
-    );
-    const mintAddr = address(mintAddress);
-
-    const [ata] = await findAssociatedTokenPda({
-      owner: walletAddr,
-      mint: mintAddr,
-      tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    });
-
-    const usdc = Math.min(Number(amount) || 1_000, USDC_AIRDROP_CAP);
-    const rawAmount = BigInt(Math.floor(usdc * 1e6));
-
-    const createAtaIx = getCreateAssociatedTokenIdempotentInstruction({
-      payer: authoritySigner,
-      owner: walletAddr,
-      ata,
-      mint: mintAddr,
-    });
-    const mintToIx = getMintToInstruction({
-      mint: mintAddr,
-      token: ata,
-      mintAuthority: authoritySigner,
-      amount: rawAmount,
-    });
-
-    const { value: { blockhash, lastValidBlockHeight } } =
-      await rpc.getLatestBlockhash().send();
-
-    const message = pipe(
-      createTransactionMessage({ version: 0 }),
-      (m) => setTransactionMessageFeePayerSigner(authoritySigner, m),
-      (m) =>
-        setTransactionMessageLifetimeUsingBlockhash(
-          { blockhash, lastValidBlockHeight },
-          m
-        ),
-      (m) => appendTransactionMessageInstructions([createAtaIx, mintToIx], m)
-    );
-
-    const signed = await signTransactionMessageWithSigners(message);
-    const encoded = getBase64EncodedWireTransaction(signed);
-
-    const sig = await rpc
-      .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
-      .send();
-
-    return NextResponse.json({ signature: String(sig) });
   }
 
   // ── USDC → program vault (mints into the user_vault_tokens PDA) ─────────
@@ -183,71 +212,88 @@ export async function POST(request: Request) {
       );
     }
 
-    let authorityBytes: number[];
     try {
-      authorityBytes = loadMintAuthorityBytes();
+      let authorityBytes: number[];
+      try {
+        authorityBytes = loadMintAuthorityBytes();
+      } catch (e) {
+        return NextResponse.json(
+          { error: e instanceof Error ? e.message : "Could not load mint authority." },
+          { status: 500 }
+        );
+      }
+
+      const authoritySigner = await createKeyPairSignerFromBytes(
+        new Uint8Array(authorityBytes)
+      );
+      const mintAddr = address(mintAddress);
+
+      const authorityBalance = await rpc.getBalance(authoritySigner.address).send();
+      if (authorityBalance.value < 5_000_000n) {
+        return NextResponse.json(
+          {
+            error: `Mint authority ${authoritySigner.address} is out of SOL on devnet (balance ${authorityBalance.value} lamports). Fund it via https://faucet.solana.com so it can pay tx fees.`,
+          },
+          { status: 500 }
+        );
+      }
+
+      const [vaultTokensPda] = await findVaultTokensPda({ player: walletAddr });
+
+      const accountInfo = await rpc
+        .getAccountInfo(vaultTokensPda, { encoding: "base64" })
+        .send();
+      if (!accountInfo.value) {
+        return NextResponse.json(
+          { error: "Vault not initialized for this wallet." },
+          { status: 400 }
+        );
+      }
+      if (accountInfo.value.owner !== TOKEN_PROGRAM_ADDRESS) {
+        return NextResponse.json(
+          { error: "Vault token account exists but is not owned by the SPL Token program." },
+          { status: 400 }
+        );
+      }
+
+      const usdc = Math.min(Number(amount) || 1_000, USDC_AIRDROP_CAP);
+      const rawAmount = BigInt(Math.floor(usdc * 1e6));
+
+      const mintToIx = getMintToInstruction({
+        mint: mintAddr,
+        token: vaultTokensPda,
+        mintAuthority: authoritySigner,
+        amount: rawAmount,
+      });
+
+      const { value: { blockhash, lastValidBlockHeight } } =
+        await rpc.getLatestBlockhash().send();
+
+      const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        (m) => setTransactionMessageFeePayerSigner(authoritySigner, m),
+        (m) =>
+          setTransactionMessageLifetimeUsingBlockhash(
+            { blockhash, lastValidBlockHeight },
+            m
+          ),
+        (m) => appendTransactionMessageInstructions([mintToIx], m)
+      );
+
+      const signed = await signTransactionMessageWithSigners(message);
+      const encoded = getBase64EncodedWireTransaction(signed);
+
+      const sig = await rpc
+        .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
+        .send();
+
+      return NextResponse.json({ signature: String(sig) });
     } catch (e) {
       return NextResponse.json(
-        { error: e instanceof Error ? e.message : "Could not load mint authority." },
+        { error: e instanceof Error ? e.message : "USDC-vault airdrop failed." },
         { status: 500 }
       );
     }
-
-    const authoritySigner = await createKeyPairSignerFromBytes(
-      new Uint8Array(authorityBytes)
-    );
-    const mintAddr = address(mintAddress);
-
-    const [vaultTokensPda] = await findVaultTokensPda({ player: walletAddr });
-
-    const accountInfo = await rpc
-      .getAccountInfo(vaultTokensPda, { encoding: "base64" })
-      .send();
-    if (!accountInfo.value) {
-      return NextResponse.json(
-        { error: "Vault not initialized for this wallet." },
-        { status: 400 }
-      );
-    }
-    if (accountInfo.value.owner !== TOKEN_PROGRAM_ADDRESS) {
-      return NextResponse.json(
-        { error: "Vault token account exists but is not owned by the SPL Token program." },
-        { status: 400 }
-      );
-    }
-
-    const usdc = Math.min(Number(amount) || 1_000, USDC_AIRDROP_CAP);
-    const rawAmount = BigInt(Math.floor(usdc * 1e6));
-
-    const mintToIx = getMintToInstruction({
-      mint: mintAddr,
-      token: vaultTokensPda,
-      mintAuthority: authoritySigner,
-      amount: rawAmount,
-    });
-
-    const { value: { blockhash, lastValidBlockHeight } } =
-      await rpc.getLatestBlockhash().send();
-
-    const message = pipe(
-      createTransactionMessage({ version: 0 }),
-      (m) => setTransactionMessageFeePayerSigner(authoritySigner, m),
-      (m) =>
-        setTransactionMessageLifetimeUsingBlockhash(
-          { blockhash, lastValidBlockHeight },
-          m
-        ),
-      (m) => appendTransactionMessageInstructions([mintToIx], m)
-    );
-
-    const signed = await signTransactionMessageWithSigners(message);
-    const encoded = getBase64EncodedWireTransaction(signed);
-
-    const sig = await rpc
-      .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
-      .send();
-
-    return NextResponse.json({ signature: String(sig) });
   }
 
   return NextResponse.json(
