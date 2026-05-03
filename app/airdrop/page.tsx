@@ -140,7 +140,7 @@ export default function AirdropPage() {
   const usdcVault = useAirdrop("usdc-vault");
 
   const walletAddr = wallet?.account.address ?? null;
-  const isLocalnet = cluster === "localnet";
+  const isFaucetEnabled = cluster !== "mainnet";
   const connected = walletStatus === "connected" && !!walletAddr;
   const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT_ADDRESS ?? null;
 
@@ -222,27 +222,23 @@ export default function AirdropPage() {
       <div className="mx-auto w-full max-w-2xl space-y-6">
         <SurfaceCard>
           <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-            Localnet only
+            Devnet &amp; Localnet
           </p>
           <h2 className="mt-2 font-display text-[1.5rem] font-extrabold tracking-[-0.03em] text-foreground sm:text-[1.85rem]">
             Dev Faucet
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-            Request SOL and mock USDC for local testing. Only works when running{" "}
-            <code className="rounded bg-white/8 px-1 py-0.5 font-mono text-[11px]">
-              npm run dev:local
-            </code>
-            .
+            Request SOL and mock USDC for testing. Available on devnet and localnet.
           </p>
         </SurfaceCard>
 
-        {!isLocalnet ? (
+        {!isFaucetEnabled ? (
           <NoticeBanner tone="error">
-            Faucet is disabled on <strong>{cluster}</strong>. Switch to localnet to use it.
+            Faucet is disabled on <strong>{cluster}</strong>.
           </NoticeBanner>
         ) : null}
 
-        {isLocalnet && !connected ? (
+        {isFaucetEnabled && !connected ? (
           <SurfaceCard className="text-center">
             <p className="mb-4 text-sm text-muted">Connect a wallet to request tokens.</p>
             <div className="flex justify-center">
@@ -308,7 +304,7 @@ export default function AirdropPage() {
           </SurfaceCard>
         ) : null}
 
-        {isLocalnet && usdcMint ? (
+        {isFaucetEnabled && usdcMint ? (
           <SurfaceCard>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted">
               Mock USDC mint
@@ -318,7 +314,7 @@ export default function AirdropPage() {
         ) : null}
 
 
-        {isLocalnet && connected ? (
+        {isFaucetEnabled && connected ? (
           <div className="grid gap-4 sm:grid-cols-3">
             <AirdropCard
               label="Solana"

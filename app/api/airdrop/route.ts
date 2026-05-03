@@ -26,16 +26,19 @@ import { findVaultTokensPda } from "../../generated/spotr/pdas/vaultTokens";
 export const dynamic = "force-dynamic";
 
 const CLUSTER = process.env.NEXT_PUBLIC_SPOTR_CLUSTER ?? "localnet";
-const RPC_URL =
-  CLUSTER === "localnet" ? "http://127.0.0.1:8899" : null;
+const RPC_URLS: Record<string, string> = {
+  localnet: "http://127.0.0.1:8899",
+  devnet: "https://api.devnet.solana.com",
+};
+const RPC_URL = RPC_URLS[CLUSTER] ?? null;
 
 const SOL_AIRDROP_CAP = 10;
 const USDC_AIRDROP_CAP = 10_000;
 
 export async function POST(request: Request) {
-  if (CLUSTER !== "localnet" || !RPC_URL) {
+  if (CLUSTER === "mainnet" || !RPC_URL) {
     return NextResponse.json(
-      { error: "Airdrop is only available on localnet." },
+      { error: "Airdrop is not available on mainnet." },
       { status: 403 }
     );
   }
