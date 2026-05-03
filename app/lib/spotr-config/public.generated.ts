@@ -3,10 +3,8 @@ import type { SpotrPublicConfig } from "../spotr-types";
 export const generatedPublicSpotrConfig: SpotrPublicConfig = {
   "appName": "SPOTR Markets",
   "seasonLabel": "Season 1",
-  "cluster": "devnet",
+  "cluster": "localnet",
   "launchIso": "2026-05-08T10:00:00.000Z",
-  "sessionMinWallets": 7,
-  "sessionMinTotalLamports": 350000000,
   "sessionBuyInLamports": 35000000,
   "roundCount": 7,
   "roundDurationSeconds": 30,

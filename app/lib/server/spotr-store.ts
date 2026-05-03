@@ -286,8 +286,6 @@ async function createSessionWithPairs(
       buyInLamports: BigInt(input.buyInLamports ?? publicSpotrConfig.sessionBuyInLamports),
       protocolFeeBps: publicSpotrConfig.protocolFeeBps,
       referralCutBps: publicSpotrConfig.referralCutBps,
-      minWallets: publicSpotrConfig.sessionMinWallets,
-      minTotalLamports: BigInt(publicSpotrConfig.sessionMinTotalLamports),
       cardRewardSlots: publicSpotrConfig.cardRewardSlots,
       payoutCadenceDays: publicSpotrConfig.payoutCadenceDays,
     },
@@ -438,25 +436,20 @@ async function syncSessionState(tx: Tx, sessionId: string) {
 
   const joinedWallets = participantAggregate._count._all;
   const totalEscrowLamports = participantAggregate._sum.totalEscrowLamports ?? 0n;
-  const thresholdMet =
-    joinedWallets >= session.minWallets ||
-    totalEscrowLamports >= session.minTotalLamports;
 
   // Activation is time-based: once startsAt arrives, the session is live
-  // regardless of how many wallets joined. The min-wallet/min-escrow gate
-  // still distinguishes COMPLETED (met) from EXPIRED (not met) at endsAt.
+  // regardless of how many wallets joined. At endsAt, COMPLETED vs EXPIRED
+  // is decided by whether anyone joined.
   let activatedAt = session.activatedAt;
   if (!activatedAt && now >= session.startsAt) {
     activatedAt = session.startsAt;
   }
 
   let nextStatus: PrismaSessionStatus = "PENDING";
-  if (activatedAt) {
-    if (now >= session.endsAt) {
-      nextStatus = thresholdMet ? "COMPLETED" : "EXPIRED";
-    } else {
-      nextStatus = "LIVE";
-    }
+  if (now >= session.endsAt) {
+    nextStatus = joinedWallets > 0 ? "COMPLETED" : "EXPIRED";
+  } else if (activatedAt) {
+    nextStatus = "LIVE";
   }
 
   let mutated = false;
@@ -2634,8 +2627,6 @@ export async function getAdminSessionDetail(input: {
       buyInLamports: toNumber(session.buyInLamports),
       protocolFeeBps: session.protocolFeeBps,
       referralCutBps: session.referralCutBps,
-      minWallets: session.minWallets,
-      minTotalLamports: toNumber(session.minTotalLamports),
       cardRewardSlots: session.cardRewardSlots,
       payoutCadenceDays: session.payoutCadenceDays,
       chainSessionNumber:

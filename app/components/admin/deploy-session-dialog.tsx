@@ -24,6 +24,7 @@ import type {
 } from "../../lib/spotr-types";
 import { useAdminDashboard } from "./use-admin-dashboard";
 import { getNextDeployWindow } from "../../lib/spotr-config/session-window";
+import { classifyTxError } from "../../lib/wallet/tx-error";
 
 type CardPackItem = {
   kind: "nft" | "merch" | "gift-card" | "voucher";
@@ -256,9 +257,9 @@ export function DeploySessionDialog({
       setOpen(false);
       onDeployed?.();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Deploy failed."
-      );
+      const { rejected, message } = classifyTxError(error);
+      if (rejected) toast(message);
+      else toast.error(message);
       onDeployed?.();
     } finally {
       setIsSubmitting(false);

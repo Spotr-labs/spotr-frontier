@@ -27,10 +27,6 @@ pub const MAX_SIDE_ENTRIES: u32 = 80;
 /// PRD §3.7 — minimum per-position stake is 1 USDC (1_000_000 micro-USDC).
 pub const MIN_POSITION_USDC_UNITS: u64 = 1_000_000;
 
-/// PRD §3.3 — session ignites when either threshold is met.
-pub const DEFAULT_MIN_WALLETS: u16 = 35;
-pub const DEFAULT_MIN_TOTAL_USDC_UNITS: u64 = 3_500_000_000;
-
 #[program]
 pub mod spotr_markets {
     use super::*;
@@ -95,8 +91,6 @@ pub mod spotr_markets {
         session.buy_in_usdc_units = input.buy_in_usdc_units;
         session.protocol_fee_bps = input.protocol_fee_bps;
         session.referral_cut_bps = input.referral_cut_bps;
-        session.min_wallets = input.min_wallets;
-        session.min_total_usdc_units = input.min_total_usdc_units;
         session.joined_wallets = 0;
         session.total_escrowed_usdc_units = 0;
         session.protocol_fee_accrued_usdc_units = 0;
@@ -192,6 +186,7 @@ pub mod spotr_markets {
     pub fn join_session(ctx: Context<JoinSession>) -> Result<()> {
         let clock = Clock::get()?;
         let session = &mut ctx.accounts.session;
+        maybe_activate(session, &clock);
         require!(
             matches!(session.status, SessionStatus::Pending | SessionStatus::Live),
             SpotrError::SessionNotJoinable
@@ -243,12 +238,6 @@ pub mod spotr_markets {
             .checked_add(buy_in)
             .ok_or(SpotrError::MathOverflow)?;
 
-        if session.joined_wallets >= session.min_wallets
-            || session.total_escrowed_usdc_units >= session.min_total_usdc_units
-        {
-            session.status = SessionStatus::Live;
-        }
-
         let vault = &mut ctx.accounts.vault;
         vault.active_sessions = vault
             .active_sessions
@@ -293,6 +282,7 @@ pub mod spotr_markets {
 
         // The session is the container: every round is open while the session
         // is Live, and every round closes together when the session ends.
+        maybe_activate(session, &clock);
         require!(session.status == SessionStatus::Live, SpotrError::SessionNotLive);
         require!(round.state == RoundState::Open, SpotrError::RoundClosed);
         require!(
@@ -681,8 +671,6 @@ pub struct SessionInput {
     pub buy_in_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
-    pub min_wallets: u16,
-    pub min_total_usdc_units: u64,
     pub start_ts: i64,
     pub end_ts: i64,
 }
@@ -763,8 +751,6 @@ pub struct Session {
     pub buy_in_usdc_units: u64,
     pub protocol_fee_bps: u16,
     pub referral_cut_bps: u16,
-    pub min_wallets: u16,
-    pub min_total_usdc_units: u64,
     pub joined_wallets: u16,
     pub total_escrowed_usdc_units: u64,
     pub protocol_fee_accrued_usdc_units: u64,
@@ -1334,9 +1320,17 @@ fn validate_session_input(input: SessionInput) -> Result<()> {
     require!(input.referral_cut_bps <= 10_000, SpotrError::InvalidConfig);
     require!(input.round_count > 0, SpotrError::InvalidConfig);
     require!(input.round_duration_seconds > 0, SpotrError::InvalidConfig);
-    require!(input.min_wallets > 0, SpotrError::InvalidConfig);
     require!(input.end_ts > input.start_ts, SpotrError::InvalidConfig);
     Ok(())
+}
+
+fn maybe_activate(session: &mut Session, clock: &Clock) {
+    if session.status == SessionStatus::Pending
+        && clock.unix_timestamp >= session.start_ts
+        && clock.unix_timestamp < session.end_ts
+    {
+        session.status = SessionStatus::Live;
+    }
 }
 
 fn bit_for_round(index: u8) -> Result<u64> {

@@ -267,8 +267,6 @@ async function main() {
     buyInUsdcUnits: BigInt(0), // free join — wager paid per-round at enter_position
     protocolFeeBps: 0,
     referralCutBps: 0,
-    minWallets: 3,
-    minTotalUsdcUnits: BigInt(0),
     startTs: BigInt(0),
     endTs: BigInt(2_000_000_000),
   });

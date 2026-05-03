@@ -49,10 +49,6 @@ async function main() {
   const config = {
     seasonLabel: readString("NEXT_PUBLIC_SPOTR_SEASON_LABEL"),
     launchIso: readString("NEXT_PUBLIC_SPOTR_LAUNCH_ISO"),
-    sessionMinWallets: readInt("NEXT_PUBLIC_SPOTR_SESSION_MIN_WALLETS"),
-    sessionMinTotalLamports: BigInt(
-      readInt("NEXT_PUBLIC_SPOTR_SESSION_MIN_TOTAL_LAMPORTS")
-    ),
     sessionBuyInLamports: BigInt(
       readInt("NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS")
     ),
@@ -130,8 +126,6 @@ async function main() {
         buyInLamports: config.sessionBuyInLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,
-        minWallets: config.sessionMinWallets,
-        minTotalLamports: config.sessionMinTotalLamports,
         cardRewardSlots: config.cardRewardSlots,
         payoutCadenceDays: config.payoutCadenceDays,
       },
@@ -172,8 +166,6 @@ async function main() {
         buyInLamports: config.sessionBuyInLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,
-        minWallets: config.sessionMinWallets,
-        minTotalLamports: config.sessionMinTotalLamports,
         joinedWallets: 0,
         totalEscrowLamports: 0n,
         protocolFeeAccruedLamports: 0n,

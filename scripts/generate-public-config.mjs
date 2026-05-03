@@ -25,10 +25,6 @@ const publicConfig = {
   seasonLabel: requireEnv("NEXT_PUBLIC_SPOTR_SEASON_LABEL"),
   cluster: requireEnv("NEXT_PUBLIC_SPOTR_CLUSTER"),
   launchIso: requireEnv("NEXT_PUBLIC_SPOTR_LAUNCH_ISO"),
-  sessionMinWallets: Number(requireEnv("NEXT_PUBLIC_SPOTR_SESSION_MIN_WALLETS")),
-  sessionMinTotalLamports: Number(
-    requireEnv("NEXT_PUBLIC_SPOTR_SESSION_MIN_TOTAL_LAMPORTS")
-  ),
   sessionBuyInLamports: Number(
     requireEnv("NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS")
   ),

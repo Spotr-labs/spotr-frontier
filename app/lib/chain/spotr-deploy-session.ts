@@ -130,8 +130,6 @@ export async function submitDeploySessionOnChain(
       buyInUsdcUnits: params.buyInUsdcUnits ?? BigInt(publicSpotrConfig.sessionBuyInLamports),
       protocolFeeBps: publicSpotrConfig.protocolFeeBps,
       referralCutBps: publicSpotrConfig.referralCutBps,
-      minWallets: publicSpotrConfig.sessionMinWallets,
-      minTotalUsdcUnits: BigInt(publicSpotrConfig.sessionMinTotalLamports),
       startTs: params.startTsSeconds,
       endTs: params.endTsSeconds,
     })

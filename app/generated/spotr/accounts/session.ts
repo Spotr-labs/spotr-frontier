@@ -64,8 +64,6 @@ export type Session = {
   buyInUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
-  minWallets: number;
-  minTotalUsdcUnits: bigint;
   joinedWallets: number;
   totalEscrowedUsdcUnits: bigint;
   protocolFeeAccruedUsdcUnits: bigint;
@@ -83,8 +81,6 @@ export type SessionArgs = {
   buyInUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
-  minWallets: number;
-  minTotalUsdcUnits: number | bigint;
   joinedWallets: number;
   totalEscrowedUsdcUnits: number | bigint;
   protocolFeeAccruedUsdcUnits: number | bigint;
@@ -106,8 +102,6 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
       ["buyInUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
-      ["minWallets", getU16Encoder()],
-      ["minTotalUsdcUnits", getU64Encoder()],
       ["joinedWallets", getU16Encoder()],
       ["totalEscrowedUsdcUnits", getU64Encoder()],
       ["protocolFeeAccruedUsdcUnits", getU64Encoder()],
@@ -131,8 +125,6 @@ export function getSessionDecoder(): FixedSizeDecoder<Session> {
     ["buyInUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
-    ["minWallets", getU16Decoder()],
-    ["minTotalUsdcUnits", getU64Decoder()],
     ["joinedWallets", getU16Decoder()],
     ["totalEscrowedUsdcUnits", getU64Decoder()],
     ["protocolFeeAccruedUsdcUnits", getU64Decoder()],
@@ -202,5 +194,5 @@ export async function fetchAllMaybeSession(
 }
 
 export function getSessionSize(): number {
-  return 84;
+  return 74;
 }

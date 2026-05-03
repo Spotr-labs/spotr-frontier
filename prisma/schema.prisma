@@ -78,8 +78,6 @@ model Session {
   buyInLamports             BigInt
   protocolFeeBps            Int
   referralCutBps            Int
-  minWallets                Int
-  minTotalLamports          BigInt
   joinedWallets             Int                 @default(0)
   totalEscrowLamports       BigInt              @default(0)
   protocolFeeAccruedLamports BigInt             @default(0)

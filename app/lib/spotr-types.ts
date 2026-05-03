@@ -13,8 +13,6 @@ export type SpotrPublicConfig = {
   seasonLabel: string;
   cluster: SpotrCluster;
   launchIso: string;
-  sessionMinWallets: number;
-  sessionMinTotalLamports: number;
   sessionBuyInLamports: number;
   roundCount: number;
   roundDurationSeconds: number;
@@ -341,8 +339,6 @@ export type AdminSessionDetail = {
   buyInLamports: number;
   protocolFeeBps: number;
   referralCutBps: number;
-  minWallets: number;
-  minTotalLamports: number;
   cardRewardSlots: number;
   payoutCadenceDays: number;
   chainSessionNumber: string | null;

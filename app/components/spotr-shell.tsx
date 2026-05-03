@@ -18,6 +18,7 @@ import { WalletButton } from "./wallet-button";
 import { useCluster } from "./cluster-context";
 import { useWallet } from "../lib/wallet/context";
 import { createSignedActionRequest } from "../lib/wallet/signed-request";
+import { classifyTxError } from "../lib/wallet/tx-error";
 import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
 import { useVaultBalance } from "../lib/hooks/use-vault-balance";
 import { submitJoinSessionOnChain } from "../lib/chain/spotr-join-session";
@@ -207,8 +208,13 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   ]);
 
   const sessionProgress = useMemo(() => {
-    return session.totalEscrowLamports / config.sessionMinTotalLamports;
-  }, [config.sessionMinTotalLamports, session.totalEscrowLamports]);
+    const start = new Date(session.startsAtIso).getTime();
+    const end = new Date(session.endsAtIso).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return 0;
+    }
+    return Math.min(1, Math.max(0, (clockMs - start) / (end - start)));
+  }, [clockMs, session.startsAtIso, session.endsAtIso]);
 
   const activeDisplay = useMemo(() => {
     if (!activeFaultLine || !activeRound) return null;
@@ -328,10 +334,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
         toast.success("Session joined.");
       } catch (error) {
         console.error("[SPOTR] join session failed:", error);
-        const message =
-          error instanceof Error ? error.message : "Could not join session.";
-        setNotice({ tone: "error", message });
-        toast.error(message);
+        const { rejected, message } = classifyTxError(error);
+        setNotice({ tone: rejected ? "info" : "error", message });
+        if (rejected) toast(message);
+        else toast.error(message);
       }
     });
   };
@@ -399,9 +405,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
             duration: 8000,
           });
         } else {
-          const message = error instanceof Error ? error.message : "Failed to enter position.";
-          setNotice({ tone: "error", message });
-          toast.error(message);
+          const { rejected, message } = classifyTxError(error);
+          setNotice({ tone: rejected ? "info" : "error", message });
+          if (rejected) toast(message);
+          else toast.error(message);
         }
       }
     });
@@ -1179,7 +1186,6 @@ function ConfirmSessionScreen({
 
 function WaitingRoomScreen({
   state,
-  config,
 }: {
   state: ReturnType<typeof useSpotrDashboard>;
   config: SpotrPublicConfig;
@@ -1193,7 +1199,7 @@ function WaitingRoomScreen({
     <StageScaffold surface="navy">
       <WaitingRoom
         joined={state.session.walletsJoined}
-        capacity={config.sessionMinWallets}
+        startsAtIso={state.session.startsAtIso}
         players={players}
         starting={starting}
       />
@@ -2478,9 +2484,10 @@ export function SpotrSessionDetailShell({
         setShowGame(true);
       } catch (error) {
         console.error("[SPOTR] session detail join failed:", error);
-        const message = error instanceof Error ? error.message : "Could not join session.";
-        setNotice({ tone: "error", message });
-        toast.error(message);
+        const { rejected, message } = classifyTxError(error);
+        setNotice({ tone: rejected ? "info" : "error", message });
+        if (rejected) toast(message);
+        else toast.error(message);
       }
     });
   };

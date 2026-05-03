@@ -119,8 +119,6 @@ export type CreateSessionInstructionData = {
   buyInUsdcUnits: bigint;
   protocolFeeBps: number;
   referralCutBps: number;
-  minWallets: number;
-  minTotalUsdcUnits: bigint;
   startTs: bigint;
   endTs: bigint;
 };
@@ -132,8 +130,6 @@ export type CreateSessionInstructionDataArgs = {
   buyInUsdcUnits: number | bigint;
   protocolFeeBps: number;
   referralCutBps: number;
-  minWallets: number;
-  minTotalUsdcUnits: number | bigint;
   startTs: number | bigint;
   endTs: number | bigint;
 };
@@ -148,8 +144,6 @@ export function getCreateSessionInstructionDataEncoder(): FixedSizeEncoder<Creat
       ["buyInUsdcUnits", getU64Encoder()],
       ["protocolFeeBps", getU16Encoder()],
       ["referralCutBps", getU16Encoder()],
-      ["minWallets", getU16Encoder()],
-      ["minTotalUsdcUnits", getU64Encoder()],
       ["startTs", getI64Encoder()],
       ["endTs", getI64Encoder()],
     ]),
@@ -166,8 +160,6 @@ export function getCreateSessionInstructionDataDecoder(): FixedSizeDecoder<Creat
     ["buyInUsdcUnits", getU64Decoder()],
     ["protocolFeeBps", getU16Decoder()],
     ["referralCutBps", getU16Decoder()],
-    ["minWallets", getU16Decoder()],
-    ["minTotalUsdcUnits", getU64Decoder()],
     ["startTs", getI64Decoder()],
     ["endTs", getI64Decoder()],
   ]);
@@ -209,8 +201,6 @@ export type CreateSessionAsyncInput<
   buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
-  minWallets: CreateSessionInstructionDataArgs["minWallets"];
-  minTotalUsdcUnits: CreateSessionInstructionDataArgs["minTotalUsdcUnits"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
 };
@@ -364,8 +354,6 @@ export type CreateSessionInput<
   buyInUsdcUnits: CreateSessionInstructionDataArgs["buyInUsdcUnits"];
   protocolFeeBps: CreateSessionInstructionDataArgs["protocolFeeBps"];
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
-  minWallets: CreateSessionInstructionDataArgs["minWallets"];
-  minTotalUsdcUnits: CreateSessionInstructionDataArgs["minTotalUsdcUnits"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
 };
