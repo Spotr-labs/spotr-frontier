@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
 const CLUSTER = process.env.NEXT_PUBLIC_SPOTR_CLUSTER ?? "localnet";
 const RPC_URLS: Record<string, string> = {
   localnet: "http://127.0.0.1:8899",
-  devnet: "https://api.devnet.solana.com",
+  devnet: process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com",
 };
 const RPC_URL = RPC_URLS[CLUSTER] ?? null;
 
