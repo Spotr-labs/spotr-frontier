@@ -32,6 +32,13 @@ const RPC_URLS: Record<string, string> = {
 };
 const RPC_URL = RPC_URLS[CLUSTER] ?? null;
 
+// Private RPCs don't implement requestAirdrop — always use the public endpoint for SOL drops.
+const FAUCET_RPC_URLS: Record<string, string> = {
+  localnet: "http://127.0.0.1:8899",
+  devnet: "https://api.devnet.solana.com",
+};
+const FAUCET_RPC_URL = FAUCET_RPC_URLS[CLUSTER] ?? null;
+
 const SOL_AIRDROP_CAP = 10;
 const USDC_AIRDROP_CAP = 10_000;
 
@@ -77,9 +84,13 @@ export async function POST(request: Request) {
 
   // ── SOL ─────────────────────────────────────────────────────────────────
   if (type === "sol") {
+    if (!FAUCET_RPC_URL) {
+      return NextResponse.json({ error: "SOL airdrop not available on this cluster." }, { status: 403 });
+    }
     const sol = Math.min(Number(amount) || 2, SOL_AIRDROP_CAP);
     try {
-      const sig = await rpc
+      const faucetRpc = createSolanaRpc(FAUCET_RPC_URL);
+      const sig = await faucetRpc
         .requestAirdrop(walletAddr, lamports(BigInt(Math.floor(sol * 1e9))))
         .send();
       return NextResponse.json({ signature: String(sig) });
