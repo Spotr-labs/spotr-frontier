@@ -250,7 +250,7 @@ async function rebuildSessionRounds(tx: Tx, sessionId: string, pairIds: string[]
       return {
         sessionId,
         pairId,
-        roundIndex: index + 1,
+        roundIndex: index,
         status: "UPCOMING",
         sideAProbabilityPct: pair.defaultSideAPct,
         sideBProbabilityPct: pair.defaultSideBPct,

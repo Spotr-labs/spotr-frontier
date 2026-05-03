@@ -1334,7 +1334,7 @@ function LiveGameScreen({
         <div className="flex items-center justify-between px-4 pt-4">
           <EyeBrand size={28} />
           <RoundLabel
-            index={state.activeRound.index ?? config.roundCount}
+            index={state.activeRound.index + 1}
             total={config.roundCount}
           />
           <BalancePill balanceLamports={balanceMicro} />
@@ -1509,7 +1509,7 @@ function PnlScreen({
         <div className="mb-6 flex flex-col items-center gap-2">
           <EyeBrand size={44} />
           <p className="text-sm text-white/70">
-            Round {round.index} of {totalRounds}
+            Round {round.index + 1} of {totalRounds}
           </p>
         </div>
 
@@ -1703,7 +1703,7 @@ export function SessionEndedScreen({
                         {data.pnl > 0 ? "+" : ""}{microUsdcToDisplay(data.pnl)}
                       </p>
                       <p className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.1em] text-[#8a7f6e]">
-                        R{data.round.index}{data.category ? ` · ${data.category}` : ""}
+                        R{data.round.index + 1}{data.category ? ` · ${data.category}` : ""}
                       </p>
                     </>
                   ) : (
@@ -1753,7 +1753,7 @@ export function SessionEndedScreen({
               <div className="flex gap-1 mt-1">
                 {session.rounds.map((r) => (
                   <span key={r.id} className="flex-1 text-center font-mono text-[6px] text-[#8a7f6e]">
-                    R{r.index}
+                    R{r.index + 1}
                   </span>
                 ))}
               </div>
@@ -2689,7 +2689,7 @@ export function SpotrSessionResultsShell({
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted">
-                    Round {round.index}
+                    Round {round.index + 1}
                   </span>
                   <span className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-semibold text-white/60">
                     {round.category}

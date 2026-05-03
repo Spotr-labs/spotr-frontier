@@ -180,7 +180,7 @@ async function main() {
         return {
           sessionId,
           pairId: pair.id,
-          roundIndex: index + 1,
+          roundIndex: index,
           status: "UPCOMING",
           sideAProbabilityPct: seed.sideAPct,
           sideBProbabilityPct: seed.sideBPct,
