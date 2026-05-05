@@ -1,6 +1,11 @@
 "use client";
 
-import { address, type Address, type TransactionSigner } from "@solana/kit";
+import {
+  address,
+  AccountRole,
+  type Address,
+  type TransactionSigner,
+} from "@solana/kit";
 import { createClient } from "@solana/kit-client-rpc";
 import {
   getAdminCloseRoundInstruction,
@@ -8,9 +13,11 @@ import {
   getCloseRoundInstruction,
   getCreateRoundInstruction,
   getFinalizeSessionInstruction,
-  getSweepOrphansInstructionAsync,
+  getResolveRoundInstructionAsync,
+  getSettleRoundInstructionAsync,
   getWithdrawProtocolFeesInstructionAsync,
 } from "../../generated/spotr/instructions";
+import { SideSelection } from "../../generated/spotr/types/sideSelection";
 import { findConfigPda } from "../../generated/spotr/pdas";
 import { getClusterUrl, getClusterWsConfig } from "../solana-client";
 import { findSpotrSessionPda } from "./session-pda";
@@ -111,25 +118,70 @@ export async function submitAdminCloseSessionOnChain(
   return { signature: String(result.context.signature) };
 }
 
-export type SubmitSweepOrphansParams = ChainParams & {
+export type SubmitResolveRoundParams = ChainParams & {
   sessionNumber: bigint;
   roundIndex: number;
+  winningSide: "A" | "B";
 };
 
-export async function submitSweepOrphansOnChain(
-  params: SubmitSweepOrphansParams
+export async function submitResolveRoundOnChain(
+  params: SubmitResolveRoundParams
 ): Promise<{ signature: string }> {
   const [sessionAddress] = await findSpotrSessionPda(params.sessionNumber);
   const [roundAddress] = await findSpotrRoundPda({
     session: sessionAddress,
     index: params.roundIndex,
   });
-  // Touch USDC mint so PDAs derive consistently when present.
-  void requireUsdcMint();
-  const ix = await getSweepOrphansInstructionAsync({
+  const ix = await getResolveRoundInstructionAsync({
+    authority: params.signer,
+    session: sessionAddress,
+    round: roundAddress,
+    winningSide: params.winningSide === "A" ? SideSelection.A : SideSelection.B,
+  });
+  const txClient = createClient({
+    url: getClusterUrl(params.cluster),
+    rpcSubscriptionsConfig: getClusterWsConfig(params.cluster),
+    payer: params.signer,
+  });
+  const result = await txClient.sendTransaction([ix]);
+  return { signature: String(result.context.signature) };
+}
+
+export type SubmitSettleRoundParams = ChainParams & {
+  sessionNumber: bigint;
+  roundIndex: number;
+  // The winning-side `PlayerRoundPosition` PDAs in any order — the on-chain
+  // settle handler sorts by deposit_index. Caller is responsible for
+  // including every winning position (no more, no less).
+  winningPositions: Address[];
+};
+
+export async function submitSettleRoundOnChain(
+  params: SubmitSettleRoundParams
+): Promise<{ signature: string }> {
+  const [sessionAddress] = await findSpotrSessionPda(params.sessionNumber);
+  const [roundAddress] = await findSpotrRoundPda({
+    session: sessionAddress,
+    index: params.roundIndex,
+  });
+  const baseIx = await getSettleRoundInstructionAsync({
+    authority: params.signer,
     session: sessionAddress,
     round: roundAddress,
   });
+  // Append winning-position PDAs as writable remaining accounts. The
+  // on-chain `settle_round` reads them from `ctx.remaining_accounts` and
+  // writes each position's `final_payout_usdc_units` back.
+  const ix = {
+    ...baseIx,
+    accounts: [
+      ...baseIx.accounts,
+      ...params.winningPositions.map((addr) => ({
+        address: addr,
+        role: AccountRole.WRITABLE,
+      })),
+    ],
+  };
   const txClient = createClient({
     url: getClusterUrl(params.cluster),
     rpcSubscriptionsConfig: getClusterWsConfig(params.cluster),

@@ -31,6 +31,7 @@ import {
   type WritableSignerAccount,
 } from "@solana/kit";
 import {
+  findConfigPda,
   findPlayerSessionPda,
   findSessionTreasuryPda,
   findSessionTreasuryTokensPda,
@@ -56,6 +57,8 @@ export function getJoinSessionDiscriminatorBytes() {
 
 export type JoinSessionInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+  TAccountSponsor extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountPlayer extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
@@ -72,9 +75,15 @@ export type JoinSessionInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
+      TAccountSponsor extends string
+        ? WritableSignerAccount<TAccountSponsor> &
+            AccountSignerMeta<TAccountSponsor>
+        : TAccountSponsor,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
       TAccountPlayer extends string
-        ? WritableSignerAccount<TAccountPlayer> &
-            AccountSignerMeta<TAccountPlayer>
+        ? ReadonlyAccount<TAccountPlayer>
         : TAccountPlayer,
       TAccountSession extends string
         ? WritableAccount<TAccountSession>
@@ -132,6 +141,8 @@ export function getJoinSessionInstructionDataCodec(): FixedSizeCodec<
 }
 
 export type JoinSessionAsyncInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountSessionTreasury extends string = string,
@@ -142,7 +153,14 @@ export type JoinSessionAsyncInput<
   TAccountSystemProgram extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
-  player: TransactionSigner<TAccountPlayer>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config?: Address<TAccountConfig>;
+  /**
+   * rent; the player's funds move from `vault` (their PDA) to the session
+   * treasury. `vault.owner == player.key()` enforces that this account
+   * matches the vault.
+   */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
   sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
@@ -154,6 +172,8 @@ export type JoinSessionAsyncInput<
 };
 
 export async function getJoinSessionInstructionAsync<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountSessionTreasury extends string,
@@ -166,6 +186,8 @@ export async function getJoinSessionInstructionAsync<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: JoinSessionAsyncInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountSessionTreasury,
@@ -180,6 +202,8 @@ export async function getJoinSessionInstructionAsync<
 ): Promise<
   JoinSessionInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountSessionTreasury,
@@ -197,7 +221,9 @@ export async function getJoinSessionInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    player: { value: input.player ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
     sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
     sessionTreasuryTokens: {
@@ -216,6 +242,9 @@ export async function getJoinSessionInstructionAsync<
   >;
 
   // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
   if (!accounts.sessionTreasury.value) {
     accounts.sessionTreasury.value = await findSessionTreasuryPda({
       session: expectAddress(accounts.session.value),
@@ -254,6 +283,8 @@ export async function getJoinSessionInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.sessionTreasury),
@@ -268,6 +299,8 @@ export async function getJoinSessionInstructionAsync<
     programAddress,
   } as JoinSessionInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountSessionTreasury,
@@ -281,6 +314,8 @@ export async function getJoinSessionInstructionAsync<
 }
 
 export type JoinSessionInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountSessionTreasury extends string = string,
@@ -291,7 +326,14 @@ export type JoinSessionInput<
   TAccountSystemProgram extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
-  player: TransactionSigner<TAccountPlayer>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config: Address<TAccountConfig>;
+  /**
+   * rent; the player's funds move from `vault` (their PDA) to the session
+   * treasury. `vault.owner == player.key()` enforces that this account
+   * matches the vault.
+   */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   sessionTreasury: Address<TAccountSessionTreasury>;
   sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
@@ -303,6 +345,8 @@ export type JoinSessionInput<
 };
 
 export function getJoinSessionInstruction<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountSessionTreasury extends string,
@@ -315,6 +359,8 @@ export function getJoinSessionInstruction<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: JoinSessionInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountSessionTreasury,
@@ -328,6 +374,8 @@ export function getJoinSessionInstruction<
   config?: { programAddress?: TProgramAddress },
 ): JoinSessionInstruction<
   TProgramAddress,
+  TAccountSponsor,
+  TAccountConfig,
   TAccountPlayer,
   TAccountSession,
   TAccountSessionTreasury,
@@ -344,7 +392,9 @@ export function getJoinSessionInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    player: { value: input.player ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: true },
     sessionTreasury: { value: input.sessionTreasury ?? null, isWritable: true },
     sessionTreasuryTokens: {
@@ -375,6 +425,8 @@ export function getJoinSessionInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.sessionTreasury),
@@ -389,6 +441,8 @@ export function getJoinSessionInstruction<
     programAddress,
   } as JoinSessionInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountSessionTreasury,
@@ -407,15 +461,22 @@ export type ParsedJoinSessionInstruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    player: TAccountMetas[0];
-    session: TAccountMetas[1];
-    sessionTreasury: TAccountMetas[2];
-    sessionTreasuryTokens: TAccountMetas[3];
-    vault: TAccountMetas[4];
-    vaultTokens: TAccountMetas[5];
-    playerSession: TAccountMetas[6];
-    systemProgram: TAccountMetas[7];
-    tokenProgram: TAccountMetas[8];
+    sponsor: TAccountMetas[0];
+    config: TAccountMetas[1];
+    /**
+     * rent; the player's funds move from `vault` (their PDA) to the session
+     * treasury. `vault.owner == player.key()` enforces that this account
+     * matches the vault.
+     */
+    player: TAccountMetas[2];
+    session: TAccountMetas[3];
+    sessionTreasury: TAccountMetas[4];
+    sessionTreasuryTokens: TAccountMetas[5];
+    vault: TAccountMetas[6];
+    vaultTokens: TAccountMetas[7];
+    playerSession: TAccountMetas[8];
+    systemProgram: TAccountMetas[9];
+    tokenProgram: TAccountMetas[10];
   };
   data: JoinSessionInstructionData;
 };
@@ -428,7 +489,7 @@ export function parseJoinSessionInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedJoinSessionInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 9) {
+  if (instruction.accounts.length < 11) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -441,6 +502,8 @@ export function parseJoinSessionInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
+      sponsor: getNextAccount(),
+      config: getNextAccount(),
       player: getNextAccount(),
       session: getNextAccount(),
       sessionTreasury: getNextAccount(),

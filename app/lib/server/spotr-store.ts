@@ -52,6 +52,7 @@ import type {
   AdminTransactionListResponse,
   FaultLinePair,
   LiveSessionSnapshot,
+  ProfileSessionHistoryRow,
   ProfileSummary,
   ReferredWalletContribution,
   RecentReward,
@@ -381,21 +382,19 @@ function isSessionSettled(status: PrismaSessionStatus) {
 function derivePositionClaimableLamports(
   round: Pick<
     Prisma.SessionRoundGetPayload<object>,
-    "sideARewardPerShare" | "sideBRewardPerShare"
+    "winningSide" | "redistributeApplied"
   >,
   position: Pick<
     Prisma.RoundPositionGetPayload<object>,
-    "side" | "shares" | "rewardDebtLamports" | "claimedLamports"
+    "side" | "finalPayoutLamports" | "claimedLamports"
   >
 ) {
-  const rewardPerShare =
-    position.side === PositionSide.A
-      ? round.sideARewardPerShare
-      : round.sideBRewardPerShare;
-  const totalEntitlement = (position.shares * rewardPerShare) / REWARD_SCALE;
-  const pending =
-    totalEntitlement - position.rewardDebtLamports - position.claimedLamports;
-
+  // Pre-settlement → nothing claimable.
+  if (!round.redistributeApplied) return 0n;
+  // Losing-side positions have final_payout = 0 by design (settle_round
+  // only writes the winning side). Be defensive: explicitly zero them out.
+  if (round.winningSide && round.winningSide !== position.side) return 0n;
+  const pending = position.finalPayoutLamports - position.claimedLamports;
   return pending > 0n ? pending : 0n;
 }
 
@@ -562,14 +561,13 @@ async function buildProfileSummary(
           side: true,
           stakeLamports: true,
           claimedLamports: true,
-          shares: true,
-          rewardDebtLamports: true,
+          finalPayoutLamports: true,
           round: {
             select: {
               opensAt: true,
               closesAt: true,
-              sideARewardPerShare: true,
-              sideBRewardPerShare: true,
+              winningSide: true,
+              redistributeApplied: true,
               session: { select: { status: true } },
             },
           },
@@ -933,6 +931,15 @@ async function buildDashboardPayload(
     walletPositions.map((position) => [position.roundId, position])
   );
 
+  const walletDeposits = participant
+    ? await tx.roundDeposit.findMany({
+        where: { participantId: participant.id },
+      })
+    : [];
+  const depositByRoundId = new Map(
+    walletDeposits.map((deposit) => [deposit.roundId, deposit])
+  );
+
   const rounds: SessionRoundSummary[] = session.rounds.map((round) => {
     const derivedStatus = deriveRoundStatus(
       session.status,
@@ -951,6 +958,7 @@ async function buildDashboardPayload(
       position && derivedStatus === "CLOSED"
         ? derivePositionClaimableLamports(round, position)
         : 0n;
+    const deposit = depositByRoundId.get(round.id);
 
     return {
       id: round.id,
@@ -972,6 +980,9 @@ async function buildDashboardPayload(
       stakeLamports: position ? toNumber(position.stakeLamports) : null,
       claimableLamports: toNumber(claimableLamports),
       claimedLamports: position ? toNumber(position.claimedLamports) : 0,
+      walletsDepositedForRound: round.depositsCount,
+      depositLamports: deposit ? toNumber(deposit.amountLamports) : null,
+      depositRefunded: deposit?.refundedAt != null,
     };
   });
 
@@ -1464,7 +1475,6 @@ export async function enterSpotrRoundPosition(input: {
   walletAddress: string;
   roundId: string;
   side: SpotrSide;
-  wagerLamports: bigint;
   chainTxSignature: string;
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
@@ -1519,9 +1529,27 @@ export async function enterSpotrRoundPosition(input: {
       throw new Error("You already entered this round.");
     }
 
+    // Wager comes from the player's RoundDeposit (committed during the
+    // wait phase). The on-chain `enter_position` reads from the same PDA;
+    // we consume that ticket here.
+    const deposit = await tx.roundDeposit.findUnique({
+      where: {
+        roundId_participantId: {
+          roundId: round.id,
+          participantId: participant.id,
+        },
+      },
+    });
+    if (!deposit) {
+      throw new Error("Deposit for this round not found.");
+    }
+    if (deposit.usedAt || deposit.refundedAt) {
+      throw new Error("This deposit has already been consumed or refunded.");
+    }
+
     const referralRelationship = await ensureReferralRelationship(tx, participant);
 
-    const stakeLamports = input.wagerLamports;
+    const stakeLamports = deposit.amountLamports;
     const feeLamports = (stakeLamports * BigInt(session.protocolFeeBps)) / 10_000n;
     const referralShareLamports = await getEligibleReferralShareLamports(
       tx,
@@ -1567,6 +1595,11 @@ export async function enterSpotrRoundPosition(input: {
         shares,
         rewardDebtLamports,
       },
+    });
+
+    await tx.roundDeposit.update({
+      where: { id: deposit.id },
+      data: { usedAt: new Date() },
     });
 
     await tx.session.update({
@@ -1643,6 +1676,302 @@ export async function enterSpotrRoundPosition(input: {
   }, { timeout: 15_000 });
 
   return getSpotrDashboardPayload(walletAddress);
+}
+
+/**
+ * Record a `deposit_for_round` ticket in the DB once the on-chain instruction
+ * has succeeded. Returns the refreshed dashboard payload so the caller can
+ * round-trip it back to the client.
+ */
+export async function recordRoundDeposit(input: {
+  walletAddress: string;
+  roundId: string;
+  amountLamports: bigint;
+  chainTxSignature?: string | null;
+}) {
+  const walletAddress = normalizeWalletAddress(input.walletAddress);
+  if (!walletAddress) {
+    throw new Error("A wallet address is required to record a round deposit.");
+  }
+  if (input.amountLamports <= 0n) {
+    throw new Error("Deposit amount must be positive.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const round = await tx.sessionRound.findUnique({
+      where: { id: input.roundId },
+      include: { session: true },
+    });
+    if (!round) throw new Error("Round not found.");
+    const session = await syncSessionState(tx, round.sessionId);
+    if (session.status !== "LIVE") {
+      throw new Error("The session is not live yet.");
+    }
+
+    const participant = await tx.sessionParticipant.findUnique({
+      where: {
+        sessionId_walletAddress: {
+          sessionId: session.id,
+          walletAddress,
+        },
+      },
+    });
+    if (!participant) {
+      throw new Error("Join the session before depositing into a round.");
+    }
+
+    const existing = await tx.roundDeposit.findUnique({
+      where: {
+        roundId_participantId: {
+          roundId: round.id,
+          participantId: participant.id,
+        },
+      },
+    });
+    if (existing) {
+      throw new Error("You have already deposited for this round.");
+    }
+
+    await tx.roundDeposit.create({
+      data: {
+        roundId: round.id,
+        participantId: participant.id,
+        walletAddress,
+        amountLamports: input.amountLamports,
+        chainDepositTx: input.chainTxSignature ?? null,
+      },
+    });
+
+    const newCount = round.depositsCount + 1;
+    const newPool = round.depositPoolLamports + input.amountLamports;
+    const fillThreshold = await getRoundFillThreshold(session.id);
+    const shouldOpen = newCount >= fillThreshold;
+
+    await tx.sessionRound.update({
+      where: { id: round.id },
+      data: {
+        depositsCount: newCount,
+        depositPoolLamports: newPool,
+        ...(shouldOpen
+          ? { status: RoundStatus.OPEN, opensAt: round.opensAt ?? new Date() }
+          : {}),
+      },
+    });
+
+    await tx.transactionLog.create({
+      data: {
+        sessionId: session.id,
+        walletAddress,
+        kind: "deposit_for_round",
+        amountLamports: input.amountLamports,
+        metadataJson: JSON.stringify({
+          roundId: round.id,
+          newCount,
+          fillThreshold,
+        }),
+      },
+    });
+  }, { timeout: 15_000 });
+
+  return getSpotrDashboardPayload(walletAddress);
+}
+
+/**
+ * Refund a deposit for a round that closed without filling (or where the
+ * player never picked a side). Mirrors the on-chain `refund_unused_deposit`
+ * instruction.
+ */
+export async function refundUnusedSpotrDeposit(input: {
+  walletAddress: string;
+  roundId: string;
+  chainTxSignature?: string | null;
+}) {
+  const walletAddress = normalizeWalletAddress(input.walletAddress);
+  if (!walletAddress) {
+    throw new Error("A wallet address is required to refund a deposit.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const round = await tx.sessionRound.findUnique({
+      where: { id: input.roundId },
+    });
+    if (!round) throw new Error("Round not found.");
+    if (round.status !== RoundStatus.CLOSED) {
+      throw new Error("The round is still open.");
+    }
+
+    const participant = await tx.sessionParticipant.findUnique({
+      where: {
+        sessionId_walletAddress: {
+          sessionId: round.sessionId,
+          walletAddress,
+        },
+      },
+    });
+    if (!participant) throw new Error("No session participation found.");
+
+    const deposit = await tx.roundDeposit.findUnique({
+      where: {
+        roundId_participantId: {
+          roundId: round.id,
+          participantId: participant.id,
+        },
+      },
+    });
+    if (!deposit) throw new Error("No deposit to refund.");
+    if (deposit.refundedAt) throw new Error("This deposit has already been refunded.");
+    if (deposit.usedAt) throw new Error("This deposit was already consumed by a position.");
+
+    await tx.roundDeposit.update({
+      where: { id: deposit.id },
+      data: {
+        refundedAt: new Date(),
+        chainRefundTx: input.chainTxSignature ?? null,
+      },
+    });
+
+    await tx.transactionLog.create({
+      data: {
+        sessionId: round.sessionId,
+        walletAddress,
+        kind: "refund_unused_deposit",
+        amountLamports: deposit.amountLamports,
+        metadataJson: JSON.stringify({ roundId: round.id }),
+      },
+    });
+  }, { timeout: 15_000 });
+
+  return getSpotrDashboardPayload(walletAddress);
+}
+
+/**
+ * Record the on-chain `resolve_round` outcome in the DB. Captures
+ * `winningSide`, computes `totalPoolLamports`, and sets the audit trail.
+ * Pure DB write — the on-chain ix has already been signed by the admin.
+ */
+export async function recordChainResolveRound(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  roundId: string;
+  winningSide: "A" | "B";
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  return prisma.$transaction(async (tx) => {
+    const round = await tx.sessionRound.findUnique({
+      where: { id: input.roundId },
+      include: { session: true },
+    });
+    if (!round) throw new Error("Round not found.");
+    if (round.sessionId !== input.sessionId) {
+      throw new Error("roundId does not belong to sessionId.");
+    }
+    if (round.winningSide) {
+      throw new Error("This round is already resolved.");
+    }
+    const totalPool =
+      round.sideATotalNetLamports + round.sideBTotalNetLamports;
+    await tx.sessionRound.update({
+      where: { id: round.id },
+      data: {
+        winningSide: input.winningSide === "A" ? PositionSide.A : PositionSide.B,
+        totalPoolLamports: totalPool,
+      },
+    });
+    await tx.transactionLog.create({
+      data: {
+        sessionId: round.sessionId,
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_resolve_round",
+        amountLamports: null,
+        metadataJson: JSON.stringify({
+          roundId: round.id,
+          winningSide: input.winningSide,
+          chainTxSignature: input.chainTxSignature,
+        }),
+      },
+    });
+  }, { timeout: 15_000 });
+}
+
+/**
+ * Server-driven settlement: sponsor wallet signs `settle_round` with all
+ * winning positions as remaining_accounts, then mirrors the redistributed
+ * payouts into RoundPosition.finalPayoutLamports so claim_round + the
+ * dashboard payload have a single source of truth.
+ *
+ * Returns the on-chain transaction signature.
+ */
+export async function executeSpotrSettleRound(_input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  roundId: string;
+}): Promise<{ chainTxSignature: string }> {
+  // The actual chain submission lives in the API route handler so it can
+  // share the same `loadSponsorSigner` / `submitSponsoredTx` helpers as the
+  // other on-chain admin endpoints. The route calls this DB-update helper
+  // *after* the chain ix succeeds. Implementation in
+  // `app/api/admin/rounds/settle/route.ts`.
+  throw new Error("executeSpotrSettleRound is implemented inline in the settle route");
+}
+
+/**
+ * After the on-chain `settle_round` succeeds, mirror the per-position
+ * `final_payout_usdc_units` values into the DB so the UI / dashboard /
+ * claim path read from a single source of truth. Caller passes the same
+ * ordered `[positionAddress, finalPayoutLamports]` tuples that were in the
+ * on-chain ix, computed in TS via the redistribute() pure function.
+ */
+export async function recordChainSettleRound(input: {
+  adminWalletAddress: string;
+  sessionId: string;
+  roundId: string;
+  finalPayouts: { positionId: string; finalPayoutLamports: bigint }[];
+  chainTxSignature: string;
+}) {
+  assertAdminWallet(input.adminWalletAddress);
+  return prisma.$transaction(async (tx) => {
+    const round = await tx.sessionRound.findUnique({
+      where: { id: input.roundId },
+    });
+    if (!round) throw new Error("Round not found.");
+    if (!round.winningSide) {
+      throw new Error("Round must be resolved before settling.");
+    }
+    if (round.redistributeApplied) {
+      throw new Error("This round has already been settled.");
+    }
+    for (const { positionId, finalPayoutLamports } of input.finalPayouts) {
+      await tx.roundPosition.update({
+        where: { id: positionId },
+        data: { finalPayoutLamports },
+      });
+    }
+    await tx.sessionRound.update({
+      where: { id: round.id },
+      data: { redistributeApplied: true, settledAt: new Date() },
+    });
+    await tx.transactionLog.create({
+      data: {
+        sessionId: round.sessionId,
+        walletAddress: input.adminWalletAddress,
+        kind: "admin_settle_round",
+        amountLamports: null,
+        metadataJson: JSON.stringify({
+          roundId: round.id,
+          chainTxSignature: input.chainTxSignature,
+          positionCount: input.finalPayouts.length,
+        }),
+      },
+    });
+  }, { timeout: 15_000 });
+}
+
+async function getRoundFillThreshold(sessionId: string): Promise<number> {
+  // Stored on-chain only — the client-passed config carries the default.
+  // For DB sync we fall back to the public config value (UI default).
+  void sessionId;
+  return Number(publicSpotrConfig.roundFillThreshold ?? 7);
 }
 
 export async function claimSpotrRoundProceeds(input: { walletAddress: string }) {
@@ -2296,9 +2625,9 @@ export async function getSessionPublicResults(
         round.sideBProbabilityPct
       );
       const winningSide: SpotrSide | null =
-        round.sideARewardPerShare > 0n
+        round.winningSide === PositionSide.A
           ? "A"
-          : round.sideBRewardPerShare > 0n
+          : round.winningSide === PositionSide.B
             ? "B"
             : null;
       return {
@@ -2316,6 +2645,63 @@ export async function getSessionPublicResults(
       };
     }),
   };
+}
+
+export async function listProfileSessionHistory(
+  walletAddress: string
+): Promise<ProfileSessionHistoryRow[]> {
+  const wallet = normalizeWalletAddress(walletAddress);
+  if (!wallet) return [];
+
+  const participants = await prisma.sessionParticipant.findMany({
+    where: { walletAddress: wallet },
+    include: {
+      session: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          startsAt: true,
+          endsAt: true,
+        },
+      },
+      positions: {
+        include: {
+          round: {
+            select: {
+              status: true,
+              winningSide: true,
+              redistributeApplied: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: { joinedAt: "desc" },
+  });
+
+  return participants.map((participant) => {
+    let totalStake = 0n;
+    let totalProceeds = 0n;
+    for (const position of participant.positions) {
+      totalStake += position.stakeLamports;
+      const claimable =
+        position.round.status === "CLOSED"
+          ? derivePositionClaimableLamports(position.round, position)
+          : 0n;
+      totalProceeds += claimable + position.claimedLamports;
+    }
+    return {
+      sessionId: participant.session.id,
+      title: participant.session.title,
+      status: mapSessionStatus(participant.session.status),
+      joinedAtIso: participant.joinedAt.toISOString(),
+      startsAtIso: participant.session.startsAt.toISOString(),
+      endsAtIso: participant.session.endsAt.toISOString(),
+      positionsEntered: participant.positions.length,
+      netPnlLamports: toNumber(totalProceeds - totalStake),
+    };
+  });
 }
 
 const ADMIN_LIST_PAGE_SIZE = 50;

@@ -16,6 +16,7 @@ import {
 } from "@solana/kit";
 
 export enum RoundState {
+  Pending,
   Open,
   Closed,
 }

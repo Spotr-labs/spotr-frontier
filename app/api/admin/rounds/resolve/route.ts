@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { recordChainSweepOrphans } from "../../../../lib/server/spotr-store";
+import { recordChainResolveRound } from "../../../../lib/server/spotr-store";
 import { verifySignedSpotrAction } from "../../../../lib/server/signed-action";
 import {
   ValidationError,
-  parseAdminSweepOrphansPayload,
+  parseAdminResolveRoundPayload,
   parseSignedEnvelope,
 } from "../../../../lib/server/validators";
 import {
@@ -16,19 +16,20 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const envelope = parseSignedEnvelope(body, parseAdminSweepOrphansPayload);
+    const envelope = parseSignedEnvelope(body, parseAdminResolveRoundPayload);
     consumeSignedActionToken(
       envelope.walletAddress,
-      "admin/sessions/sweep-orphans"
+      "admin/rounds/resolve"
     );
     const { payload } = await verifySignedSpotrAction(
-      "admin-sweep-orphans",
+      "admin-resolve-round",
       envelope
     );
-    await recordChainSweepOrphans({
+    await recordChainResolveRound({
       adminWalletAddress: payload.adminWalletAddress,
       sessionId: payload.sessionId,
       roundId: payload.roundId,
+      winningSide: payload.winningSide,
       chainTxSignature: payload.chainTxSignature,
     });
     return NextResponse.json({ ok: true });
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to record sweep_orphans.",
+            : "Failed to record resolve_round.",
       },
       { status }
     );

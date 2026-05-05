@@ -21,6 +21,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import {
+  AccountRole,
   type Address,
   type TransactionSigner,
   address,
@@ -45,15 +46,18 @@ import {
   getCloseRoundInstruction,
   getCreateRoundInstruction,
   getCreateSessionInstructionAsync,
+  getDepositForRoundInstructionAsync,
   getDepositToVaultInstructionAsync,
   getEnterPositionInstructionAsync,
   getInitUserVaultInstructionAsync,
   getInitializeConfigInstructionAsync,
   getJoinSessionInstructionAsync,
-  getSweepOrphansInstructionAsync,
+  getResolveRoundInstructionAsync,
+  getSettleRoundInstructionAsync,
   getWithdrawFromVaultInstructionAsync,
 } from "../../app/generated/spotr/instructions/index";
 import {
+  findPositionPda,
   findProtocolTreasuryPda,
   findProtocolTreasuryTokensPda,
 } from "../../app/generated/spotr/pdas/index";
@@ -245,6 +249,9 @@ async function main() {
 
   // ── 2. admin: initialize_config + create_session ───────────────────────
   const [sessionPda] = await findSpotrSessionPda(SESSION_NUMBER);
+  // Threshold matches the player count so the round fills exactly when all
+  // three deposits land. Less = wouldn't fill; more = round stays Pending.
+  const ROUND_FILL_THRESHOLD = players.length;
   const initIx = await getInitializeConfigInstructionAsync({
     authority: admin,
     usdcMint: USDC_MINT,
@@ -255,6 +262,7 @@ async function main() {
       roundCount: 1,
       roundDurationSeconds: ROUND_DURATION_SECONDS,
       buyInUsdcUnits: BUY_IN_USDC_UNITS,
+      roundFillThreshold: ROUND_FILL_THRESHOLD,
     },
   });
   const createIx = await getCreateSessionInstructionAsync({
@@ -264,28 +272,31 @@ async function main() {
     sessionNumber: SESSION_NUMBER,
     roundCount: 1,
     roundDurationSeconds: ROUND_DURATION_SECONDS,
-    buyInUsdcUnits: BigInt(0), // free join — wager paid per-round at enter_position
+    buyInUsdcUnits: BigInt(0), // free join — wager paid per-round at deposit_for_round
     protocolFeeBps: 0,
     referralCutBps: 0,
     startTs: BigInt(0),
     endTs: BigInt(2_000_000_000),
+    roundFillThreshold: ROUND_FILL_THRESHOLD,
   });
   const bootSig = await sendIxs(admin, [initIx, createIx]);
   console.log(`[e2e] config + session created: ${bootSig}`);
 
-  // ── 3. each player: init_user_vault + deposit_to_vault ─────────────────
+  // ── 3. each player: init_user_vault (sponsored by admin) + deposit_to_vault ─
   for (const player of players) {
     const ata = await deriveAta(player.address);
     const initVaultIx = await getInitUserVaultInstructionAsync({
-      owner: player,
+      sponsor: admin,
+      owner: player.address,
       usdcMint: USDC_MINT,
     });
+    await sendIxs(admin, [initVaultIx]);
     const depositIx = await getDepositToVaultInstructionAsync({
       owner: player,
       ownerTokenAccount: ata,
       amount: FUND_PER_PLAYER,
     });
-    const sig = await sendIxs(player, [initVaultIx, depositIx]);
+    const sig = await sendIxs(player, [depositIx]);
     console.log(
       `[e2e] init+deposit ${player.address} (${FUND_PER_PLAYER} μUSDC) → ${sig}`
     );
@@ -299,13 +310,14 @@ async function main() {
     vaultPdas.map((pda) => getTokenAmount(pda))
   );
 
-  // ── 4. players: join_session ───────────────────────────────────────────
+  // ── 4. players: join_session (sponsored by admin) ──────────────────────
   for (const player of players) {
     const ix = await getJoinSessionInstructionAsync({
-      player,
+      sponsor: admin,
+      player: player.address,
       session: sessionPda,
     });
-    const sig = await sendIxs(player, [ix]);
+    const sig = await sendIxs(admin, [ix]);
     console.log(`[e2e] join ${player.address} → ${sig}`);
   }
 
@@ -339,16 +351,32 @@ async function main() {
   const createRoundSig = await sendIxs(admin, [createRoundIx]);
   console.log(`[e2e] round created: ${createRoundSig}`);
 
-  // ── 7. players: enter_position (all on side A, 1 USDC wager each) ────────
+  // ── 7a. players: deposit_for_round (sponsored, 1 USDC each).
+  // Round flips Pending → Open once `deposits_count` hits the threshold,
+  // which here equals `players.length`.
+  for (const player of players) {
+    const ix = await getDepositForRoundInstructionAsync({
+      sponsor: admin,
+      player: player.address,
+      session: sessionPda,
+      round: roundPda,
+      amountUsdcUnits: ROUND_STAKE_USDC_UNITS,
+    });
+    const sig = await sendIxs(admin, [ix]);
+    console.log(`[e2e] deposit ${player.address} → ${sig}`);
+  }
+
+  // ── 7b. players: enter_position (sponsored, all on side A; wager is read
+  // from each player's RoundDeposit PDA — no amount arg here).
   for (const player of players) {
     const ix = await getEnterPositionInstructionAsync({
-      player,
+      sponsor: admin,
+      player: player.address,
       session: sessionPda,
       round: roundPda,
       side: SideSelection.A,
-      wagerUsdcUnits: ROUND_STAKE_USDC_UNITS,
     });
-    const sig = await sendIxs(player, [ix]);
+    const sig = await sendIxs(admin, [ix]);
     console.log(`[e2e] enter ${player.address} → ${sig}`);
   }
 
@@ -361,34 +389,74 @@ async function main() {
   const closeSig = await sendIxs(admin, [closeIx]);
   console.log(`[e2e] round closed: ${closeSig}`);
 
-  // ── 9. players claim round winnings (deposited to their vaults) ────────
+  // ── 8a. resolve_round(A) → admin declares winner. ──────────────────────
+  const resolveIx = await getResolveRoundInstructionAsync({
+    authority: admin,
+    session: sessionPda,
+    round: roundPda,
+    winningSide: SideSelection.A,
+  });
+  await sendIxs(admin, [resolveIx]);
+  console.log(`[e2e] resolve_round(A)`);
+
+  // ── 8b. settle_round → redistribute payouts across the 3 winners. ──────
+  // Pass every winning PlayerRoundPosition PDA as a writable remaining
+  // account. The on-chain handler sorts by deposit_index and writes
+  // each position's `final_payout_usdc_units`.
+  const positionPdas = await Promise.all(
+    players.map((p) => findPositionPda({ round: roundPda, player: p.address }))
+  );
+  const baseSettleIx = await getSettleRoundInstructionAsync({
+    authority: admin,
+    session: sessionPda,
+    round: roundPda,
+  });
+  const settleIx = {
+    ...baseSettleIx,
+    accounts: [
+      ...baseSettleIx.accounts,
+      ...positionPdas.map(([addr]) => ({ address: addr, role: AccountRole.WRITABLE })),
+    ],
+  } as typeof baseSettleIx;
+  await sendIxs(admin, [settleIx]);
+  console.log(`[e2e] settle_round`);
+
+  // ── 9. players claim round winnings (sponsored, paid to their vaults) ──
   for (const player of players) {
     const ix = await getClaimRoundInstructionAsync({
-      player,
+      sponsor: admin,
+      player: player.address,
       session: sessionPda,
       round: roundPda,
     });
-    const sig = await sendIxs(player, [ix]);
+    const sig = await sendIxs(admin, [ix]);
     console.log(`[e2e] claim_round ${player.address} → ${sig}`);
   }
 
-  // ── 10. each player: claim_session_balance (releases lock) ─────────────
+  // ── 10. each player: claim_session_balance (sponsored, releases lock) ──
   for (const player of players) {
     const ix = await getClaimSessionBalanceInstructionAsync({
-      player,
+      sponsor: admin,
+      player: player.address,
       session: sessionPda,
     });
-    const sig = await sendIxs(player, [ix]);
+    const sig = await sendIxs(admin, [ix]);
     console.log(`[e2e] claim_session ${player.address} → ${sig}`);
   }
 
-  // ── 11. assert vault deltas match the 1.5 / 0.5 / 0 USDC payout split ──
-  // Per-player flow: vault pre-join = FUND_PER_PLAYER (2 USDC). join_session
-  // is free (buy_in = 0). enter_position debits 1 USDC wager from vault into
-  // session_treasury_tokens. claim_round credits winnings (1.5 / 0.5 / 0)
-  // back to the vault. claim_session_balance releases the vault lock (no
-  // refund since remaining_escrow = 0). Net delta vs pre-join =
-  // winnings − wager = +0.5 / -0.5 / -1 USDC.
+  // ── 11. assert vault deltas match the redistribute payouts ─────────────
+  // 3 players each deposited 1 USDC on side A. With 3.5% protocol fee,
+  // each player's net stake = 965_000 μUSDC. P = 2_895_000.
+  // Pari-mutuel PM_i = 965_000 each. Redistribute (N=3, deposit-time order):
+  //   top (W1) = 965_000 + 0.6 * R / 1 = 1_080_800
+  //   mid (W2) = 965_000 + 0.4 * R / 1 = 1_042_200
+  //   decay (W3) = 965_000 * 0.80      =   772_000
+  //   where R = floor(965_000 * 0.20) = 193_000.
+  // Net vault delta vs pre-join = final_payout − 1_000_000 (deposit gross):
+  //   P1 = +80_800   P2 = +42_200   P3 = -228_000
+  // Plus protocol_fee_accrued = 3 × 35_000 = 105_000 sits in treasury until
+  // withdraw_protocol_fees. Conservation: 1_080_800 + 1_042_200 + 772_000
+  // + 105_000 (fees) = 3_000_000 = total deposited.
   const vaultAfter = await Promise.all(
     vaultPdas.map((pda) => getTokenAmount(pda))
   );
@@ -398,43 +466,33 @@ async function main() {
   );
   assertNearEqual(
     deltas[0],
-    MICRO_USDC_PER_USDC / 2n,
+    BigInt(80_800),
     TOLERANCE_USDC_UNITS,
-    "player1 vault delta ≈ +0.5 USDC (1.5 claim − 1 wager)"
+    "player1 (top tier) vault delta ≈ +0.0808 USDC"
   );
   assertNearEqual(
     deltas[1],
-    -(MICRO_USDC_PER_USDC / 2n),
+    BigInt(42_200),
     TOLERANCE_USDC_UNITS,
-    "player2 vault delta ≈ -0.5 USDC (0.5 claim − 1 wager)"
+    "player2 (mid tier) vault delta ≈ +0.0422 USDC"
   );
   assertNearEqual(
     deltas[2],
-    -MICRO_USDC_PER_USDC,
+    BigInt(-228_000),
     TOLERANCE_USDC_UNITS,
-    "player3 vault delta ≈ -1 USDC (0 claim − 1 wager)"
+    "player3 (decay tier) vault delta ≈ -0.228 USDC"
   );
 
-  // ── 12. sweep_orphans → protocol_treasury_tokens receives 1 USDC ───────
+  // ── 12. withdraw_protocol_fees → protocol_treasury receives the 3.5% cut.
   const [protocolTreasuryPda] = await findProtocolTreasuryPda();
   const [protocolTreasuryTokensPda] = await findProtocolTreasuryTokensPda();
+  void protocolTreasuryPda;
   const protocolBefore = await getTokenAmount(protocolTreasuryTokensPda);
-  const sweepIx = await getSweepOrphansInstructionAsync({
-    session: sessionPda,
-    round: roundPda,
-    protocolTreasury: protocolTreasuryPda,
-  });
-  const sweepSig = await sendIxs(admin, [sweepIx]);
-  console.log(`[e2e] sweep_orphans: ${sweepSig}`);
-  const protocolAfter = await getTokenAmount(protocolTreasuryTokensPda);
-  const sweptUnits = protocolAfter - protocolBefore;
-  console.log(`[e2e] orphan swept: ${sweptUnits} μUSDC`);
-  assertNearEqual(
-    sweptUnits,
-    MICRO_USDC_PER_USDC,
-    TOLERANCE_USDC_UNITS,
-    "sweep_orphans moved first-depositor stake (1 USDC) to protocol treasury"
-  );
+  // 3 deposits × 35_000 fee each = 105_000 μUSDC.
+  console.log(`[e2e] protocol treasury before: ${protocolBefore} μUSDC`);
+  // (We don't withdraw here in the e2e flow; fee accumulates and is
+  // moved out via the existing `withdraw_protocol_fees` ix tested
+  // separately.)
 
   // ── 13. now that session ended, withdraw_from_vault should succeed ─────
   const player1VaultBefore = await getTokenAmount(vaultPdas[0]);

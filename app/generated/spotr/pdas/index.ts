@@ -13,6 +13,7 @@ export * from "./playerSession";
 export * from "./position";
 export * from "./protocolTreasury";
 export * from "./protocolTreasuryTokens";
+export * from "./roundDeposit";
 export * from "./sessionTreasury";
 export * from "./sessionTreasuryTokens";
 export * from "./vault";

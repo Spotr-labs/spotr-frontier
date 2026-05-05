@@ -70,6 +70,7 @@ export type Session = {
   roundsClosed: number;
   startTs: bigint;
   endTs: bigint;
+  roundFillThreshold: number;
   bump: number;
 };
 
@@ -87,6 +88,7 @@ export type SessionArgs = {
   roundsClosed: number;
   startTs: number | bigint;
   endTs: number | bigint;
+  roundFillThreshold: number;
   bump: number;
 };
 
@@ -108,6 +110,7 @@ export function getSessionEncoder(): FixedSizeEncoder<SessionArgs> {
       ["roundsClosed", getU8Encoder()],
       ["startTs", getI64Encoder()],
       ["endTs", getI64Encoder()],
+      ["roundFillThreshold", getU8Encoder()],
       ["bump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: SESSION_DISCRIMINATOR }),
@@ -131,6 +134,7 @@ export function getSessionDecoder(): FixedSizeDecoder<Session> {
     ["roundsClosed", getU8Decoder()],
     ["startTs", getI64Decoder()],
     ["endTs", getI64Decoder()],
+    ["roundFillThreshold", getU8Decoder()],
     ["bump", getU8Decoder()],
   ]);
 }
@@ -194,5 +198,5 @@ export async function fetchAllMaybeSession(
 }
 
 export function getSessionSize(): number {
-  return 74;
+  return 75;
 }

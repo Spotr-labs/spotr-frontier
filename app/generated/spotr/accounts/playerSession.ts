@@ -60,6 +60,12 @@ export type PlayerSession = {
   totalEscrowUsdcUnits: bigint;
   remainingEscrowUsdcUnits: bigint;
   enteredRoundMask: bigint;
+  /**
+   * Bit `i` is set once the player has called `deposit_for_round` for
+   * round index `i`. Prevents double-deposit and pairs naturally with
+   * `entered_round_mask`.
+   */
+  depositedRoundMask: bigint;
   bump: number;
   roundChoices: ReadonlyUint8Array;
 };
@@ -70,6 +76,12 @@ export type PlayerSessionArgs = {
   totalEscrowUsdcUnits: number | bigint;
   remainingEscrowUsdcUnits: number | bigint;
   enteredRoundMask: number | bigint;
+  /**
+   * Bit `i` is set once the player has called `deposit_for_round` for
+   * round index `i`. Prevents double-deposit and pairs naturally with
+   * `entered_round_mask`.
+   */
+  depositedRoundMask: number | bigint;
   bump: number;
   roundChoices: ReadonlyUint8Array;
 };
@@ -84,6 +96,7 @@ export function getPlayerSessionEncoder(): Encoder<PlayerSessionArgs> {
       ["totalEscrowUsdcUnits", getU64Encoder()],
       ["remainingEscrowUsdcUnits", getU64Encoder()],
       ["enteredRoundMask", getU64Encoder()],
+      ["depositedRoundMask", getU64Encoder()],
       ["bump", getU8Encoder()],
       [
         "roundChoices",
@@ -103,6 +116,7 @@ export function getPlayerSessionDecoder(): Decoder<PlayerSession> {
     ["totalEscrowUsdcUnits", getU64Decoder()],
     ["remainingEscrowUsdcUnits", getU64Decoder()],
     ["enteredRoundMask", getU64Decoder()],
+    ["depositedRoundMask", getU64Decoder()],
     ["bump", getU8Decoder()],
     ["roundChoices", addDecoderSizePrefix(getBytesDecoder(), getU32Decoder())],
   ]);

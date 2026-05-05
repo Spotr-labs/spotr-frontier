@@ -7,7 +7,6 @@
  */
 
 export * from "./configInput";
-export * from "./depositEntry";
 export * from "./roundState";
 export * from "./sessionStatus";
 export * from "./sideSelection";

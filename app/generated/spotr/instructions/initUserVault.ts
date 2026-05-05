@@ -31,6 +31,7 @@ import {
   type WritableSignerAccount,
 } from "@solana/kit";
 import {
+  findConfigPda,
   findDepositToVaultVaultPda,
   findDepositToVaultVaultTokensPda,
 } from "../pdas";
@@ -53,6 +54,8 @@ export function getInitUserVaultDiscriminatorBytes() {
 
 export type InitUserVaultInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+  TAccountSponsor extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountOwner extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
   TAccountVaultTokens extends string | AccountMeta<string> = string,
@@ -68,9 +71,15 @@ export type InitUserVaultInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
+      TAccountSponsor extends string
+        ? WritableSignerAccount<TAccountSponsor> &
+            AccountSignerMeta<TAccountSponsor>
+        : TAccountSponsor,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
       TAccountOwner extends string
-        ? WritableSignerAccount<TAccountOwner> &
-            AccountSignerMeta<TAccountOwner>
+        ? ReadonlyAccount<TAccountOwner>
         : TAccountOwner,
       TAccountVault extends string
         ? WritableAccount<TAccountVault>
@@ -124,6 +133,8 @@ export function getInitUserVaultInstructionDataCodec(): FixedSizeCodec<
 }
 
 export type InitUserVaultAsyncInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountOwner extends string = string,
   TAccountVault extends string = string,
   TAccountVaultTokens extends string = string,
@@ -132,7 +143,10 @@ export type InitUserVaultAsyncInput<
   TAccountTokenProgram extends string = string,
   TAccountRent extends string = string,
 > = {
-  owner: TransactionSigner<TAccountOwner>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config?: Address<TAccountConfig>;
+  /** and pays rent. Validated in-handler by `is_admin(sponsor, config.authorities)`. */
+  owner: Address<TAccountOwner>;
   vault?: Address<TAccountVault>;
   vaultTokens?: Address<TAccountVaultTokens>;
   usdcMint: Address<TAccountUsdcMint>;
@@ -142,6 +156,8 @@ export type InitUserVaultAsyncInput<
 };
 
 export async function getInitUserVaultInstructionAsync<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountOwner extends string,
   TAccountVault extends string,
   TAccountVaultTokens extends string,
@@ -152,6 +168,8 @@ export async function getInitUserVaultInstructionAsync<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: InitUserVaultAsyncInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountOwner,
     TAccountVault,
     TAccountVaultTokens,
@@ -164,6 +182,8 @@ export async function getInitUserVaultInstructionAsync<
 ): Promise<
   InitUserVaultInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountOwner,
     TAccountVault,
     TAccountVaultTokens,
@@ -179,7 +199,9 @@ export async function getInitUserVaultInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    owner: { value: input.owner ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    owner: { value: input.owner ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     usdcMint: { value: input.usdcMint ?? null, isWritable: false },
@@ -193,6 +215,9 @@ export async function getInitUserVaultInstructionAsync<
   >;
 
   // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
   if (!accounts.vault.value) {
     accounts.vault.value = await findDepositToVaultVaultPda({
       owner: expectAddress(accounts.owner.value),
@@ -219,6 +244,8 @@ export async function getInitUserVaultInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.owner),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.vaultTokens),
@@ -231,6 +258,8 @@ export async function getInitUserVaultInstructionAsync<
     programAddress,
   } as InitUserVaultInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountOwner,
     TAccountVault,
     TAccountVaultTokens,
@@ -242,6 +271,8 @@ export async function getInitUserVaultInstructionAsync<
 }
 
 export type InitUserVaultInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountOwner extends string = string,
   TAccountVault extends string = string,
   TAccountVaultTokens extends string = string,
@@ -250,7 +281,10 @@ export type InitUserVaultInput<
   TAccountTokenProgram extends string = string,
   TAccountRent extends string = string,
 > = {
-  owner: TransactionSigner<TAccountOwner>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config: Address<TAccountConfig>;
+  /** and pays rent. Validated in-handler by `is_admin(sponsor, config.authorities)`. */
+  owner: Address<TAccountOwner>;
   vault: Address<TAccountVault>;
   vaultTokens: Address<TAccountVaultTokens>;
   usdcMint: Address<TAccountUsdcMint>;
@@ -260,6 +294,8 @@ export type InitUserVaultInput<
 };
 
 export function getInitUserVaultInstruction<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountOwner extends string,
   TAccountVault extends string,
   TAccountVaultTokens extends string,
@@ -270,6 +306,8 @@ export function getInitUserVaultInstruction<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: InitUserVaultInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountOwner,
     TAccountVault,
     TAccountVaultTokens,
@@ -281,6 +319,8 @@ export function getInitUserVaultInstruction<
   config?: { programAddress?: TProgramAddress },
 ): InitUserVaultInstruction<
   TProgramAddress,
+  TAccountSponsor,
+  TAccountConfig,
   TAccountOwner,
   TAccountVault,
   TAccountVaultTokens,
@@ -295,7 +335,9 @@ export function getInitUserVaultInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    owner: { value: input.owner ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    owner: { value: input.owner ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: true },
     vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     usdcMint: { value: input.usdcMint ?? null, isWritable: false },
@@ -325,6 +367,8 @@ export function getInitUserVaultInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.owner),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.vaultTokens),
@@ -337,6 +381,8 @@ export function getInitUserVaultInstruction<
     programAddress,
   } as InitUserVaultInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountOwner,
     TAccountVault,
     TAccountVaultTokens,
@@ -353,13 +399,16 @@ export type ParsedInitUserVaultInstruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    owner: TAccountMetas[0];
-    vault: TAccountMetas[1];
-    vaultTokens: TAccountMetas[2];
-    usdcMint: TAccountMetas[3];
-    systemProgram: TAccountMetas[4];
-    tokenProgram: TAccountMetas[5];
-    rent: TAccountMetas[6];
+    sponsor: TAccountMetas[0];
+    config: TAccountMetas[1];
+    /** and pays rent. Validated in-handler by `is_admin(sponsor, config.authorities)`. */
+    owner: TAccountMetas[2];
+    vault: TAccountMetas[3];
+    vaultTokens: TAccountMetas[4];
+    usdcMint: TAccountMetas[5];
+    systemProgram: TAccountMetas[6];
+    tokenProgram: TAccountMetas[7];
+    rent: TAccountMetas[8];
   };
   data: InitUserVaultInstructionData;
 };
@@ -372,7 +421,7 @@ export function parseInitUserVaultInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedInitUserVaultInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 7) {
+  if (instruction.accounts.length < 9) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -385,6 +434,8 @@ export function parseInitUserVaultInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
+      sponsor: getNextAccount(),
+      config: getNextAccount(),
       owner: getNextAccount(),
       vault: getNextAccount(),
       vaultTokens: getNextAccount(),

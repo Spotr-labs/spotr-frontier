@@ -336,6 +336,38 @@ export function parseAdminSweepOrphansPayload(record: Record<string, unknown>) {
   return parseAdminCloseRoundPayload(record);
 }
 
+export function parseAdminResolveRoundPayload(record: Record<string, unknown>) {
+  const adminWalletAddress = requireWallet(record, "adminWalletAddress");
+  const sessionId = requireSessionId(record, "sessionId");
+  const roundId = requireSessionId(record, "roundId");
+  const winningSideRaw = requireString(record, "winningSide", { maxLength: 1 });
+  if (winningSideRaw !== "A" && winningSideRaw !== "B") {
+    throw new ValidationError("winningSide must be 'A' or 'B'.");
+  }
+  const chainTxSignature = requireString(record, "chainTxSignature", {
+    maxLength: 128,
+  });
+  if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(chainTxSignature)) {
+    throw new ValidationError(
+      "chainTxSignature is not a valid Solana signature."
+    );
+  }
+  return {
+    adminWalletAddress,
+    sessionId,
+    roundId,
+    winningSide: winningSideRaw as "A" | "B",
+    chainTxSignature,
+  };
+}
+
+export function parseAdminSettleRoundPayload(record: Record<string, unknown>) {
+  const adminWalletAddress = requireWallet(record, "adminWalletAddress");
+  const sessionId = requireSessionId(record, "sessionId");
+  const roundId = requireSessionId(record, "roundId");
+  return { adminWalletAddress, sessionId, roundId };
+}
+
 export function parseAdminFinalizeSessionPayload(
   record: Record<string, unknown>
 ) {

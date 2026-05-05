@@ -15,10 +15,10 @@ rpc_port = 18999
 faucet_port = 19900
 
 [programs.devnet]
-spotr_markets = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk"
+spotr_markets = "4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4"
 
 [programs.localnet]
-spotr_markets = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk"
+spotr_markets = "4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4"
 
 [registry]
 url = "https://api.apr.dev"

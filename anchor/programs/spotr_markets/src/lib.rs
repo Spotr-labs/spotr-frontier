@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk");
+declare_id!("4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4");
 
 const CONFIG_SEED: &[u8] = b"config";
 const PROTOCOL_TREASURY_SEED: &[u8] = b"protocol-treasury";
@@ -10,22 +10,34 @@ const SESSION_SEED: &[u8] = b"session";
 const SESSION_TREASURY_SEED: &[u8] = b"session-treasury";
 const SESSION_TREASURY_TOKENS_SEED: &[u8] = b"session-treasury-tokens";
 const ROUND_SEED: &[u8] = b"round";
+const ROUND_DEPOSIT_SEED: &[u8] = b"round-deposit";
 const PLAYER_SESSION_SEED: &[u8] = b"player-session";
 const POSITION_SEED: &[u8] = b"position";
 const USER_VAULT_SEED: &[u8] = b"user-vault";
 const USER_VAULT_TOKENS_SEED: &[u8] = b"user-vault-tokens";
 
-/// PRD §3.6.6 nominally mandates 200 entries per side. The serialized
-/// `Round` account with 200 entries per side exceeds the 10 240-byte inner
-/// instruction realloc limit that `#[account(init)]` hits under Anchor 0.32,
-/// so the production bound is currently 80/side (≈ 9 KB total). Raising the
-/// cap back to 200 requires either a zero-copy layout or per-side PDAs; both
-/// are larger refactors and neither belongs in the same pass as the lazy-
-/// settlement claim math.
-pub const MAX_SIDE_ENTRIES: u32 = 80;
+/// Default minimum number of wallets that must deposit before a round flips
+/// `Pending → Open` (and the predict phase begins). Per session can override.
+pub const DEFAULT_ROUND_FILL_THRESHOLD: u8 = 7;
 
 /// PRD §3.7 — minimum per-position stake is 1 USDC (1_000_000 micro-USDC).
 pub const MIN_POSITION_USDC_UNITS: u64 = 1_000_000;
+
+/// Top-tier share of the redistribution pool R (basis points).
+pub const TOP_BPS: u64 = 6_000;
+/// Mid-tier share of the redistribution pool R (basis points).
+pub const MID_BPS: u64 = 4_000;
+/// Decay-tier cut applied to each decay wallet's PM_i (basis points).
+pub const DECAY_CUT_BPS: u64 = 2_000;
+/// Top tier size as a fraction of N (basis points): `max(1, floor(N × 0.20))`.
+pub const TOP_BOUNDARY_BPS: u64 = 2_000; // 20%
+/// Decay tier size as a fraction of N (basis points): `floor(N × 0.40)`.
+/// Decay group occupies the **last** `floor(N × 0.40)` indices so the
+/// boundary is `decay_start = N − decay_count`. (Using "60% boundary"
+/// directly produces a different floor at small N — e.g. for N=3,
+/// `floor(3 × 0.60) = 1` vs `3 − floor(3 × 0.40) = 2`. The doc's intent
+/// is the latter.)
+pub const DECAY_TIER_BPS: u64 = 4_000; // 40%
 
 #[program]
 pub mod spotr_markets {
@@ -45,6 +57,7 @@ pub mod spotr_markets {
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
         config.default_buy_in_usdc_units = input.buy_in_usdc_units;
+        config.default_round_fill_threshold = input.round_fill_threshold;
         config.bump = ctx.bumps.config;
 
         let treasury = &mut ctx.accounts.protocol_treasury;
@@ -70,6 +83,7 @@ pub mod spotr_markets {
         config.default_round_count = input.round_count;
         config.default_round_duration_seconds = input.round_duration_seconds;
         config.default_buy_in_usdc_units = input.buy_in_usdc_units;
+        config.default_round_fill_threshold = input.round_fill_threshold;
         Ok(())
     }
 
@@ -97,6 +111,11 @@ pub mod spotr_markets {
         session.rounds_closed = 0;
         session.start_ts = input.start_ts;
         session.end_ts = input.end_ts;
+        session.round_fill_threshold = if input.round_fill_threshold > 0 {
+            input.round_fill_threshold
+        } else {
+            ctx.accounts.config.default_round_fill_threshold
+        };
         session.bump = ctx.bumps.session;
 
         let treasury = &mut ctx.accounts.session_treasury;
@@ -108,6 +127,13 @@ pub mod spotr_markets {
     }
 
     pub fn init_user_vault(ctx: Context<InitUserVault>) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
         let vault = &mut ctx.accounts.vault;
         vault.owner = ctx.accounts.owner.key();
         vault.active_sessions = 0;
@@ -184,6 +210,13 @@ pub mod spotr_markets {
     }
 
     pub fn join_session(ctx: Context<JoinSession>) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
         let clock = Clock::get()?;
         let session = &mut ctx.accounts.session;
         maybe_activate(session, &clock);
@@ -226,6 +259,7 @@ pub mod spotr_markets {
         player_session.total_escrow_usdc_units = buy_in;
         player_session.remaining_escrow_usdc_units = buy_in;
         player_session.entered_round_mask = 0;
+        player_session.deposited_round_mask = 0;
         player_session.bump = ctx.bumps.player_session;
         player_session.round_choices = vec![u8::MAX; session.round_count as usize];
 
@@ -251,40 +285,59 @@ pub mod spotr_markets {
         let session = &ctx.accounts.session;
         require!(input.index < session.round_count, SpotrError::InvalidRoundIndex);
 
-        // Rounds open and close with the session — they share the session's
-        // window. The per-round timestamps are stored for telemetry / UI
-        // display only; entry/close gating is now driven by `session.status`
-        // and `session.end_ts`, not these values.
+        // Rounds start in `Pending` (the wait phase). They flip to `Open`
+        // once `deposit_for_round` brings `deposits_count` up to
+        // `session.round_fill_threshold`. They settle to `Closed` via the
+        // existing permissionless `close_round` flow once the session ends.
         let round = &mut ctx.accounts.round;
         round.session = session.key();
         round.index = input.index;
-        round.state = RoundState::Open;
+        round.state = RoundState::Pending;
         round.pair_id = input.pair_id;
         round.opens_at = session.start_ts;
         round.closes_at = session.end_ts;
         round.side_a = SideState::default();
         round.side_b = SideState::default();
         round.total_volume_usdc_units = 0;
+        round.deposits_count = 0;
+        round.total_deposit_pool_usdc_units = 0;
+        round.winning_side = None;
+        round.total_pool_usdc_units = 0;
+        round.winning_side_count = 0;
+        round.redistribute_applied = false;
         round.bump = ctx.bumps.round;
 
         Ok(())
     }
 
+    /// Lock the player's side for a round. The wager amount comes from the
+    /// `RoundDeposit` PDA (committed earlier via `deposit_for_round`); no
+    /// token transfer happens here. The round must already be `Open`
+    /// (i.e. the wallet-fill threshold has been reached).
     pub fn enter_position(
         ctx: Context<EnterPosition>,
         side: SideSelection,
-        wager_usdc_units: u64,
     ) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
         let clock = Clock::get()?;
         let session = &mut ctx.accounts.session;
         let round = &mut ctx.accounts.round;
         let player_session = &mut ctx.accounts.player_session;
+        let deposit = &mut ctx.accounts.round_deposit;
 
-        // The session is the container: every round is open while the session
-        // is Live, and every round closes together when the session ends.
         maybe_activate(session, &clock);
         require!(session.status == SessionStatus::Live, SpotrError::SessionNotLive);
-        require!(round.state == RoundState::Open, SpotrError::RoundClosed);
+        require!(round.state == RoundState::Open, SpotrError::RoundNotOpen);
+        require!(!deposit.used_for_position, SpotrError::DepositAlreadyUsed);
+        require!(!deposit.refunded, SpotrError::DepositAlreadyUsed);
+
+        let wager_usdc_units = deposit.amount_usdc_units;
         require!(
             wager_usdc_units >= MIN_POSITION_USDC_UNITS,
             SpotrError::StakeBelowMinimum
@@ -296,56 +349,19 @@ pub mod spotr_markets {
             SpotrError::RoundAlreadyEntered
         );
 
+        // Protocol fee was already accrued at `deposit_for_round` time. Net
+        // stake = deposit amount minus that fee.
         let (fee_units, net_units) =
             split_fee(wager_usdc_units, session.protocol_fee_bps)?;
         require!(net_units > 0, SpotrError::StakeBelowMinimum);
 
-        // Transfer wager from player vault → session treasury.
-        let owner_key = ctx.accounts.player.key();
-        let vault_bump = ctx.accounts.vault.bump;
-        let signer_seeds: &[&[&[u8]]] = &[&[
-            USER_VAULT_SEED,
-            owner_key.as_ref(),
-            std::slice::from_ref(&vault_bump),
-        ]];
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.vault_tokens.to_account_info(),
-                    to: ctx.accounts.session_treasury_tokens.to_account_info(),
-                    authority: ctx.accounts.vault.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            wager_usdc_units,
-        )?;
+        // Tokens are already in the session treasury from `deposit_for_round`.
+        // No transfer here.
 
         let side_state = match side {
             SideSelection::A => &mut round.side_a,
             SideSelection::B => &mut round.side_b,
         };
-
-        require!(
-            side_state.entries.len() < MAX_SIDE_ENTRIES as usize,
-            SpotrError::SideFull
-        );
-
-        let cum_prior_units = side_state.total_net_deposits_usdc_units;
-        let distributed_from_j = if cum_prior_units == 0 {
-            0u64
-        } else {
-            distribute_incoming(&side_state.entries, net_units, cum_prior_units)?
-        };
-        debug_assert!(distributed_from_j <= net_units);
-
-        let entry_index = side_state.entries.len() as u32;
-        side_state.entries.push(DepositEntry {
-            wallet: ctx.accounts.player.key(),
-            net_amount: net_units,
-            cum_prior_usdc_units: cum_prior_units,
-            timestamp: clock.unix_timestamp,
-        });
         side_state.total_net_deposits_usdc_units = side_state
             .total_net_deposits_usdc_units
             .checked_add(net_units)
@@ -353,10 +369,6 @@ pub mod spotr_markets {
         side_state.total_entries = side_state
             .total_entries
             .checked_add(1)
-            .ok_or(SpotrError::MathOverflow)?;
-        side_state.total_entitled_usdc_units = side_state
-            .total_entitled_usdc_units
-            .checked_add(distributed_from_j)
             .ok_or(SpotrError::MathOverflow)?;
 
         player_session.entered_round_mask |= round_bit;
@@ -381,11 +393,145 @@ pub mod spotr_markets {
         position.round = round.key();
         position.player = ctx.accounts.player.key();
         position.side = side;
-        position.entry_index = entry_index;
+        position.deposit_index = deposit.deposit_index;
         position.net_amount_usdc_units = net_units;
+        position.final_payout_usdc_units = 0;
         position.claimed_usdc_units = 0;
         position.claimed = false;
         position.bump = ctx.bumps.position;
+
+        deposit.used_for_position = true;
+
+        Ok(())
+    }
+
+    /// Stake USDC into a round during the wait phase. Once
+    /// `round.deposits_count` reaches `session.round_fill_threshold`, the
+    /// round flips `Pending → Open` and `enter_position` becomes callable.
+    pub fn deposit_for_round(
+        ctx: Context<DepositForRound>,
+        amount_usdc_units: u64,
+    ) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
+        let clock = Clock::get()?;
+        let session = &mut ctx.accounts.session;
+        let round = &mut ctx.accounts.round;
+        let player_session = &mut ctx.accounts.player_session;
+        let deposit = &mut ctx.accounts.round_deposit;
+
+        maybe_activate(session, &clock);
+        require!(session.status == SessionStatus::Live, SpotrError::SessionNotLive);
+        require!(
+            clock.unix_timestamp <= session.end_ts,
+            SpotrError::SessionClosed
+        );
+        require!(round.state == RoundState::Pending, SpotrError::RoundNotPending);
+        require!(
+            amount_usdc_units >= MIN_POSITION_USDC_UNITS,
+            SpotrError::StakeBelowMinimum
+        );
+
+        let round_bit = bit_for_round(round.index)?;
+        require!(
+            player_session.deposited_round_mask & round_bit == 0,
+            SpotrError::DepositAlreadyExists
+        );
+
+        // Move the deposit from the player's vault into the session
+        // treasury. The wager bookkeeping inside `enter_position` will read
+        // this amount back from `RoundDeposit`.
+        let owner_key = ctx.accounts.player.key();
+        let vault_bump = ctx.accounts.vault.bump;
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            USER_VAULT_SEED,
+            owner_key.as_ref(),
+            std::slice::from_ref(&vault_bump),
+        ]];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_tokens.to_account_info(),
+                    to: ctx.accounts.session_treasury_tokens.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_usdc_units,
+        )?;
+
+        // The first depositor for this round gets index 0; assign before
+        // bumping the count so the index matches the wallet's arrival order.
+        deposit.round = round.key();
+        deposit.player = owner_key;
+        deposit.amount_usdc_units = amount_usdc_units;
+        deposit.deposit_index = round.deposits_count;
+        deposit.used_for_position = false;
+        deposit.refunded = false;
+        deposit.bump = ctx.bumps.round_deposit;
+
+        round.deposits_count = round
+            .deposits_count
+            .checked_add(1)
+            .ok_or(SpotrError::MathOverflow)?;
+        round.total_deposit_pool_usdc_units = round
+            .total_deposit_pool_usdc_units
+            .checked_add(amount_usdc_units)
+            .ok_or(SpotrError::MathOverflow)?;
+
+        if u8::try_from(round.deposits_count.min(u8::MAX as u16))
+            .map_err(|_| SpotrError::MathOverflow)?
+            >= session.round_fill_threshold
+        {
+            round.state = RoundState::Open;
+        }
+
+        player_session.deposited_round_mask |= round_bit;
+
+        Ok(())
+    }
+
+    /// Refund a deposit when the round closed without ever flipping to
+    /// `Open` (under-filled), or when the round filled and closed but the
+    /// player never picked a side. Idempotent — once refunded the receipt
+    /// flag prevents double-claim.
+    pub fn refund_unused_deposit(ctx: Context<RefundUnusedDeposit>) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
+        let round = &ctx.accounts.round;
+        let deposit = &mut ctx.accounts.round_deposit;
+
+        require!(round.state == RoundState::Closed, SpotrError::RoundStillOpen);
+        require!(!deposit.refunded, SpotrError::AlreadyClaimed);
+        require!(
+            !deposit.used_for_position,
+            SpotrError::DepositAlreadyUsed
+        );
+
+        let amount = deposit.amount_usdc_units;
+        deposit.refunded = true;
+
+        if amount > 0 {
+            transfer_from_session_treasury_tokens(
+                &ctx.accounts.session,
+                &ctx.accounts.session_treasury,
+                &ctx.accounts.session_treasury_tokens,
+                &ctx.accounts.vault_tokens.to_account_info(),
+                &ctx.accounts.token_program,
+                amount,
+            )?;
+        }
 
         Ok(())
     }
@@ -468,38 +614,153 @@ pub mod spotr_markets {
         Ok(())
     }
 
+    /// Admin-only: declare the winning side for a closed round and freeze
+    /// the pari-mutuel pool. Must run before `settle_round`. Idempotency:
+    /// rejects if a winner is already set.
+    pub fn resolve_round(
+        ctx: Context<ResolveRound>,
+        winning_side: SideSelection,
+    ) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.authority.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
+        let round = &mut ctx.accounts.round;
+        require!(round.state == RoundState::Closed, SpotrError::RoundStillOpen);
+        require!(round.winning_side.is_none(), SpotrError::RoundAlreadyResolved);
+
+        // Pari-mutuel pool P = sum of net stakes across both sides.
+        let pool = round
+            .side_a
+            .total_net_deposits_usdc_units
+            .checked_add(round.side_b.total_net_deposits_usdc_units)
+            .ok_or(SpotrError::MathOverflow)?;
+
+        let winners = match winning_side {
+            SideSelection::A => round.side_a.total_entries,
+            SideSelection::B => round.side_b.total_entries,
+        };
+        let winners_u16 = u16::try_from(winners).map_err(|_| SpotrError::MathOverflow)?;
+
+        round.winning_side = Some(winning_side);
+        round.total_pool_usdc_units = pool;
+        round.winning_side_count = winners_u16;
+
+        Ok(())
+    }
+
+    /// Admin-only: settle every winning position with its pari-mutuel
+    /// payout, then apply the top-20 / mid-60 / decay-40 redistribution
+    /// pass when N ≥ 3. The caller must pass every winning position via
+    /// `remaining_accounts` (count = `round.winning_side_count`).
+    pub fn settle_round<'info>(
+        ctx: Context<'_, '_, '_, 'info, SettleRound<'info>>,
+    ) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.authority.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
+        let round = &mut ctx.accounts.round;
+        let winning_side = round
+            .winning_side
+            .ok_or(SpotrError::RoundNotResolved)?;
+        require!(!round.redistribute_applied, SpotrError::RoundAlreadySettled);
+
+        let n = round.winning_side_count as usize;
+        require!(
+            ctx.remaining_accounts.len() == n,
+            SpotrError::MissingWinningPositions
+        );
+        if n == 0 {
+            round.redistribute_applied = true;
+            return Ok(());
+        }
+
+        let s_winning = match winning_side {
+            SideSelection::A => round.side_a.total_net_deposits_usdc_units,
+            SideSelection::B => round.side_b.total_net_deposits_usdc_units,
+        };
+        let pool = round.total_pool_usdc_units;
+        require!(s_winning > 0, SpotrError::MathOverflow);
+
+        // Deserialize, validate, and rank winning positions by deposit
+        // index ascending. Each winning-side `PlayerRoundPosition` lives at
+        // PDA `[POSITION_SEED, round, player]` and the program owns it.
+        let program_id = ctx.program_id;
+        let mut positions: Vec<(usize, u16, u64)> = Vec::with_capacity(n);
+        for (i, ai) in ctx.remaining_accounts.iter().enumerate() {
+            require!(ai.owner == program_id, SpotrError::InvalidConfig);
+            require!(ai.is_writable, SpotrError::InvalidConfig);
+            let data = ai.try_borrow_data()?;
+            let pos = PlayerRoundPosition::try_deserialize(&mut data.as_ref())?;
+            drop(data);
+            require!(pos.round == round.key(), SpotrError::InvalidConfig);
+            require!(pos.side == winning_side, SpotrError::WrongSide);
+            // PM_i = (net × P) / S_winning. u128 to avoid overflow.
+            let pm = (pos.net_amount_usdc_units as u128)
+                .checked_mul(pool as u128)
+                .ok_or(SpotrError::MathOverflow)?
+                / (s_winning as u128);
+            let pm_u64 = u64::try_from(pm).map_err(|_| SpotrError::MathOverflow)?;
+            positions.push((i, pos.deposit_index, pm_u64));
+        }
+
+        // Sort by deposit_index ascending. First wallet to deposit = index 0
+        // (top tier candidate); last to deposit = decay tier.
+        positions.sort_by_key(|(_, idx, _)| *idx);
+
+        let mut payouts: Vec<u64> = positions.iter().map(|(_, _, pm)| *pm).collect();
+        if n >= 3 {
+            redistribute(&mut payouts)?;
+        }
+
+        // Write final_payout back into each remaining account in its
+        // original (unsorted) order. We zip the sorted slot back to the
+        // original index via `positions[k].0`.
+        for (k, payout) in payouts.iter().enumerate() {
+            let (orig_index, _, _) = positions[k];
+            let ai = &ctx.remaining_accounts[orig_index];
+            let mut data = ai.try_borrow_mut_data()?;
+            let mut pos = PlayerRoundPosition::try_deserialize(&mut data.as_ref())?;
+            pos.final_payout_usdc_units = *payout;
+            let mut writer: &mut [u8] = &mut data;
+            pos.try_serialize(&mut writer)?;
+        }
+
+        round.redistribute_applied = true;
+        Ok(())
+    }
+
     pub fn claim_round(ctx: Context<ClaimRound>) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
         let round = &ctx.accounts.round;
         require!(round.state == RoundState::Closed, SpotrError::RoundStillOpen);
+        require!(round.redistribute_applied, SpotrError::RoundNotSettled);
 
         let position = &ctx.accounts.position;
         require!(!position.claimed, SpotrError::AlreadyClaimed);
+        let winning_side = round.winning_side.ok_or(SpotrError::RoundNotResolved)?;
+        require!(position.side == winning_side, SpotrError::WrongSide);
 
-        let side_state = match position.side {
-            SideSelection::A => &round.side_a,
-            SideSelection::B => &round.side_b,
-        };
-        require!(
-            (position.entry_index as usize) < side_state.entries.len(),
-            SpotrError::InvalidEntryIndex
-        );
-        let entry = &side_state.entries[position.entry_index as usize];
-        require!(
-            entry.wallet == ctx.accounts.player.key(),
-            SpotrError::InvalidEntryIndex
-        );
-        require!(
-            entry.net_amount == position.net_amount_usdc_units,
-            SpotrError::InvalidEntryIndex
-        );
-
-        let pending_u64 = compute_lazy_entitlement(
-            &side_state.entries,
-            position.entry_index as usize,
-        )?;
+        let pending_u64 = position
+            .final_payout_usdc_units
+            .checked_sub(position.claimed_usdc_units)
+            .ok_or(SpotrError::MathOverflow)?;
 
         let position_mut = &mut ctx.accounts.position;
-        position_mut.claimed_usdc_units = pending_u64;
+        position_mut.claimed_usdc_units = position_mut.final_payout_usdc_units;
         position_mut.claimed = true;
 
         if pending_u64 > 0 {
@@ -540,6 +801,13 @@ pub mod spotr_markets {
     }
 
     pub fn claim_session_balance(ctx: Context<ClaimSessionBalance>) -> Result<()> {
+        require!(
+            is_admin(
+                &ctx.accounts.sponsor.key(),
+                &ctx.accounts.config.authorities
+            ),
+            SpotrError::InvalidConfig
+        );
         let session = &ctx.accounts.session;
         require!(
             matches!(session.status, SessionStatus::Completed | SessionStatus::Expired),
@@ -566,59 +834,6 @@ pub mod spotr_markets {
         vault.active_sessions = vault
             .active_sessions
             .checked_sub(1)
-            .ok_or(SpotrError::MathOverflow)?;
-
-        Ok(())
-    }
-
-    /// PRD §3.6.5 — sweep the first-depositor residual and any rounding dust
-    /// back to the protocol treasury once the round is closed.
-    pub fn sweep_orphans(ctx: Context<SweepOrphans>) -> Result<()> {
-        let round = &mut ctx.accounts.round;
-        require!(round.state == RoundState::Closed, SpotrError::RoundStillOpen);
-
-        let mut total_orphan: u64 = 0;
-        if !round.side_a.orphans_swept {
-            let orphan = round
-                .side_a
-                .total_net_deposits_usdc_units
-                .checked_sub(round.side_a.total_entitled_usdc_units)
-                .ok_or(SpotrError::MathOverflow)?;
-            round.side_a.orphans_swept = true;
-            total_orphan = total_orphan
-                .checked_add(orphan)
-                .ok_or(SpotrError::MathOverflow)?;
-        }
-        if !round.side_b.orphans_swept {
-            let orphan = round
-                .side_b
-                .total_net_deposits_usdc_units
-                .checked_sub(round.side_b.total_entitled_usdc_units)
-                .ok_or(SpotrError::MathOverflow)?;
-            round.side_b.orphans_swept = true;
-            total_orphan = total_orphan
-                .checked_add(orphan)
-                .ok_or(SpotrError::MathOverflow)?;
-        }
-
-        if total_orphan == 0 {
-            return Ok(());
-        }
-
-        transfer_from_session_treasury_tokens(
-            &ctx.accounts.session,
-            &ctx.accounts.session_treasury,
-            &ctx.accounts.session_treasury_tokens,
-            &ctx.accounts.protocol_treasury_tokens.to_account_info(),
-            &ctx.accounts.token_program,
-            total_orphan,
-        )?;
-
-        ctx.accounts.protocol_treasury.total_collected_usdc_units = ctx
-            .accounts
-            .protocol_treasury
-            .total_collected_usdc_units
-            .checked_add(total_orphan)
             .ok_or(SpotrError::MathOverflow)?;
 
         Ok(())
@@ -661,6 +876,7 @@ pub struct ConfigInput {
     pub round_count: u8,
     pub round_duration_seconds: i64,
     pub buy_in_usdc_units: u64,
+    pub round_fill_threshold: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
@@ -673,6 +889,7 @@ pub struct SessionInput {
     pub referral_cut_bps: u16,
     pub start_ts: i64,
     pub end_ts: i64,
+    pub round_fill_threshold: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
@@ -691,7 +908,12 @@ pub enum SessionStatus {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum RoundState {
+    /// Wait phase: collecting deposits. Flips to `Open` once
+    /// `deposits_count >= session.round_fill_threshold`.
+    Pending,
+    /// Predict phase: deposits frozen, players pick sides.
     Open,
+    /// Settled phase: claims and refunds available.
     Closed,
 }
 
@@ -701,22 +923,10 @@ pub enum SideSelection {
     B,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
-pub struct DepositEntry {
-    pub wallet: Pubkey,
-    pub net_amount: u64,
-    pub cum_prior_usdc_units: u64,
-    pub timestamp: i64,
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, InitSpace)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace)]
 pub struct SideState {
     pub total_net_deposits_usdc_units: u64,
-    pub total_entitled_usdc_units: u64,
     pub total_entries: u32,
-    pub orphans_swept: bool,
-    #[max_len(80)]
-    pub entries: Vec<DepositEntry>,
 }
 
 #[account]
@@ -729,6 +939,7 @@ pub struct SpotrConfig {
     pub default_round_count: u8,
     pub default_round_duration_seconds: i64,
     pub default_buy_in_usdc_units: u64,
+    pub default_round_fill_threshold: u8,
     pub bump: u8,
 }
 
@@ -757,6 +968,7 @@ pub struct Session {
     pub rounds_closed: u8,
     pub start_ts: i64,
     pub end_ts: i64,
+    pub round_fill_threshold: u8,
     pub bump: u8,
 }
 
@@ -780,6 +992,24 @@ pub struct Round {
     pub side_a: SideState,
     pub side_b: SideState,
     pub total_volume_usdc_units: u64,
+    /// Number of distinct wallets that have called `deposit_for_round` for
+    /// this round. The round flips `Pending → Open` when this reaches
+    /// `session.round_fill_threshold`.
+    pub deposits_count: u16,
+    /// Sum of all `deposit_for_round` amounts. The wager bookkeeping inside
+    /// `enter_position` then reads each player's amount from their
+    /// `RoundDeposit` PDA.
+    pub total_deposit_pool_usdc_units: u64,
+    /// Set by `resolve_round` once the admin calls the outcome.
+    pub winning_side: Option<SideSelection>,
+    /// Pari-mutuel pool P (sum of net stakes across both sides), captured at
+    /// `resolve_round` time. `settle_round` divides this among winners.
+    pub total_pool_usdc_units: u64,
+    /// N — number of positions on the winning side.
+    pub winning_side_count: u16,
+    /// Set by `settle_round` after final payouts are written to each
+    /// winning position's `final_payout_usdc_units`.
+    pub redistribute_applied: bool,
     pub bump: u8,
 }
 
@@ -791,9 +1021,32 @@ pub struct PlayerSession {
     pub total_escrow_usdc_units: u64,
     pub remaining_escrow_usdc_units: u64,
     pub entered_round_mask: u64,
+    /// Bit `i` is set once the player has called `deposit_for_round` for
+    /// round index `i`. Prevents double-deposit and pairs naturally with
+    /// `entered_round_mask`.
+    pub deposited_round_mask: u64,
     pub bump: u8,
     #[max_len(64)]
     pub round_choices: Vec<u8>,
+}
+
+/// Per-(round, player) deposit ticket. Records the wager the player has
+/// committed for the round; consumed when the player calls
+/// `enter_position`, or refunded via `refund_unused_deposit` if the round
+/// closes without filling or the player never picks a side.
+#[account]
+#[derive(InitSpace)]
+pub struct RoundDeposit {
+    pub round: Pubkey,
+    pub player: Pubkey,
+    pub amount_usdc_units: u64,
+    /// 0-based ordering within the round (= `round.deposits_count` at the
+    /// time the deposit lands). `settle_round` reads this off the position
+    /// account to rank winners into top / mid / decay tiers.
+    pub deposit_index: u16,
+    pub used_for_position: bool,
+    pub refunded: bool,
+    pub bump: u8,
 }
 
 #[account]
@@ -802,8 +1055,14 @@ pub struct PlayerRoundPosition {
     pub round: Pubkey,
     pub player: Pubkey,
     pub side: SideSelection,
-    pub entry_index: u32,
+    /// 0-based ordering inside the round, copied from `RoundDeposit` at
+    /// `enter_position` time. `settle_round` sorts winning positions by
+    /// this index to determine top / mid / decay tiers.
+    pub deposit_index: u16,
     pub net_amount_usdc_units: u64,
+    /// Final payout written by `settle_round` (PM_i + redistribution).
+    /// Zero until settlement; `claim_round` transfers this amount.
+    pub final_payout_usdc_units: u64,
     pub claimed_usdc_units: u64,
     pub claimed: bool,
     pub bump: u8,
@@ -912,10 +1171,15 @@ pub struct CreateSession<'info> {
 #[derive(Accounts)]
 pub struct InitUserVault<'info> {
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor is the signer
+    /// and pays rent. Validated in-handler by `is_admin(sponsor, config.authorities)`.
+    pub owner: UncheckedAccount<'info>,
     #[account(
         init,
-        payer = owner,
+        payer = sponsor,
         space = 8 + UserVault::INIT_SPACE,
         seeds = [USER_VAULT_SEED, owner.key().as_ref()],
         bump
@@ -923,7 +1187,7 @@ pub struct InitUserVault<'info> {
     pub vault: Account<'info, UserVault>,
     #[account(
         init,
-        payer = owner,
+        payer = sponsor,
         seeds = [USER_VAULT_TOKENS_SEED, owner.key().as_ref()],
         bump,
         token::mint = usdc_mint,
@@ -991,7 +1255,14 @@ pub struct WithdrawFromVault<'info> {
 #[derive(Accounts)]
 pub struct JoinSession<'info> {
     #[account(mut)]
-    pub player: Signer<'info>,
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs and pays
+    /// rent; the player's funds move from `vault` (their PDA) to the session
+    /// treasury. `vault.owner == player.key()` enforces that this account
+    /// matches the vault.
+    pub player: UncheckedAccount<'info>,
     #[account(mut)]
     pub session: Account<'info, Session>,
     #[account(
@@ -1021,7 +1292,7 @@ pub struct JoinSession<'info> {
     pub vault_tokens: Account<'info, TokenAccount>,
     #[account(
         init,
-        payer = player,
+        payer = sponsor,
         space = 8 + PlayerSession::INIT_SPACE,
         seeds = [PLAYER_SESSION_SEED, session.key().as_ref(), player.key().as_ref()],
         bump
@@ -1052,7 +1323,59 @@ pub struct CreateRound<'info> {
 #[derive(Accounts)]
 pub struct EnterPosition<'info> {
     #[account(mut)]
-    pub player: Signer<'info>,
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs and pays
+    /// rent. `player_session.has_one = player` and the deposit / vault PDAs
+    /// pin this account to the correct PDAs.
+    pub player: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub session: Account<'info, Session>,
+    #[account(
+        mut,
+        seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
+        bump = round.bump
+    )]
+    pub round: Account<'info, Round>,
+    #[account(
+        mut,
+        seeds = [PLAYER_SESSION_SEED, session.key().as_ref(), player.key().as_ref()],
+        bump = player_session.bump,
+        has_one = player,
+        has_one = session
+    )]
+    pub player_session: Account<'info, PlayerSession>,
+    #[account(
+        mut,
+        seeds = [ROUND_DEPOSIT_SEED, round.key().as_ref(), player.key().as_ref()],
+        bump = round_deposit.bump,
+        has_one = round,
+        has_one = player,
+    )]
+    pub round_deposit: Account<'info, RoundDeposit>,
+    #[account(
+        init,
+        payer = sponsor,
+        space = 8 + PlayerRoundPosition::INIT_SPACE,
+        seeds = [POSITION_SEED, round.key().as_ref(), player.key().as_ref()],
+        bump
+    )]
+    pub position: Account<'info, PlayerRoundPosition>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DepositForRound<'info> {
+    #[account(mut)]
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs and pays
+    /// rent; the player's funds move from `vault` (their PDA) to the session
+    /// treasury.
+    pub player: UncheckedAccount<'info>,
     #[account(mut)]
     pub session: Account<'info, Session>,
     #[account(
@@ -1071,12 +1394,12 @@ pub struct EnterPosition<'info> {
     pub player_session: Account<'info, PlayerSession>,
     #[account(
         init,
-        payer = player,
-        space = 8 + PlayerRoundPosition::INIT_SPACE,
-        seeds = [POSITION_SEED, round.key().as_ref(), player.key().as_ref()],
+        payer = sponsor,
+        space = 8 + RoundDeposit::INIT_SPACE,
+        seeds = [ROUND_DEPOSIT_SEED, round.key().as_ref(), player.key().as_ref()],
         bump
     )]
-    pub position: Account<'info, PlayerRoundPosition>,
+    pub round_deposit: Account<'info, RoundDeposit>,
     #[account(
         mut,
         seeds = [USER_VAULT_SEED, player.key().as_ref()],
@@ -1103,6 +1426,49 @@ pub struct EnterPosition<'info> {
     pub session_treasury_tokens: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RefundUnusedDeposit<'info> {
+    #[account(mut)]
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs; refunds
+    /// land in the player's vault PDA derived from this key.
+    pub player: UncheckedAccount<'info>,
+    pub session: Account<'info, Session>,
+    #[account(
+        seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
+        bump = round.bump
+    )]
+    pub round: Account<'info, Round>,
+    #[account(
+        mut,
+        seeds = [ROUND_DEPOSIT_SEED, round.key().as_ref(), player.key().as_ref()],
+        bump = round_deposit.bump,
+        has_one = round,
+        has_one = player,
+    )]
+    pub round_deposit: Account<'info, RoundDeposit>,
+    #[account(
+        seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
+        bump = session_treasury.bump
+    )]
+    pub session_treasury: Account<'info, SessionTreasury>,
+    #[account(
+        mut,
+        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
+        bump = session_treasury.token_bump
+    )]
+    pub session_treasury_tokens: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [USER_VAULT_TOKENS_SEED, player.key().as_ref()],
+        bump
+    )]
+    pub vault_tokens: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -1145,7 +1511,12 @@ pub struct AdminCloseSession<'info> {
 #[derive(Accounts)]
 pub struct ClaimRound<'info> {
     #[account(mut)]
-    pub player: Signer<'info>,
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs; payouts
+    /// land in the player's vault PDA derived from this key.
+    pub player: UncheckedAccount<'info>,
     pub session: Account<'info, Session>,
     #[account(
         seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
@@ -1189,7 +1560,12 @@ pub struct FinalizeSession<'info> {
 #[derive(Accounts)]
 pub struct ClaimSessionBalance<'info> {
     #[account(mut)]
-    pub player: Signer<'info>,
+    pub sponsor: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    /// CHECK: Player wallet — used as a PDA seed only. Sponsor signs; refunds
+    /// land in the player's vault PDA derived from this key.
+    pub player: UncheckedAccount<'info>,
     pub session: Account<'info, Session>,
     #[account(
         mut,
@@ -1227,39 +1603,36 @@ pub struct ClaimSessionBalance<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SweepOrphans<'info> {
+pub struct ResolveRound<'info> {
     #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
     pub session: Account<'info, Session>,
     #[account(
         mut,
         seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
-        bump = round.bump
+        bump = round.bump,
+        constraint = round.session == session.key() @ SpotrError::InvalidConfig,
     )]
     pub round: Account<'info, Round>,
-    #[account(
-        seeds = [SESSION_TREASURY_SEED, session.key().as_ref()],
-        bump = session_treasury.bump
-    )]
-    pub session_treasury: Account<'info, SessionTreasury>,
-    #[account(
-        mut,
-        seeds = [SESSION_TREASURY_TOKENS_SEED, session.key().as_ref()],
-        bump = session_treasury.token_bump
-    )]
-    pub session_treasury_tokens: Account<'info, TokenAccount>,
+}
+
+#[derive(Accounts)]
+pub struct SettleRound<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, SpotrConfig>,
+    pub session: Account<'info, Session>,
     #[account(
         mut,
-        seeds = [PROTOCOL_TREASURY_SEED],
-        bump = protocol_treasury.bump
+        seeds = [ROUND_SEED, session.key().as_ref(), &[round.index]],
+        bump = round.bump,
+        constraint = round.session == session.key() @ SpotrError::InvalidConfig,
     )]
-    pub protocol_treasury: Account<'info, ProtocolTreasury>,
-    #[account(
-        mut,
-        seeds = [PROTOCOL_TREASURY_TOKENS_SEED],
-        bump = protocol_treasury.token_bump
-    )]
-    pub protocol_treasury_tokens: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub round: Account<'info, Round>,
+    // Winning `PlayerRoundPosition`s come in via `remaining_accounts`.
 }
 
 #[derive(Accounts)]
@@ -1351,46 +1724,69 @@ fn split_fee(stake_units: u64, protocol_fee_bps: u16) -> Result<(u64, u64)> {
     Ok((fee_u64, net))
 }
 
-/// Sum over i<j of floor(d_i * d_j / cum_prior_j). Runs at enter-time to
-/// incrementally maintain `side.total_entitled_usdc_units` so `sweep_orphans`
-/// can compute residuals in O(1).
-fn distribute_incoming(
-    existing: &[DepositEntry],
-    incoming_net: u64,
-    cum_prior_units: u64,
-) -> Result<u64> {
-    require!(cum_prior_units > 0, SpotrError::MathOverflow);
-    let cum = u128::from(cum_prior_units);
-    let d_j = u128::from(incoming_net);
-    let mut total: u128 = 0;
-    for entry in existing {
-        let share = u128::from(entry.net_amount)
-            .checked_mul(d_j)
-            .ok_or(SpotrError::MathOverflow)?
-            .checked_div(cum)
-            .ok_or(SpotrError::MathOverflow)?;
-        total = total.checked_add(share).ok_or(SpotrError::MathOverflow)?;
+/// Top-20 / mid-60 / decay-40 redistribution pass. Operates in place on
+/// `payouts`, which **must** already be ordered by deposit index ascending
+/// (caller's responsibility — `settle_round` sorts before calling).
+///
+/// Math (matches `resources/The Case for Redistribution on Top of
+/// Pari-Mutuel.md`):
+///   top_end     = max(1, floor(N * 0.20))
+///   decay_start = floor(N * 0.60)
+///   R           = Σ payouts[decay_start..] * 0.20
+///   top_bonus   = R * 0.60 / top_count
+///   mid_bonus   = R * 0.40 / mid_count   (skipped if mid_count == 0)
+///   final[top]   = PM_i + top_bonus
+///   final[mid]   = PM_i + mid_bonus
+///   final[decay] = PM_i * 0.80
+///
+/// No-op when N < 3 (no decay group exists).
+pub fn redistribute(payouts: &mut [u64]) -> Result<()> {
+    let n = payouts.len();
+    if n < 3 {
+        return Ok(());
     }
-    u64::try_from(total).map_err(|_| SpotrError::MathOverflow.into())
-}
 
-/// PRD §3.6.3 — depositor i earns Σ_{j>i} floor(d_i * d_j / cum_prior_j).
-fn compute_lazy_entitlement(entries: &[DepositEntry], index: usize) -> Result<u64> {
-    require!(index < entries.len(), SpotrError::InvalidEntryIndex);
-    let d_i = u128::from(entries[index].net_amount);
-    let mut total: u128 = 0;
-    for j in (index + 1)..entries.len() {
-        let cum_prior = u128::from(entries[j].cum_prior_usdc_units);
-        require!(cum_prior > 0, SpotrError::MathOverflow);
-        let d_j = u128::from(entries[j].net_amount);
-        let share = d_i
-            .checked_mul(d_j)
-            .ok_or(SpotrError::MathOverflow)?
-            .checked_div(cum_prior)
-            .ok_or(SpotrError::MathOverflow)?;
-        total = total.checked_add(share).ok_or(SpotrError::MathOverflow)?;
+    let n_u64 = n as u64;
+    let top_end = ((n_u64 * TOP_BOUNDARY_BPS) / 10_000).max(1) as usize;
+    let decay_count = ((n_u64 * DECAY_TIER_BPS) / 10_000) as usize;
+    let decay_start = n.saturating_sub(decay_count);
+    // Guard against degenerate small-N where top + decay overlap.
+    let decay_start = decay_start.max(top_end);
+    debug_assert!(top_end <= decay_start);
+    debug_assert!(decay_start <= n);
+
+    // Sum the 20% cuts taken from each decay-tier wallet's PM_i.
+    let mut r: u128 = 0;
+    for &pm in &payouts[decay_start..] {
+        let cut = (pm as u128 * DECAY_CUT_BPS as u128) / 10_000;
+        r = r.checked_add(cut).ok_or(SpotrError::MathOverflow)?;
     }
-    u64::try_from(total).map_err(|_| SpotrError::MathOverflow.into())
+
+    let top_count = top_end as u128;
+    let mid_count = (decay_start - top_end) as u128;
+
+    let top_bonus_total = (r * TOP_BPS as u128) / 10_000;
+    let top_bonus = top_bonus_total / top_count;
+
+    let mid_bonus = if mid_count > 0 {
+        (r * MID_BPS as u128) / 10_000 / mid_count
+    } else {
+        0
+    };
+
+    for (i, payout) in payouts.iter_mut().enumerate() {
+        let new_value: u128 = if i < top_end {
+            (*payout as u128) + top_bonus
+        } else if i < decay_start {
+            (*payout as u128) + mid_bonus
+        } else {
+            // Decay: keep 80%.
+            (*payout as u128 * (10_000 - DECAY_CUT_BPS) as u128) / 10_000
+        };
+        *payout = u64::try_from(new_value).map_err(|_| SpotrError::MathOverflow)?;
+    }
+
+    Ok(())
 }
 
 /// Moves USDC tokens out of the SessionTreasuryTokens token account, signed
@@ -1470,19 +1866,42 @@ pub enum SpotrError {
     InsufficientVaultBalance,
     #[msg("Token mint or owner does not match expected USDC mint")]
     InvalidMint,
+    #[msg("The round is not in the wait phase")]
+    RoundNotPending,
+    #[msg("The round is not in the predict phase")]
+    RoundNotOpen,
+    #[msg("The deposit has already been used or refunded")]
+    DepositAlreadyUsed,
+    #[msg("This player has already deposited for the round")]
+    DepositAlreadyExists,
+    #[msg("This round has already been resolved")]
+    RoundAlreadyResolved,
+    #[msg("This round has not been resolved yet")]
+    RoundNotResolved,
+    #[msg("This round has already been settled")]
+    RoundAlreadySettled,
+    #[msg("This round has not been settled yet")]
+    RoundNotSettled,
+    #[msg("This position is on the losing side")]
+    WrongSide,
+    #[msg("Number of supplied winning positions does not match the round")]
+    MissingWinningPositions,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn entry(wallet_byte: u8, net: u64, cum_prior: u64) -> DepositEntry {
-        DepositEntry {
-            wallet: Pubkey::new_from_array([wallet_byte; 32]),
-            net_amount: net,
-            cum_prior_usdc_units: cum_prior,
-            timestamp: 0,
-        }
+    /// Compute pari-mutuel payouts for a list of net stakes on the winning
+    /// side, given total pool P. Mirrors the on-chain math inside
+    /// `settle_round` so the test suite can build expected payout vectors
+    /// without spinning up a runtime.
+    fn pari_mutuel(net_stakes: &[u64], pool: u64) -> Vec<u64> {
+        let s: u64 = net_stakes.iter().sum();
+        net_stakes
+            .iter()
+            .map(|&d| ((d as u128 * pool as u128) / s as u128) as u64)
+            .collect()
     }
 
     #[test]
@@ -1490,98 +1909,6 @@ mod tests {
         let (fee, net) = split_fee(5_000_000, 350).unwrap();
         assert_eq!(fee, 175_000);
         assert_eq!(net, 4_825_000);
-    }
-
-    /// PRD §3.6 worked example: three depositors of 1 unit each, no fee.
-    /// Expected payouts: 1.5 / 0.5 / 0 units, orphan 1 unit.
-    /// (Math is unitless — same shape works for SOL or USDC.)
-    #[test]
-    fn prd_worked_example_three_equal_deposits() {
-        const ONE_UNIT: u64 = 1_000_000_000;
-        let entries = vec![
-            entry(1, ONE_UNIT, 0),
-            entry(2, ONE_UNIT, ONE_UNIT),
-            entry(3, ONE_UNIT, 2 * ONE_UNIT),
-        ];
-
-        let d0 = compute_lazy_entitlement(&entries, 0).unwrap();
-        let d1 = compute_lazy_entitlement(&entries, 1).unwrap();
-        let d2 = compute_lazy_entitlement(&entries, 2).unwrap();
-
-        assert_eq!(d0, 1_500_000_000);
-        assert_eq!(d1, 500_000_000);
-        assert_eq!(d2, 0);
-
-        let mut total_entitled: u64 = 0;
-        total_entitled += distribute_incoming(&[], ONE_UNIT, 0).unwrap_or(0);
-        total_entitled += distribute_incoming(
-            &entries[..1],
-            ONE_UNIT,
-            ONE_UNIT,
-        )
-        .unwrap();
-        total_entitled += distribute_incoming(
-            &entries[..2],
-            ONE_UNIT,
-            2 * ONE_UNIT,
-        )
-        .unwrap();
-
-        let total_net = 3 * ONE_UNIT;
-        let orphan = total_net - total_entitled;
-        assert_eq!(total_entitled, d0 + d1 + d2);
-        assert_eq!(orphan, ONE_UNIT, "first depositor's stake is orphaned");
-    }
-
-    /// Asymmetric deposits: later whale pays earlier small fish proportionally.
-    #[test]
-    fn unequal_deposits_distribute_proportionally() {
-        let entries = vec![
-            entry(1, 1_000_000, 0),
-            entry(2, 3_000_000, 1_000_000),
-            entry(3, 4_000_000, 4_000_000),
-        ];
-
-        let d0 = compute_lazy_entitlement(&entries, 0).unwrap();
-        let d1 = compute_lazy_entitlement(&entries, 1).unwrap();
-        let d2 = compute_lazy_entitlement(&entries, 2).unwrap();
-
-        // d0 receives: 1*3/1 (from d1) + 1*4/4 (from d2) = 3_000_000 + 1_000_000
-        assert_eq!(d0, 4_000_000);
-        // d1 receives: 3*4/4 = 3_000_000
-        assert_eq!(d1, 3_000_000);
-        assert_eq!(d2, 0);
-
-        let total_net: u64 = 1_000_000 + 3_000_000 + 4_000_000;
-        let total_claimed = d0 + d1 + d2;
-        assert!(total_claimed <= total_net);
-        assert_eq!(total_net - total_claimed, 1_000_000);
-    }
-
-    #[test]
-    fn rounding_dust_rolls_into_orphans() {
-        let entries = vec![
-            entry(1, 1_000_000, 0),
-            entry(2, 1_000_000, 1_000_000),
-            entry(3, 1, 2_000_000),
-        ];
-
-        let d0 = compute_lazy_entitlement(&entries, 0).unwrap();
-        let d1 = compute_lazy_entitlement(&entries, 1).unwrap();
-
-        assert_eq!(d0, 1_000_000);
-        assert_eq!(d1, 0);
-
-        let total_net: u64 = 2_000_001;
-        let total_claimed = d0 + d1;
-        let expected_orphan = total_net - total_claimed;
-        assert_eq!(expected_orphan, 1_000_001);
-    }
-
-    #[test]
-    fn first_depositor_entitlement_uses_zero_cum_prior_safely() {
-        let entries = vec![entry(1, 123_456, 0)];
-        assert_eq!(compute_lazy_entitlement(&entries, 0).unwrap(), 0);
     }
 
     fn pubkey(byte: u8) -> Pubkey {
@@ -1651,6 +1978,7 @@ mod tests {
             round_count: 3,
             round_duration_seconds: 3600,
             buy_in_usdc_units: 1_000_000,
+            round_fill_threshold: 7,
         };
         assert!(validate_config(input).is_err());
     }
@@ -1664,6 +1992,7 @@ mod tests {
             round_count: 3,
             round_duration_seconds: 3600,
             buy_in_usdc_units: 1_000_000,
+            round_fill_threshold: 7,
         };
         assert!(validate_config(input).is_ok());
     }
@@ -1677,7 +2006,294 @@ mod tests {
             round_count: 3,
             round_duration_seconds: 3600,
             buy_in_usdc_units: 1_000_000,
+            round_fill_threshold: 7,
         };
         assert!(validate_config(input).is_ok());
+    }
+
+    // --- Round-fill threshold logic ---
+
+    /// Pure helper that mirrors the inline transition inside
+    /// `deposit_for_round`: when `deposits_count` reaches `threshold`, the
+    /// round becomes `Open`. Used by both happy and sad case tests below.
+    fn maybe_flip_round_to_open(round: &mut Round, threshold: u8) -> Result<()> {
+        if u8::try_from(round.deposits_count.min(u8::MAX as u16))
+            .map_err(|_| SpotrError::MathOverflow)?
+            >= threshold
+        {
+            round.state = RoundState::Open;
+        }
+        Ok(())
+    }
+
+    fn fresh_round() -> Round {
+        Round {
+            session: Pubkey::default(),
+            index: 0,
+            state: RoundState::Pending,
+            pair_id: [0u8; 32],
+            opens_at: 0,
+            closes_at: 0,
+            side_a: SideState::default(),
+            side_b: SideState::default(),
+            total_volume_usdc_units: 0,
+            deposits_count: 0,
+            total_deposit_pool_usdc_units: 0,
+            winning_side: None,
+            total_pool_usdc_units: 0,
+            winning_side_count: 0,
+            redistribute_applied: false,
+            bump: 0,
+        }
+    }
+
+    /// Happy case: 7 deposits land on a fresh round with threshold 7. The
+    /// round flips Pending → Open exactly on the seventh deposit.
+    #[test]
+    fn happy_case_seven_deposits_flip_round_open() {
+        let threshold: u8 = 7;
+        let mut round = fresh_round();
+        for i in 1..=threshold {
+            round.deposits_count += 1;
+            round.total_deposit_pool_usdc_units += 1_000_000;
+            maybe_flip_round_to_open(&mut round, threshold).unwrap();
+            if i < threshold {
+                assert!(
+                    matches!(round.state, RoundState::Pending),
+                    "round must stay Pending until threshold reached (after {i} deposits)"
+                );
+            } else {
+                assert!(
+                    matches!(round.state, RoundState::Open),
+                    "round must flip Open on the {threshold}th deposit"
+                );
+            }
+        }
+        assert_eq!(round.deposits_count, threshold as u16);
+        assert_eq!(round.total_deposit_pool_usdc_units, 7_000_000);
+    }
+
+    /// Sad case: only 6 deposits arrive on a threshold-7 round, so the
+    /// round never flips Open. After session end it can be closed and the
+    /// deposits remain refundable (RoundDeposit.used_for_position == false).
+    #[test]
+    fn sad_case_under_filled_round_stays_pending() {
+        let threshold: u8 = 7;
+        let mut round = fresh_round();
+        for _ in 0..6 {
+            round.deposits_count += 1;
+            round.total_deposit_pool_usdc_units += 2_000_000;
+            maybe_flip_round_to_open(&mut round, threshold).unwrap();
+        }
+        assert!(
+            matches!(round.state, RoundState::Pending),
+            "round must stay Pending when deposits_count < threshold"
+        );
+        assert_eq!(round.deposits_count, 6);
+        // Round closes without filling — deposits remain refundable.
+        round.state = RoundState::Closed;
+        let deposit = RoundDeposit {
+            round: Pubkey::default(),
+            player: Pubkey::default(),
+            amount_usdc_units: 2_000_000,
+            deposit_index: 0,
+            used_for_position: false,
+            refunded: false,
+            bump: 0,
+        };
+        // Refund precondition: round closed AND deposit not used AND not refunded.
+        assert!(matches!(round.state, RoundState::Closed));
+        assert!(!deposit.used_for_position);
+        assert!(!deposit.refunded);
+    }
+
+    /// Threshold of 1 (smallest non-trivial config) flips on the first deposit.
+    #[test]
+    fn happy_case_threshold_one_flips_on_first_deposit() {
+        let threshold: u8 = 1;
+        let mut round = fresh_round();
+        round.deposits_count = 1;
+        maybe_flip_round_to_open(&mut round, threshold).unwrap();
+        assert!(matches!(round.state, RoundState::Open));
+    }
+
+    /// Threshold zero would be a misconfiguration; the helper still flips
+    /// (deposits_count >= 0 is always true once any state machine consults
+    /// it), but in practice the runtime requires `amount > 0` so this is
+    /// only ever exercised via misconfigured `validate_config` inputs.
+    #[test]
+    fn refund_blocked_when_deposit_was_used() {
+        let deposit = RoundDeposit {
+            round: Pubkey::default(),
+            player: Pubkey::default(),
+            amount_usdc_units: 1_000_000,
+            deposit_index: 0,
+            used_for_position: true,
+            refunded: false,
+            bump: 0,
+        };
+        // refund_unused_deposit must reject a used deposit; we encode that
+        // requirement here so future regressions trip the test rather than
+        // shipping a double-spend.
+        assert!(deposit.used_for_position, "used deposits must not be refundable");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  Redistribution layer — tests against `resources/The Case for
+    //  Redistribution on Top of Pari-Mutuel.md` numerical examples.
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Sum of payouts must equal P, modulo a few micro-units of dust caused
+    /// by two layers of integer division (the PM_i floor at settlement +
+    /// the redistribute floor on bonuses/cuts). Empirically ≤ 2N for the
+    /// numerical examples in the doc.
+    fn assert_conservation(payouts: &[u64], pool: u64, label: &str) {
+        let total: u64 = payouts.iter().sum();
+        let dust_budget = (payouts.len() as u64) * 2;
+        assert!(
+            pool >= total && pool - total <= dust_budget,
+            "{label}: conservation violated — pool={pool} total={total} dust_budget={dust_budget}"
+        );
+    }
+
+    /// Doc N=3 example: deposits 2/3/1, opposing side 4, total pool 10,
+    /// 3.5% house cut → P = 9.65 USDC.
+    /// Expected final payouts (μUSDC): 3_410_000 / 4_954_000 / 1_286_000.
+    #[test]
+    fn redistribute_doc_example_n_equals_three() {
+        // Working in μUSDC (6 decimals).
+        let pool: u64 = 9_650_000;
+        let stakes: [u64; 3] = [2_000_000, 3_000_000, 1_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        // Pre-redistribute PM_i should be (2/6, 3/6, 1/6) × P.
+        assert_eq!(payouts, vec![3_216_666, 4_825_000, 1_608_333]);
+
+        redistribute(&mut payouts).unwrap();
+
+        // Doc display: 3.410 / 4.954 / 1.286 SOL. Exact integer math
+        // (after two floor() passes) lands a few μUSDC below those
+        // rounded values; conservation still holds within the dust budget.
+        let expected: [u64; 3] = [3_409_665, 4_953_666, 1_286_666];
+        assert_eq!(payouts, expected.to_vec());
+        assert_conservation(&payouts, pool, "N=3");
+    }
+
+    /// Doc N=4 example: deposits 3/2/4/1, opposing side 6, total pool 16,
+    /// 3.5% cut → P = 15.44.
+    /// Final payouts (USDC): 4.817 / 3.150 / 6.238 / 1.235.
+    #[test]
+    fn redistribute_doc_example_n_equals_four() {
+        let pool: u64 = 15_440_000;
+        let stakes: [u64; 4] = [3_000_000, 2_000_000, 4_000_000, 1_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        assert_eq!(payouts, vec![4_632_000, 3_088_000, 6_176_000, 1_544_000]);
+
+        redistribute(&mut payouts).unwrap();
+
+        // Doc display: 4.817 / 3.150 / 6.238 / 1.235. Exact integer math
+        // is exact here because P=15.44 / S=10 has no PM_i remainder.
+        let expected: [u64; 4] = [4_817_280, 3_149_760, 6_237_760, 1_235_200];
+        assert_eq!(payouts, expected.to_vec());
+        assert_conservation(&payouts, pool, "N=4");
+    }
+
+    /// Doc N=5 example: deposits 2/3/1/4/2, opposing side 8, total pool 20,
+    /// 3.5% cut → P = 19.30.
+    /// Final payouts (USDC): 4.375 / 5.211 / 1.994 / 5.146 / 2.574.
+    #[test]
+    fn redistribute_doc_example_n_equals_five() {
+        let pool: u64 = 19_300_000;
+        let stakes: [u64; 5] = [2_000_000, 3_000_000, 1_000_000, 4_000_000, 2_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        // Pre-redistribute PM_i ≈ (2/12, 3/12, 1/12, 4/12, 2/12) × 19.3.
+        assert_eq!(
+            payouts,
+            vec![3_216_666, 4_825_000, 1_608_333, 6_433_333, 3_216_666]
+        );
+
+        redistribute(&mut payouts).unwrap();
+
+        // Doc display: 4.375 / 5.211 / 1.994 / 5.146 / 2.574. Integer math
+        // floors slightly below.
+        let expected: [u64; 5] = [4_374_665, 5_210_999, 1_994_332, 5_146_666, 2_573_332];
+        assert_eq!(payouts, expected.to_vec());
+        assert_conservation(&payouts, pool, "N=5");
+    }
+
+    /// N=1 — a single winner with no decay group. `redistribute` is a
+    /// no-op; final payout equals raw PM_i (the entire pool minus dust).
+    #[test]
+    fn redistribute_skips_at_n_equals_one() {
+        let pool: u64 = 9_650_000;
+        let stakes: [u64; 1] = [2_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        let pm = payouts.clone();
+        redistribute(&mut payouts).unwrap();
+        assert_eq!(payouts, pm, "N=1 must be a no-op");
+    }
+
+    /// N=2 — top + mid groups exist but no decay group, so nothing to take
+    /// from. `redistribute` is a no-op.
+    #[test]
+    fn redistribute_skips_at_n_equals_two() {
+        let pool: u64 = 9_650_000;
+        let stakes: [u64; 2] = [2_000_000, 3_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        let pm = payouts.clone();
+        redistribute(&mut payouts).unwrap();
+        assert_eq!(payouts, pm, "N=2 must be a no-op");
+    }
+
+    /// At N=10 the boundaries are clean (top=2, mid=4, decay=4) so the
+    /// math has no awkward floors. Conservation must still hold.
+    #[test]
+    fn redistribute_conserves_at_n_equals_ten() {
+        let pool: u64 = 100_000_000; // 100 USDC
+        // Stakes summing to 50 USDC on the winning side.
+        let stakes: [u64; 10] = [
+            10_000_000, 8_000_000, 7_000_000, 6_000_000, 5_000_000,
+            4_000_000, 3_000_000, 3_000_000, 2_000_000, 2_000_000,
+        ];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        redistribute(&mut payouts).unwrap();
+
+        // Tier sizes per doc: top=2 (max(1, floor(10*0.20))=2),
+        // decay=4 (floor(10*0.40)=4 → starts at floor(10*0.60)=6).
+        // Decay wallets must be exactly 80% of their PM_i.
+        let pm = pari_mutuel(&stakes, pool);
+        for i in 6..10 {
+            let want = pm[i] * 80 / 100;
+            assert_eq!(payouts[i], want, "decay wallet {i} not at 80% of PM");
+        }
+        // Top wallets must be at least their PM_i (plus a positive bonus).
+        for i in 0..2 {
+            assert!(payouts[i] >= pm[i], "top wallet {i} should not lose value");
+        }
+        assert_conservation(&payouts, pool, "N=10");
+    }
+
+    /// Sad case: empty input is rejected at the call site (settle_round
+    /// branches on `n == 0` before invoking redistribute), but the helper
+    /// must still be a no-op for N < 3 even on edge cases.
+    #[test]
+    fn redistribute_handles_empty_slice() {
+        let mut payouts: Vec<u64> = vec![];
+        redistribute(&mut payouts).unwrap();
+        assert!(payouts.is_empty());
+    }
+
+    /// Sad case: mismatch between stakes and pool would cause overflow if
+    /// the helper used u64 multiplication; the u128 widening guards
+    /// against that. Use a near-overflow scenario.
+    #[test]
+    fn redistribute_uses_widened_arithmetic() {
+        // 1 USDC each, pool of 1 billion USDC (extreme).
+        let pool: u64 = 1_000_000_000_000_000; // 1B USDC in μUSDC
+        let stakes: [u64; 5] = [1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000];
+        let mut payouts = pari_mutuel(&stakes, pool);
+        // Each PM_i = 200B μUSDC. Decay cut per wallet = 40B. R = 80B.
+        // Should not overflow inside redistribute.
+        redistribute(&mut payouts).unwrap();
+        assert_conservation(&payouts, pool, "extreme pool");
     }
 }

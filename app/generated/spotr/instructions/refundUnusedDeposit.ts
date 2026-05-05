@@ -16,6 +16,7 @@ import {
   getStructEncoder,
   transformEncoder,
   type AccountMeta,
+  type AccountSignerMeta,
   type Address,
   type FixedSizeCodec,
   type FixedSizeDecoder,
@@ -25,13 +26,16 @@ import {
   type InstructionWithData,
   type ReadonlyAccount,
   type ReadonlyUint8Array,
+  type TransactionSigner,
   type WritableAccount,
+  type WritableSignerAccount,
 } from "@solana/kit";
 import {
-  findProtocolTreasuryPda,
-  findProtocolTreasuryTokensPda,
+  findConfigPda,
+  findRoundDepositPda,
   findSessionTreasuryPda,
   findSessionTreasuryTokensPda,
+  findVaultTokensPda,
 } from "../pdas";
 import { SPOTR_MARKETS_PROGRAM_ADDRESS } from "../programs";
 import {
@@ -40,24 +44,27 @@ import {
   type ResolvedAccount,
 } from "../shared";
 
-export const SWEEP_ORPHANS_DISCRIMINATOR = new Uint8Array([
-  7, 150, 88, 141, 44, 161, 12, 42,
+export const REFUND_UNUSED_DEPOSIT_DISCRIMINATOR = new Uint8Array([
+  47, 99, 67, 129, 54, 116, 234, 160,
 ]);
 
-export function getSweepOrphansDiscriminatorBytes() {
+export function getRefundUnusedDepositDiscriminatorBytes() {
   return fixEncoderSize(getBytesEncoder(), 8).encode(
-    SWEEP_ORPHANS_DISCRIMINATOR,
+    REFUND_UNUSED_DEPOSIT_DISCRIMINATOR,
   );
 }
 
-export type SweepOrphansInstruction<
+export type RefundUnusedDepositInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+  TAccountSponsor extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
+  TAccountPlayer extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountRound extends string | AccountMeta<string> = string,
+  TAccountRoundDeposit extends string | AccountMeta<string> = string,
   TAccountSessionTreasury extends string | AccountMeta<string> = string,
   TAccountSessionTreasuryTokens extends string | AccountMeta<string> = string,
-  TAccountProtocolTreasury extends string | AccountMeta<string> = string,
-  TAccountProtocolTreasuryTokens extends string | AccountMeta<string> = string,
+  TAccountVaultTokens extends string | AccountMeta<string> = string,
   TAccountTokenProgram extends string | AccountMeta<string> =
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -65,24 +72,34 @@ export type SweepOrphansInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
+      TAccountSponsor extends string
+        ? WritableSignerAccount<TAccountSponsor> &
+            AccountSignerMeta<TAccountSponsor>
+        : TAccountSponsor,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
+      TAccountPlayer extends string
+        ? ReadonlyAccount<TAccountPlayer>
+        : TAccountPlayer,
       TAccountSession extends string
-        ? WritableAccount<TAccountSession>
+        ? ReadonlyAccount<TAccountSession>
         : TAccountSession,
       TAccountRound extends string
-        ? WritableAccount<TAccountRound>
+        ? ReadonlyAccount<TAccountRound>
         : TAccountRound,
+      TAccountRoundDeposit extends string
+        ? WritableAccount<TAccountRoundDeposit>
+        : TAccountRoundDeposit,
       TAccountSessionTreasury extends string
         ? ReadonlyAccount<TAccountSessionTreasury>
         : TAccountSessionTreasury,
       TAccountSessionTreasuryTokens extends string
         ? WritableAccount<TAccountSessionTreasuryTokens>
         : TAccountSessionTreasuryTokens,
-      TAccountProtocolTreasury extends string
-        ? WritableAccount<TAccountProtocolTreasury>
-        : TAccountProtocolTreasury,
-      TAccountProtocolTreasuryTokens extends string
-        ? WritableAccount<TAccountProtocolTreasuryTokens>
-        : TAccountProtocolTreasuryTokens,
+      TAccountVaultTokens extends string
+        ? WritableAccount<TAccountVaultTokens>
+        : TAccountVaultTokens,
       TAccountTokenProgram extends string
         ? ReadonlyAccount<TAccountTokenProgram>
         : TAccountTokenProgram,
@@ -90,80 +107,101 @@ export type SweepOrphansInstruction<
     ]
   >;
 
-export type SweepOrphansInstructionData = { discriminator: ReadonlyUint8Array };
+export type RefundUnusedDepositInstructionData = {
+  discriminator: ReadonlyUint8Array;
+};
 
-export type SweepOrphansInstructionDataArgs = {};
+export type RefundUnusedDepositInstructionDataArgs = {};
 
-export function getSweepOrphansInstructionDataEncoder(): FixedSizeEncoder<SweepOrphansInstructionDataArgs> {
+export function getRefundUnusedDepositInstructionDataEncoder(): FixedSizeEncoder<RefundUnusedDepositInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([["discriminator", fixEncoderSize(getBytesEncoder(), 8)]]),
-    (value) => ({ ...value, discriminator: SWEEP_ORPHANS_DISCRIMINATOR }),
+    (value) => ({
+      ...value,
+      discriminator: REFUND_UNUSED_DEPOSIT_DISCRIMINATOR,
+    }),
   );
 }
 
-export function getSweepOrphansInstructionDataDecoder(): FixedSizeDecoder<SweepOrphansInstructionData> {
+export function getRefundUnusedDepositInstructionDataDecoder(): FixedSizeDecoder<RefundUnusedDepositInstructionData> {
   return getStructDecoder([
     ["discriminator", fixDecoderSize(getBytesDecoder(), 8)],
   ]);
 }
 
-export function getSweepOrphansInstructionDataCodec(): FixedSizeCodec<
-  SweepOrphansInstructionDataArgs,
-  SweepOrphansInstructionData
+export function getRefundUnusedDepositInstructionDataCodec(): FixedSizeCodec<
+  RefundUnusedDepositInstructionDataArgs,
+  RefundUnusedDepositInstructionData
 > {
   return combineCodec(
-    getSweepOrphansInstructionDataEncoder(),
-    getSweepOrphansInstructionDataDecoder(),
+    getRefundUnusedDepositInstructionDataEncoder(),
+    getRefundUnusedDepositInstructionDataDecoder(),
   );
 }
 
-export type SweepOrphansAsyncInput<
+export type RefundUnusedDepositAsyncInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
+  TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountRound extends string = string,
+  TAccountRoundDeposit extends string = string,
   TAccountSessionTreasury extends string = string,
   TAccountSessionTreasuryTokens extends string = string,
-  TAccountProtocolTreasury extends string = string,
-  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountVaultTokens extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config?: Address<TAccountConfig>;
+  /** land in the player's vault PDA derived from this key. */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
+  roundDeposit?: Address<TAccountRoundDeposit>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
   sessionTreasuryTokens?: Address<TAccountSessionTreasuryTokens>;
-  protocolTreasury?: Address<TAccountProtocolTreasury>;
-  protocolTreasuryTokens?: Address<TAccountProtocolTreasuryTokens>;
+  vaultTokens?: Address<TAccountVaultTokens>;
   tokenProgram?: Address<TAccountTokenProgram>;
 };
 
-export async function getSweepOrphansInstructionAsync<
+export async function getRefundUnusedDepositInstructionAsync<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
+  TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountRound extends string,
+  TAccountRoundDeposit extends string,
   TAccountSessionTreasury extends string,
   TAccountSessionTreasuryTokens extends string,
-  TAccountProtocolTreasury extends string,
-  TAccountProtocolTreasuryTokens extends string,
+  TAccountVaultTokens extends string,
   TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
-  input: SweepOrphansAsyncInput<
+  input: RefundUnusedDepositAsyncInput<
+    TAccountSponsor,
+    TAccountConfig,
+    TAccountPlayer,
     TAccountSession,
     TAccountRound,
+    TAccountRoundDeposit,
     TAccountSessionTreasury,
     TAccountSessionTreasuryTokens,
-    TAccountProtocolTreasury,
-    TAccountProtocolTreasuryTokens,
+    TAccountVaultTokens,
     TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
 ): Promise<
-  SweepOrphansInstruction<
+  RefundUnusedDepositInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
+    TAccountPlayer,
     TAccountSession,
     TAccountRound,
+    TAccountRoundDeposit,
     TAccountSessionTreasury,
     TAccountSessionTreasuryTokens,
-    TAccountProtocolTreasury,
-    TAccountProtocolTreasuryTokens,
+    TAccountVaultTokens,
     TAccountTokenProgram
   >
 > {
@@ -173,8 +211,12 @@ export async function getSweepOrphansInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    session: { value: input.session ?? null, isWritable: true },
-    round: { value: input.round ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
+    session: { value: input.session ?? null, isWritable: false },
+    round: { value: input.round ?? null, isWritable: false },
+    roundDeposit: { value: input.roundDeposit ?? null, isWritable: true },
     sessionTreasury: {
       value: input.sessionTreasury ?? null,
       isWritable: false,
@@ -183,14 +225,7 @@ export async function getSweepOrphansInstructionAsync<
       value: input.sessionTreasuryTokens ?? null,
       isWritable: true,
     },
-    protocolTreasury: {
-      value: input.protocolTreasury ?? null,
-      isWritable: true,
-    },
-    protocolTreasuryTokens: {
-      value: input.protocolTreasuryTokens ?? null,
-      isWritable: true,
-    },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -199,6 +234,15 @@ export async function getSweepOrphansInstructionAsync<
   >;
 
   // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
+  if (!accounts.roundDeposit.value) {
+    accounts.roundDeposit.value = await findRoundDepositPda({
+      round: expectAddress(accounts.round.value),
+      player: expectAddress(accounts.player.value),
+    });
+  }
   if (!accounts.sessionTreasury.value) {
     accounts.sessionTreasury.value = await findSessionTreasuryPda({
       session: expectAddress(accounts.session.value),
@@ -209,12 +253,10 @@ export async function getSweepOrphansInstructionAsync<
       session: expectAddress(accounts.session.value),
     });
   }
-  if (!accounts.protocolTreasury.value) {
-    accounts.protocolTreasury.value = await findProtocolTreasuryPda();
-  }
-  if (!accounts.protocolTreasuryTokens.value) {
-    accounts.protocolTreasuryTokens.value =
-      await findProtocolTreasuryTokensPda();
+  if (!accounts.vaultTokens.value) {
+    accounts.vaultTokens.value = await findVaultTokensPda({
+      player: expectAddress(accounts.player.value),
+    });
   }
   if (!accounts.tokenProgram.value) {
     accounts.tokenProgram.value =
@@ -224,74 +266,96 @@ export async function getSweepOrphansInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.round),
+      getAccountMeta(accounts.roundDeposit),
       getAccountMeta(accounts.sessionTreasury),
       getAccountMeta(accounts.sessionTreasuryTokens),
-      getAccountMeta(accounts.protocolTreasury),
-      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.vaultTokens),
       getAccountMeta(accounts.tokenProgram),
     ],
-    data: getSweepOrphansInstructionDataEncoder().encode({}),
+    data: getRefundUnusedDepositInstructionDataEncoder().encode({}),
     programAddress,
-  } as SweepOrphansInstruction<
+  } as RefundUnusedDepositInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
+    TAccountPlayer,
     TAccountSession,
     TAccountRound,
+    TAccountRoundDeposit,
     TAccountSessionTreasury,
     TAccountSessionTreasuryTokens,
-    TAccountProtocolTreasury,
-    TAccountProtocolTreasuryTokens,
+    TAccountVaultTokens,
     TAccountTokenProgram
   >);
 }
 
-export type SweepOrphansInput<
+export type RefundUnusedDepositInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
+  TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountRound extends string = string,
+  TAccountRoundDeposit extends string = string,
   TAccountSessionTreasury extends string = string,
   TAccountSessionTreasuryTokens extends string = string,
-  TAccountProtocolTreasury extends string = string,
-  TAccountProtocolTreasuryTokens extends string = string,
+  TAccountVaultTokens extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config: Address<TAccountConfig>;
+  /** land in the player's vault PDA derived from this key. */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   round: Address<TAccountRound>;
+  roundDeposit: Address<TAccountRoundDeposit>;
   sessionTreasury: Address<TAccountSessionTreasury>;
   sessionTreasuryTokens: Address<TAccountSessionTreasuryTokens>;
-  protocolTreasury: Address<TAccountProtocolTreasury>;
-  protocolTreasuryTokens: Address<TAccountProtocolTreasuryTokens>;
+  vaultTokens: Address<TAccountVaultTokens>;
   tokenProgram?: Address<TAccountTokenProgram>;
 };
 
-export function getSweepOrphansInstruction<
+export function getRefundUnusedDepositInstruction<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
+  TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountRound extends string,
+  TAccountRoundDeposit extends string,
   TAccountSessionTreasury extends string,
   TAccountSessionTreasuryTokens extends string,
-  TAccountProtocolTreasury extends string,
-  TAccountProtocolTreasuryTokens extends string,
+  TAccountVaultTokens extends string,
   TAccountTokenProgram extends string,
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
-  input: SweepOrphansInput<
+  input: RefundUnusedDepositInput<
+    TAccountSponsor,
+    TAccountConfig,
+    TAccountPlayer,
     TAccountSession,
     TAccountRound,
+    TAccountRoundDeposit,
     TAccountSessionTreasury,
     TAccountSessionTreasuryTokens,
-    TAccountProtocolTreasury,
-    TAccountProtocolTreasuryTokens,
+    TAccountVaultTokens,
     TAccountTokenProgram
   >,
   config?: { programAddress?: TProgramAddress },
-): SweepOrphansInstruction<
+): RefundUnusedDepositInstruction<
   TProgramAddress,
+  TAccountSponsor,
+  TAccountConfig,
+  TAccountPlayer,
   TAccountSession,
   TAccountRound,
+  TAccountRoundDeposit,
   TAccountSessionTreasury,
   TAccountSessionTreasuryTokens,
-  TAccountProtocolTreasury,
-  TAccountProtocolTreasuryTokens,
+  TAccountVaultTokens,
   TAccountTokenProgram
 > {
   // Program address.
@@ -300,8 +364,12 @@ export function getSweepOrphansInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    session: { value: input.session ?? null, isWritable: true },
-    round: { value: input.round ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
+    session: { value: input.session ?? null, isWritable: false },
+    round: { value: input.round ?? null, isWritable: false },
+    roundDeposit: { value: input.roundDeposit ?? null, isWritable: true },
     sessionTreasury: {
       value: input.sessionTreasury ?? null,
       isWritable: false,
@@ -310,14 +378,7 @@ export function getSweepOrphansInstruction<
       value: input.sessionTreasuryTokens ?? null,
       isWritable: true,
     },
-    protocolTreasury: {
-      value: input.protocolTreasury ?? null,
-      isWritable: true,
-    },
-    protocolTreasuryTokens: {
-      value: input.protocolTreasuryTokens ?? null,
-      isWritable: true,
-    },
+    vaultTokens: { value: input.vaultTokens ?? null, isWritable: true },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -334,54 +395,64 @@ export function getSweepOrphansInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.round),
+      getAccountMeta(accounts.roundDeposit),
       getAccountMeta(accounts.sessionTreasury),
       getAccountMeta(accounts.sessionTreasuryTokens),
-      getAccountMeta(accounts.protocolTreasury),
-      getAccountMeta(accounts.protocolTreasuryTokens),
+      getAccountMeta(accounts.vaultTokens),
       getAccountMeta(accounts.tokenProgram),
     ],
-    data: getSweepOrphansInstructionDataEncoder().encode({}),
+    data: getRefundUnusedDepositInstructionDataEncoder().encode({}),
     programAddress,
-  } as SweepOrphansInstruction<
+  } as RefundUnusedDepositInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
+    TAccountPlayer,
     TAccountSession,
     TAccountRound,
+    TAccountRoundDeposit,
     TAccountSessionTreasury,
     TAccountSessionTreasuryTokens,
-    TAccountProtocolTreasury,
-    TAccountProtocolTreasuryTokens,
+    TAccountVaultTokens,
     TAccountTokenProgram
   >);
 }
 
-export type ParsedSweepOrphansInstruction<
+export type ParsedRefundUnusedDepositInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    session: TAccountMetas[0];
-    round: TAccountMetas[1];
-    sessionTreasury: TAccountMetas[2];
-    sessionTreasuryTokens: TAccountMetas[3];
-    protocolTreasury: TAccountMetas[4];
-    protocolTreasuryTokens: TAccountMetas[5];
-    tokenProgram: TAccountMetas[6];
+    sponsor: TAccountMetas[0];
+    config: TAccountMetas[1];
+    /** land in the player's vault PDA derived from this key. */
+    player: TAccountMetas[2];
+    session: TAccountMetas[3];
+    round: TAccountMetas[4];
+    roundDeposit: TAccountMetas[5];
+    sessionTreasury: TAccountMetas[6];
+    sessionTreasuryTokens: TAccountMetas[7];
+    vaultTokens: TAccountMetas[8];
+    tokenProgram: TAccountMetas[9];
   };
-  data: SweepOrphansInstructionData;
+  data: RefundUnusedDepositInstructionData;
 };
 
-export function parseSweepOrphansInstruction<
+export function parseRefundUnusedDepositInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
-): ParsedSweepOrphansInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 7) {
+): ParsedRefundUnusedDepositInstruction<TProgram, TAccountMetas> {
+  if (instruction.accounts.length < 10) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -394,14 +465,19 @@ export function parseSweepOrphansInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
+      sponsor: getNextAccount(),
+      config: getNextAccount(),
+      player: getNextAccount(),
       session: getNextAccount(),
       round: getNextAccount(),
+      roundDeposit: getNextAccount(),
       sessionTreasury: getNextAccount(),
       sessionTreasuryTokens: getNextAccount(),
-      protocolTreasury: getNextAccount(),
-      protocolTreasuryTokens: getNextAccount(),
+      vaultTokens: getNextAccount(),
       tokenProgram: getNextAccount(),
     },
-    data: getSweepOrphansInstructionDataDecoder().decode(instruction.data),
+    data: getRefundUnusedDepositInstructionDataDecoder().decode(
+      instruction.data,
+    ),
   };
 }

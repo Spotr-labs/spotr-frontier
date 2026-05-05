@@ -132,12 +132,41 @@ model SessionRound {
   sideARewardPerShare BigInt          @default(0)
   sideBRewardPerShare BigInt          @default(0)
   totalVolumeLamports BigInt          @default(0)
+  // Wait-phase counters mirroring the on-chain Round struct.
+  depositsCount       Int             @default(0)
+  depositPoolLamports BigInt          @default(0)
+  // Settlement (post-redistribute) state mirroring the on-chain Round.
+  winningSide         PositionSide?
+  totalPoolLamports   BigInt          @default(0)
+  redistributeApplied Boolean         @default(false)
   session             Session         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   pair                FaultLinePair   @relation(fields: [pairId], references: [id], onDelete: Restrict)
   positions           RoundPosition[]
+  deposits            RoundDeposit[]
   referralAccruals    ReferralAccrual[]
 
   @@unique([sessionId, roundIndex])
+}
+
+model RoundDeposit {
+  id                String             @id @default(cuid())
+  roundId           String
+  participantId    String
+  walletAddress    String
+  amountLamports  BigInt
+  /// 0-based ordering within the round, captured when this deposit lands.
+  /// Top/mid/decay tiers in `settle_round` rank winners by this index.
+  depositIndex     Int                 @default(0)
+  depositedAt      DateTime           @default(now())
+  usedAt           DateTime?
+  refundedAt       DateTime?
+  chainDepositTx   String?            @unique
+  chainRefundTx    String?            @unique
+  round            SessionRound       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  participant      SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, participantId])
+  @@index([walletAddress])
 }
 
 model SessionParticipant {
@@ -153,6 +182,7 @@ model SessionParticipant {
   chainPlayerSessionAddress String?      @unique
   session                Session         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   positions              RoundPosition[]
+  deposits               RoundDeposit[]
   rewards                RewardInventory[]
 
   @@unique([sessionId, walletAddress])
@@ -173,6 +203,12 @@ model RoundPosition {
   rewardDebtLamports BigInt
   claimedLamports   BigInt          @default(0)
   claimedAt         DateTime?
+  // Copied from RoundDeposit.depositIndex at enter_position time so the
+  // tier ordering survives independently of the deposit row.
+  depositIndex      Int             @default(0)
+  // Written by settle_round once the redistribute pass runs. claim_round
+  // pays out exactly this amount.
+  finalPayoutLamports BigInt        @default(0)
   round             SessionRound    @relation(fields: [roundId], references: [id], onDelete: Cascade)
   participant       SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 

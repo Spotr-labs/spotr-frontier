@@ -2,6 +2,7 @@
 
 import { useCallback, useTransition } from "react";
 import { toast } from "sonner";
+import type { Address } from "@solana/kit";
 import { useWallet } from "../../lib/wallet/context";
 import { useCluster } from "../cluster-context";
 import { createSignedActionRequest } from "../../lib/wallet/signed-request";
@@ -12,7 +13,8 @@ import {
   submitCloseRoundOnChain,
   submitCreateRoundOnChain,
   submitFinalizeSessionOnChain,
-  submitSweepOrphansOnChain,
+  submitResolveRoundOnChain,
+  submitSettleRoundOnChain,
   submitWithdrawProtocolFeesOnChain,
 } from "../../lib/chain/spotr-ops";
 import type { SpotrSignedActionName } from "../../lib/spotr-signed-action";
@@ -169,14 +171,36 @@ export function useAdminDashboard() {
     },
     [cluster, signer]
   );
-  const sweepOrphansOnChain = useCallback(
-    async (params: { sessionNumber: bigint; roundIndex: number }) => {
+  const resolveRoundOnChain = useCallback(
+    async (params: {
+      sessionNumber: bigint;
+      roundIndex: number;
+      winningSide: "A" | "B";
+    }) => {
       if (!signer) throw new Error("Connect an admin wallet that can sign.");
-      return submitSweepOrphansOnChain({
+      return submitResolveRoundOnChain({
         cluster,
         signer,
         sessionNumber: params.sessionNumber,
         roundIndex: params.roundIndex,
+        winningSide: params.winningSide,
+      });
+    },
+    [cluster, signer]
+  );
+  const settleRoundOnChain = useCallback(
+    async (params: {
+      sessionNumber: bigint;
+      roundIndex: number;
+      winningPositions: Address[];
+    }) => {
+      if (!signer) throw new Error("Connect an admin wallet that can sign.");
+      return submitSettleRoundOnChain({
+        cluster,
+        signer,
+        sessionNumber: params.sessionNumber,
+        roundIndex: params.roundIndex,
+        winningPositions: params.winningPositions,
       });
     },
     [cluster, signer]
@@ -252,7 +276,8 @@ export function useAdminDashboard() {
     closeRoundOnChain,
     adminCloseRoundOnChain,
     adminCloseSessionOnChain,
-    sweepOrphansOnChain,
+    resolveRoundOnChain,
+    settleRoundOnChain,
     finalizeSessionOnChain,
     withdrawProtocolFeesOnChain,
     deploySessionOnChain,

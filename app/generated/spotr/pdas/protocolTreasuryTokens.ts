@@ -17,7 +17,7 @@ export async function findProtocolTreasuryTokensPda(
   config: { programAddress?: Address | undefined } = {},
 ): Promise<ProgramDerivedAddress> {
   const {
-    programAddress = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk" as Address<"9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk">,
+    programAddress = "4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4" as Address<"4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4">,
   } = config;
   return await getProgramDerivedAddress({
     programAddress,

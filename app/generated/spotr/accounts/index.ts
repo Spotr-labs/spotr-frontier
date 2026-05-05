@@ -10,6 +10,7 @@ export * from "./playerRoundPosition";
 export * from "./playerSession";
 export * from "./protocolTreasury";
 export * from "./round";
+export * from "./roundDeposit";
 export * from "./session";
 export * from "./sessionTreasury";
 export * from "./spotrConfig";

@@ -32,6 +32,9 @@ const publicConfig = {
   roundDurationSeconds: Number(
     requireEnv("NEXT_PUBLIC_SPOTR_ROUND_DURATION_SECONDS")
   ),
+  roundFillThreshold: Number(
+    process.env.NEXT_PUBLIC_SPOTR_ROUND_FILL_THRESHOLD ?? "7"
+  ),
   protocolFeeBps: Number(requireEnv("NEXT_PUBLIC_SPOTR_PROTOCOL_FEE_BPS")),
   referralCutBps: Number(requireEnv("NEXT_PUBLIC_SPOTR_REFERRAL_CUT_BPS")),
   defaultSessionStartHourUtc: Number(

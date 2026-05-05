@@ -114,6 +114,7 @@ export async function submitDeploySessionOnChain(
           roundCount: publicSpotrConfig.roundCount,
           roundDurationSeconds: BigInt(publicSpotrConfig.roundDurationSeconds),
           buyInUsdcUnits: 0n,
+          roundFillThreshold: publicSpotrConfig.roundFillThreshold,
         },
       })
     );
@@ -132,6 +133,7 @@ export async function submitDeploySessionOnChain(
       referralCutBps: publicSpotrConfig.referralCutBps,
       startTs: params.startTsSeconds,
       endTs: params.endTsSeconds,
+      roundFillThreshold: publicSpotrConfig.roundFillThreshold,
     })
   );
 

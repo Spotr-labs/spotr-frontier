@@ -62,10 +62,7 @@ export default function AdminOperationsPage() {
           sessions={data?.finalizableSessions ?? []}
           onAction={() => mutate()}
         />
-        <SweepableRoundsCard
-          rounds={data?.sweepableRounds ?? []}
-          onAction={() => mutate()}
-        />
+        <UnsettledRoundsCard rounds={data?.sweepableRounds ?? []} />
         <WithdrawFeesCard
           sessions={data?.withdrawableSessions ?? []}
           onAction={() => mutate()}
@@ -266,17 +263,14 @@ function FinalizableSessionsCard({
   );
 }
 
-function SweepableRoundsCard({
+function UnsettledRoundsCard({
   rounds,
-  onAction,
 }: {
   rounds: AdminOpsRoundRow[];
-  onAction: () => void;
 }) {
-  const { walletAddress, runAction, sweepOrphansOnChain } = useAdminDashboard();
   return (
     <OpsCard
-      title={`Rounds ready to sweep (${rounds.length})`}
+      title={`Rounds awaiting settle (${rounds.length})`}
       icon={<Coins className="h-4 w-4" />}
       empty={rounds.length === 0}
     >
@@ -300,44 +294,12 @@ function SweepableRoundsCard({
             </p>
             <p className="text-[11px] text-muted">{round.category}</p>
           </div>
-          <Button
-            size="sm"
-            disabled={!round.chainSessionNumber}
-            onClick={async () => {
-              if (!walletAddress) {
-                toast.error("Connect an admin wallet first.");
-                return;
-              }
-              if (!round.chainSessionNumber) return;
-              try {
-                toast.info("Sign sweep_orphans in your wallet…");
-                const { signature } = await sweepOrphansOnChain({
-                  sessionNumber: BigInt(round.chainSessionNumber),
-                  roundIndex: round.roundIndex,
-                });
-                runAction(
-                  "/api/admin/sessions/sweep-orphans",
-                  "admin-sweep-orphans",
-                  {
-                    adminWalletAddress: walletAddress,
-                    sessionId: round.sessionId,
-                    roundId: round.roundId,
-                    chainTxSignature: signature,
-                  },
-                  {
-                    successMessage: "Orphans swept.",
-                    onSuccess: onAction,
-                  }
-                );
-              } catch (error) {
-                toast.error(
-                  error instanceof Error ? error.message : "Sweep failed."
-                );
-              }
-            }}
+          <Link
+            href={`/admin/sessions/${round.sessionId}`}
+            className="text-[11px] font-semibold text-primary hover:underline"
           >
-            Sweep orphans
-          </Button>
+            Resolve →
+          </Link>
         </div>
       ))}
     </OpsCard>

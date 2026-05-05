@@ -24,13 +24,16 @@ import {
   parseCloseRoundInstruction,
   parseCreateRoundInstruction,
   parseCreateSessionInstruction,
+  parseDepositForRoundInstruction,
   parseDepositToVaultInstruction,
   parseEnterPositionInstruction,
   parseFinalizeSessionInstruction,
   parseInitializeConfigInstruction,
   parseInitUserVaultInstruction,
   parseJoinSessionInstruction,
-  parseSweepOrphansInstruction,
+  parseRefundUnusedDepositInstruction,
+  parseResolveRoundInstruction,
+  parseSettleRoundInstruction,
   parseUpdateConfigInstruction,
   parseWithdrawFromVaultInstruction,
   parseWithdrawProtocolFeesInstruction,
@@ -41,26 +44,30 @@ import {
   type ParsedCloseRoundInstruction,
   type ParsedCreateRoundInstruction,
   type ParsedCreateSessionInstruction,
+  type ParsedDepositForRoundInstruction,
   type ParsedDepositToVaultInstruction,
   type ParsedEnterPositionInstruction,
   type ParsedFinalizeSessionInstruction,
   type ParsedInitializeConfigInstruction,
   type ParsedInitUserVaultInstruction,
   type ParsedJoinSessionInstruction,
-  type ParsedSweepOrphansInstruction,
+  type ParsedRefundUnusedDepositInstruction,
+  type ParsedResolveRoundInstruction,
+  type ParsedSettleRoundInstruction,
   type ParsedUpdateConfigInstruction,
   type ParsedWithdrawFromVaultInstruction,
   type ParsedWithdrawProtocolFeesInstruction,
 } from "../instructions";
 
 export const SPOTR_MARKETS_PROGRAM_ADDRESS =
-  "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk" as Address<"9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk">;
+  "4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4" as Address<"4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4">;
 
 export enum SpotrMarketsAccount {
   PlayerRoundPosition,
   PlayerSession,
   ProtocolTreasury,
   Round,
+  RoundDeposit,
   Session,
   SessionTreasury,
   SpotrConfig,
@@ -119,6 +126,17 @@ export function identifySpotrMarketsAccount(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([35, 47, 180, 78, 233, 239, 221, 162]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsAccount.RoundDeposit;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([243, 81, 72, 115, 214, 188, 72, 144]),
       ),
       0,
@@ -172,13 +190,16 @@ export enum SpotrMarketsInstruction {
   CloseRound,
   CreateRound,
   CreateSession,
+  DepositForRound,
   DepositToVault,
   EnterPosition,
   FinalizeSession,
   InitUserVault,
   InitializeConfig,
   JoinSession,
-  SweepOrphans,
+  RefundUnusedDeposit,
+  ResolveRound,
+  SettleRound,
   UpdateConfig,
   WithdrawFromVault,
   WithdrawProtocolFees,
@@ -269,6 +290,17 @@ export function identifySpotrMarketsInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([82, 191, 166, 176, 75, 152, 57, 119]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.DepositForRound;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([18, 62, 110, 8, 26, 106, 248, 151]),
       ),
       0,
@@ -335,12 +367,34 @@ export function identifySpotrMarketsInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([7, 150, 88, 141, 44, 161, 12, 42]),
+        new Uint8Array([47, 99, 67, 129, 54, 116, 234, 160]),
       ),
       0,
     )
   ) {
-    return SpotrMarketsInstruction.SweepOrphans;
+    return SpotrMarketsInstruction.RefundUnusedDeposit;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([165, 114, 237, 158, 1, 36, 70, 254]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.ResolveRound;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([40, 101, 18, 1, 31, 129, 52, 77]),
+      ),
+      0,
+    )
+  ) {
+    return SpotrMarketsInstruction.SettleRound;
   }
   if (
     containsBytes(
@@ -381,7 +435,7 @@ export function identifySpotrMarketsInstruction(
 }
 
 export type ParsedSpotrMarketsInstruction<
-  TProgram extends string = "9kiyw78JeJ2yK5G2dxWPczEM1JmiyD3orvdhzrKzfsgk",
+  TProgram extends string = "4L3ARpxux9pP3hAMKsmGt325CkELLjnXq7S98eQpJaB4",
 > =
   | ({
       instructionType: SpotrMarketsInstruction.AdminCloseRound;
@@ -405,6 +459,9 @@ export type ParsedSpotrMarketsInstruction<
       instructionType: SpotrMarketsInstruction.CreateSession;
     } & ParsedCreateSessionInstruction<TProgram>)
   | ({
+      instructionType: SpotrMarketsInstruction.DepositForRound;
+    } & ParsedDepositForRoundInstruction<TProgram>)
+  | ({
       instructionType: SpotrMarketsInstruction.DepositToVault;
     } & ParsedDepositToVaultInstruction<TProgram>)
   | ({
@@ -423,8 +480,14 @@ export type ParsedSpotrMarketsInstruction<
       instructionType: SpotrMarketsInstruction.JoinSession;
     } & ParsedJoinSessionInstruction<TProgram>)
   | ({
-      instructionType: SpotrMarketsInstruction.SweepOrphans;
-    } & ParsedSweepOrphansInstruction<TProgram>)
+      instructionType: SpotrMarketsInstruction.RefundUnusedDeposit;
+    } & ParsedRefundUnusedDepositInstruction<TProgram>)
+  | ({
+      instructionType: SpotrMarketsInstruction.ResolveRound;
+    } & ParsedResolveRoundInstruction<TProgram>)
+  | ({
+      instructionType: SpotrMarketsInstruction.SettleRound;
+    } & ParsedSettleRoundInstruction<TProgram>)
   | ({
       instructionType: SpotrMarketsInstruction.UpdateConfig;
     } & ParsedUpdateConfigInstruction<TProgram>)
@@ -489,6 +552,13 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
         ...parseCreateSessionInstruction(instruction),
       };
     }
+    case SpotrMarketsInstruction.DepositForRound: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.DepositForRound,
+        ...parseDepositForRoundInstruction(instruction),
+      };
+    }
     case SpotrMarketsInstruction.DepositToVault: {
       assertIsInstructionWithAccounts(instruction);
       return {
@@ -531,11 +601,25 @@ export function parseSpotrMarketsInstruction<TProgram extends string>(
         ...parseJoinSessionInstruction(instruction),
       };
     }
-    case SpotrMarketsInstruction.SweepOrphans: {
+    case SpotrMarketsInstruction.RefundUnusedDeposit: {
       assertIsInstructionWithAccounts(instruction);
       return {
-        instructionType: SpotrMarketsInstruction.SweepOrphans,
-        ...parseSweepOrphansInstruction(instruction),
+        instructionType: SpotrMarketsInstruction.RefundUnusedDeposit,
+        ...parseRefundUnusedDepositInstruction(instruction),
+      };
+    }
+    case SpotrMarketsInstruction.ResolveRound: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.ResolveRound,
+        ...parseResolveRoundInstruction(instruction),
+      };
+    }
+    case SpotrMarketsInstruction.SettleRound: {
+      assertIsInstructionWithAccounts(instruction);
+      return {
+        instructionType: SpotrMarketsInstruction.SettleRound,
+        ...parseSettleRoundInstruction(instruction),
       };
     }
     case SpotrMarketsInstruction.UpdateConfig: {

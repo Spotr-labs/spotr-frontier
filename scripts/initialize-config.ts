@@ -56,7 +56,8 @@ async function main() {
       referralCutBps:        Number(process.env.NEXT_PUBLIC_SPOTR_REFERRAL_CUT_BPS ?? 5000),
       roundCount:            Number(process.env.NEXT_PUBLIC_SPOTR_ROUND_COUNT ?? 7),
       roundDurationSeconds:  BigInt(process.env.NEXT_PUBLIC_SPOTR_ROUND_DURATION_SECONDS ?? 30),
-      buyInUsdcUnits:        BigInt(process.env.NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS ?? 35_000_000),
+      buyInUsdcUnits:        BigInt(process.env.NEXT_PUBLIC_SPOTR_SESSION_BUY_IN_LAMPORTS ?? 0),
+      roundFillThreshold:    Number(process.env.NEXT_PUBLIC_SPOTR_ROUND_FILL_THRESHOLD ?? 7),
     },
   });
 

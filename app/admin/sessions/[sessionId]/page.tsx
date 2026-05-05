@@ -290,8 +290,14 @@ function RoundsPanel({
   detail: AdminSessionDetail;
   onRefresh: () => void;
 }) {
-  const { walletAddress, runAction, createRoundOnChain, closeRoundOnChain, sweepOrphansOnChain } =
-    useAdminDashboard();
+  const {
+    walletAddress,
+    runAction,
+    createRoundOnChain,
+    closeRoundOnChain,
+    resolveRoundOnChain,
+    settleRoundOnChain,
+  } = useAdminDashboard();
 
   return (
     <div className="mb-8">
@@ -428,23 +434,30 @@ function RoundsPanel({
                       toast.error("Connect an admin wallet first.");
                       return;
                     }
+                    const side = window.prompt("Winning side: A or B?")?.trim().toUpperCase();
+                    if (side !== "A" && side !== "B") {
+                      toast.error("Resolve cancelled — side must be A or B.");
+                      return;
+                    }
                     try {
-                      toast.info("Sign sweep_orphans in your wallet…");
-                      const { signature } = await sweepOrphansOnChain({
+                      toast.info("Sign resolve_round in your wallet…");
+                      const { signature } = await resolveRoundOnChain({
                         sessionNumber: BigInt(detail.chainSessionNumber!),
                         roundIndex: round.index,
+                        winningSide: side,
                       });
                       runAction(
-                        "/api/admin/sessions/sweep-orphans",
-                        "admin-sweep-orphans",
+                        "/api/admin/rounds/resolve",
+                        "admin-resolve-round",
                         {
                           adminWalletAddress: walletAddress,
                           sessionId: detail.id,
                           roundId: round.id,
+                          winningSide: side,
                           chainTxSignature: signature,
                         },
                         {
-                          successMessage: "Orphans swept.",
+                          successMessage: `Round resolved (side ${side}).`,
                           onSuccess: onRefresh,
                         }
                       );
@@ -452,12 +465,50 @@ function RoundsPanel({
                       toast.error(
                         error instanceof Error
                           ? error.message
-                          : "Sweep failed."
+                          : "Resolve failed."
                       );
                     }
                   }}
                 >
-                  Sweep orphans
+                  Resolve round
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={round.status !== "closed"}
+                  onClick={async () => {
+                    if (!walletAddress) {
+                      toast.error("Connect an admin wallet first.");
+                      return;
+                    }
+                    try {
+                      toast.info("Building settle_round…");
+                      // The server fetches winning-side positions and
+                      // builds the remaining_accounts list for us.
+                      runAction(
+                        "/api/admin/rounds/settle",
+                        "admin-settle-round",
+                        {
+                          adminWalletAddress: walletAddress,
+                          sessionId: detail.id,
+                          roundId: round.id,
+                        },
+                        {
+                          successMessage: "Round settled.",
+                          onSuccess: onRefresh,
+                        }
+                      );
+                      void settleRoundOnChain;
+                    } catch (error) {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Settle failed."
+                      );
+                    }
+                  }}
+                >
+                  Settle round
                 </Button>
               </div>
             ) : null}

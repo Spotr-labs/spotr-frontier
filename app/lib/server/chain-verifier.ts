@@ -126,12 +126,13 @@ export async function verifyJoinSessionTx(params: {
   );
   const expectedSession = String(expectedSessionAddress);
 
+  // Sponsored layout: accounts = [sponsor, config, player, session, ...]
   const match = joinInstructions.find((ix) => {
     const data = new Uint8Array(base58.encode(ix.data));
     if (!bytesStartWith(data, JOIN_SESSION_DISCRIMINATOR)) return false;
     if (ix.accounts.length < 4) return false;
-    const playerKey = accountKeys[ix.accounts[0]];
-    const sessionKey = accountKeys[ix.accounts[1]];
+    const playerKey = accountKeys[ix.accounts[2]];
+    const sessionKey = accountKeys[ix.accounts[3]];
     return playerKey === params.expectedPlayer && sessionKey === expectedSession;
   });
 

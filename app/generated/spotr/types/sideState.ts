@@ -8,63 +8,41 @@
 
 import {
   combineCodec,
-  getArrayDecoder,
-  getArrayEncoder,
-  getBooleanDecoder,
-  getBooleanEncoder,
   getStructDecoder,
   getStructEncoder,
   getU32Decoder,
   getU32Encoder,
   getU64Decoder,
   getU64Encoder,
-  type Codec,
-  type Decoder,
-  type Encoder,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
 } from "@solana/kit";
-import {
-  getDepositEntryDecoder,
-  getDepositEntryEncoder,
-  type DepositEntry,
-  type DepositEntryArgs,
-} from ".";
 
 export type SideState = {
   totalNetDepositsUsdcUnits: bigint;
-  totalEntitledUsdcUnits: bigint;
   totalEntries: number;
-  orphansSwept: boolean;
-  entries: Array<DepositEntry>;
 };
 
 export type SideStateArgs = {
   totalNetDepositsUsdcUnits: number | bigint;
-  totalEntitledUsdcUnits: number | bigint;
   totalEntries: number;
-  orphansSwept: boolean;
-  entries: Array<DepositEntryArgs>;
 };
 
-export function getSideStateEncoder(): Encoder<SideStateArgs> {
+export function getSideStateEncoder(): FixedSizeEncoder<SideStateArgs> {
   return getStructEncoder([
     ["totalNetDepositsUsdcUnits", getU64Encoder()],
-    ["totalEntitledUsdcUnits", getU64Encoder()],
     ["totalEntries", getU32Encoder()],
-    ["orphansSwept", getBooleanEncoder()],
-    ["entries", getArrayEncoder(getDepositEntryEncoder())],
   ]);
 }
 
-export function getSideStateDecoder(): Decoder<SideState> {
+export function getSideStateDecoder(): FixedSizeDecoder<SideState> {
   return getStructDecoder([
     ["totalNetDepositsUsdcUnits", getU64Decoder()],
-    ["totalEntitledUsdcUnits", getU64Decoder()],
     ["totalEntries", getU32Decoder()],
-    ["orphansSwept", getBooleanDecoder()],
-    ["entries", getArrayDecoder(getDepositEntryDecoder())],
   ]);
 }
 
-export function getSideStateCodec(): Codec<SideStateArgs, SideState> {
+export function getSideStateCodec(): FixedSizeCodec<SideStateArgs, SideState> {
   return combineCodec(getSideStateEncoder(), getSideStateDecoder());
 }

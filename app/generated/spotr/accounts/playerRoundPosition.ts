@@ -23,8 +23,8 @@ import {
   getBytesEncoder,
   getStructDecoder,
   getStructEncoder,
-  getU32Decoder,
-  getU32Encoder,
+  getU16Decoder,
+  getU16Encoder,
   getU64Decoder,
   getU64Encoder,
   getU8Decoder,
@@ -64,8 +64,18 @@ export type PlayerRoundPosition = {
   round: Address;
   player: Address;
   side: SideSelection;
-  entryIndex: number;
+  /**
+   * 0-based ordering inside the round, copied from `RoundDeposit` at
+   * `enter_position` time. `settle_round` sorts winning positions by
+   * this index to determine top / mid / decay tiers.
+   */
+  depositIndex: number;
   netAmountUsdcUnits: bigint;
+  /**
+   * Final payout written by `settle_round` (PM_i + redistribution).
+   * Zero until settlement; `claim_round` transfers this amount.
+   */
+  finalPayoutUsdcUnits: bigint;
   claimedUsdcUnits: bigint;
   claimed: boolean;
   bump: number;
@@ -75,8 +85,18 @@ export type PlayerRoundPositionArgs = {
   round: Address;
   player: Address;
   side: SideSelectionArgs;
-  entryIndex: number;
+  /**
+   * 0-based ordering inside the round, copied from `RoundDeposit` at
+   * `enter_position` time. `settle_round` sorts winning positions by
+   * this index to determine top / mid / decay tiers.
+   */
+  depositIndex: number;
   netAmountUsdcUnits: number | bigint;
+  /**
+   * Final payout written by `settle_round` (PM_i + redistribution).
+   * Zero until settlement; `claim_round` transfers this amount.
+   */
+  finalPayoutUsdcUnits: number | bigint;
   claimedUsdcUnits: number | bigint;
   claimed: boolean;
   bump: number;
@@ -90,8 +110,9 @@ export function getPlayerRoundPositionEncoder(): FixedSizeEncoder<PlayerRoundPos
       ["round", getAddressEncoder()],
       ["player", getAddressEncoder()],
       ["side", getSideSelectionEncoder()],
-      ["entryIndex", getU32Encoder()],
+      ["depositIndex", getU16Encoder()],
       ["netAmountUsdcUnits", getU64Encoder()],
+      ["finalPayoutUsdcUnits", getU64Encoder()],
       ["claimedUsdcUnits", getU64Encoder()],
       ["claimed", getBooleanEncoder()],
       ["bump", getU8Encoder()],
@@ -110,8 +131,9 @@ export function getPlayerRoundPositionDecoder(): FixedSizeDecoder<PlayerRoundPos
     ["round", getAddressDecoder()],
     ["player", getAddressDecoder()],
     ["side", getSideSelectionDecoder()],
-    ["entryIndex", getU32Decoder()],
+    ["depositIndex", getU16Decoder()],
     ["netAmountUsdcUnits", getU64Decoder()],
+    ["finalPayoutUsdcUnits", getU64Decoder()],
     ["claimedUsdcUnits", getU64Decoder()],
     ["claimed", getBooleanDecoder()],
     ["bump", getU8Decoder()],
@@ -199,5 +221,5 @@ export async function fetchAllMaybePlayerRoundPosition(
 }
 
 export function getPlayerRoundPositionSize(): number {
-  return 95;
+  return 101;
 }

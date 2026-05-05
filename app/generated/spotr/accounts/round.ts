@@ -17,12 +17,18 @@ import {
   fixEncoderSize,
   getAddressDecoder,
   getAddressEncoder,
+  getBooleanDecoder,
+  getBooleanEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getI64Decoder,
   getI64Encoder,
+  getOptionDecoder,
+  getOptionEncoder,
   getStructDecoder,
   getStructEncoder,
+  getU16Decoder,
+  getU16Encoder,
   getU64Decoder,
   getU64Encoder,
   getU8Decoder,
@@ -38,15 +44,21 @@ import {
   type FetchAccountsConfig,
   type MaybeAccount,
   type MaybeEncodedAccount,
+  type Option,
+  type OptionOrNullable,
   type ReadonlyUint8Array,
 } from "@solana/kit";
 import {
   getRoundStateDecoder,
   getRoundStateEncoder,
+  getSideSelectionDecoder,
+  getSideSelectionEncoder,
   getSideStateDecoder,
   getSideStateEncoder,
   type RoundState,
   type RoundStateArgs,
+  type SideSelection,
+  type SideSelectionArgs,
   type SideState,
   type SideStateArgs,
 } from "../types";
@@ -70,6 +82,32 @@ export type Round = {
   sideA: SideState;
   sideB: SideState;
   totalVolumeUsdcUnits: bigint;
+  /**
+   * Number of distinct wallets that have called `deposit_for_round` for
+   * this round. The round flips `Pending → Open` when this reaches
+   * `session.round_fill_threshold`.
+   */
+  depositsCount: number;
+  /**
+   * Sum of all `deposit_for_round` amounts. The wager bookkeeping inside
+   * `enter_position` then reads each player's amount from their
+   * `RoundDeposit` PDA.
+   */
+  totalDepositPoolUsdcUnits: bigint;
+  /** Set by `resolve_round` once the admin calls the outcome. */
+  winningSide: Option<SideSelection>;
+  /**
+   * Pari-mutuel pool P (sum of net stakes across both sides), captured at
+   * `resolve_round` time. `settle_round` divides this among winners.
+   */
+  totalPoolUsdcUnits: bigint;
+  /** N — number of positions on the winning side. */
+  winningSideCount: number;
+  /**
+   * Set by `settle_round` after final payouts are written to each
+   * winning position's `final_payout_usdc_units`.
+   */
+  redistributeApplied: boolean;
   bump: number;
 };
 
@@ -83,6 +121,32 @@ export type RoundArgs = {
   sideA: SideStateArgs;
   sideB: SideStateArgs;
   totalVolumeUsdcUnits: number | bigint;
+  /**
+   * Number of distinct wallets that have called `deposit_for_round` for
+   * this round. The round flips `Pending → Open` when this reaches
+   * `session.round_fill_threshold`.
+   */
+  depositsCount: number;
+  /**
+   * Sum of all `deposit_for_round` amounts. The wager bookkeeping inside
+   * `enter_position` then reads each player's amount from their
+   * `RoundDeposit` PDA.
+   */
+  totalDepositPoolUsdcUnits: number | bigint;
+  /** Set by `resolve_round` once the admin calls the outcome. */
+  winningSide: OptionOrNullable<SideSelectionArgs>;
+  /**
+   * Pari-mutuel pool P (sum of net stakes across both sides), captured at
+   * `resolve_round` time. `settle_round` divides this among winners.
+   */
+  totalPoolUsdcUnits: number | bigint;
+  /** N — number of positions on the winning side. */
+  winningSideCount: number;
+  /**
+   * Set by `settle_round` after final payouts are written to each
+   * winning position's `final_payout_usdc_units`.
+   */
+  redistributeApplied: boolean;
   bump: number;
 };
 
@@ -100,6 +164,12 @@ export function getRoundEncoder(): Encoder<RoundArgs> {
       ["sideA", getSideStateEncoder()],
       ["sideB", getSideStateEncoder()],
       ["totalVolumeUsdcUnits", getU64Encoder()],
+      ["depositsCount", getU16Encoder()],
+      ["totalDepositPoolUsdcUnits", getU64Encoder()],
+      ["winningSide", getOptionEncoder(getSideSelectionEncoder())],
+      ["totalPoolUsdcUnits", getU64Encoder()],
+      ["winningSideCount", getU16Encoder()],
+      ["redistributeApplied", getBooleanEncoder()],
       ["bump", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: ROUND_DISCRIMINATOR }),
@@ -119,6 +189,12 @@ export function getRoundDecoder(): Decoder<Round> {
     ["sideA", getSideStateDecoder()],
     ["sideB", getSideStateDecoder()],
     ["totalVolumeUsdcUnits", getU64Decoder()],
+    ["depositsCount", getU16Decoder()],
+    ["totalDepositPoolUsdcUnits", getU64Decoder()],
+    ["winningSide", getOptionDecoder(getSideSelectionDecoder())],
+    ["totalPoolUsdcUnits", getU64Decoder()],
+    ["winningSideCount", getU16Decoder()],
+    ["redistributeApplied", getBooleanDecoder()],
     ["bump", getU8Decoder()],
   ]);
 }

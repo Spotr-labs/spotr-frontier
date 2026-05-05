@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { address } from "@solana/kit";
-import { createClient } from "@solana/kit-client-rpc";
 import { useWallet } from "../lib/wallet/context";
 import { useCluster } from "../components/cluster-context";
 import { WalletButton } from "../components/wallet-button";
@@ -19,8 +18,6 @@ import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
 import { useVaultBalance } from "../lib/hooks/use-vault-balance";
 import { lamportsToSol } from "../lib/format";
 import { microUsdcToDisplay } from "../lib/usdc";
-import { getClusterUrl, getClusterWsConfig } from "../lib/solana-client";
-import { getInitUserVaultInstructionAsync } from "../generated/spotr/instructions";
 
 type AirdropStatus = "idle" | "pending" | "ok" | "err";
 
@@ -133,7 +130,7 @@ function AirdropCard({
 }
 
 export default function AirdropPage() {
-  const { wallet, status: walletStatus, signer } = useWallet();
+  const { wallet, status: walletStatus } = useWallet();
   const { cluster } = useCluster();
   const sol = useAirdrop("sol");
   const usdc = useAirdrop("usdc");
@@ -175,22 +172,25 @@ export default function AirdropPage() {
   }, [usdcVault.status]);
 
   const initVault = async (): Promise<boolean> => {
-    if (!signer || !walletAddr || !usdcMint) return false;
+    if (!walletAddr || !usdcMint) return false;
     setInitStatus("pending");
     setInitSig(null);
     setInitErr(null);
     try {
-      const txClient = createClient({
-        url: getClusterUrl(cluster),
-        rpcSubscriptionsConfig: getClusterWsConfig(cluster),
-        payer: signer,
+      const res = await fetch("/api/airdrop/init-vault", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: walletAddr }),
       });
-      const initIx = await getInitUserVaultInstructionAsync({
-        owner: signer,
-        usdcMint: address(usdcMint),
-      });
-      const result = await txClient.sendTransaction([initIx]);
-      setInitSig(String(result.context.signature));
+      const data = (await res.json()) as {
+        signature?: string;
+        alreadyInitialized?: boolean;
+        error?: string;
+      };
+      if (!res.ok || data.error) {
+        throw new Error(data.error ?? "Vault init failed.");
+      }
+      setInitSig(data.signature ?? null);
       setInitStatus("ok");
       await vault.mutate();
       return true;

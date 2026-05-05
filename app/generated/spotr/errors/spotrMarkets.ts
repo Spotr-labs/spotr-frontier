@@ -54,9 +54,31 @@ export const SPOTR_MARKETS_ERROR__VAULT_LOCKED = 0x1781; // 6017
 export const SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE = 0x1782; // 6018
 /** InvalidMint: Token mint or owner does not match expected USDC mint */
 export const SPOTR_MARKETS_ERROR__INVALID_MINT = 0x1783; // 6019
+/** RoundNotPending: The round is not in the wait phase */
+export const SPOTR_MARKETS_ERROR__ROUND_NOT_PENDING = 0x1784; // 6020
+/** RoundNotOpen: The round is not in the predict phase */
+export const SPOTR_MARKETS_ERROR__ROUND_NOT_OPEN = 0x1785; // 6021
+/** DepositAlreadyUsed: The deposit has already been used or refunded */
+export const SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_USED = 0x1786; // 6022
+/** DepositAlreadyExists: This player has already deposited for the round */
+export const SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_EXISTS = 0x1787; // 6023
+/** RoundAlreadyResolved: This round has already been resolved */
+export const SPOTR_MARKETS_ERROR__ROUND_ALREADY_RESOLVED = 0x1788; // 6024
+/** RoundNotResolved: This round has not been resolved yet */
+export const SPOTR_MARKETS_ERROR__ROUND_NOT_RESOLVED = 0x1789; // 6025
+/** RoundAlreadySettled: This round has already been settled */
+export const SPOTR_MARKETS_ERROR__ROUND_ALREADY_SETTLED = 0x178a; // 6026
+/** RoundNotSettled: This round has not been settled yet */
+export const SPOTR_MARKETS_ERROR__ROUND_NOT_SETTLED = 0x178b; // 6027
+/** WrongSide: This position is on the losing side */
+export const SPOTR_MARKETS_ERROR__WRONG_SIDE = 0x178c; // 6028
+/** MissingWinningPositions: Number of supplied winning positions does not match the round */
+export const SPOTR_MARKETS_ERROR__MISSING_WINNING_POSITIONS = 0x178d; // 6029
 
 export type SpotrMarketsError =
   | typeof SPOTR_MARKETS_ERROR__ALREADY_CLAIMED
+  | typeof SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_EXISTS
+  | typeof SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_USED
   | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_ESCROW
   | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_TREASURY_BALANCE
   | typeof SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE
@@ -65,9 +87,16 @@ export type SpotrMarketsError =
   | typeof SPOTR_MARKETS_ERROR__INVALID_MINT
   | typeof SPOTR_MARKETS_ERROR__INVALID_ROUND_INDEX
   | typeof SPOTR_MARKETS_ERROR__MATH_OVERFLOW
+  | typeof SPOTR_MARKETS_ERROR__MISSING_WINNING_POSITIONS
   | typeof SPOTR_MARKETS_ERROR__NOTHING_TO_CLAIM
   | typeof SPOTR_MARKETS_ERROR__ROUND_ALREADY_ENTERED
+  | typeof SPOTR_MARKETS_ERROR__ROUND_ALREADY_RESOLVED
+  | typeof SPOTR_MARKETS_ERROR__ROUND_ALREADY_SETTLED
   | typeof SPOTR_MARKETS_ERROR__ROUND_CLOSED
+  | typeof SPOTR_MARKETS_ERROR__ROUND_NOT_OPEN
+  | typeof SPOTR_MARKETS_ERROR__ROUND_NOT_PENDING
+  | typeof SPOTR_MARKETS_ERROR__ROUND_NOT_RESOLVED
+  | typeof SPOTR_MARKETS_ERROR__ROUND_NOT_SETTLED
   | typeof SPOTR_MARKETS_ERROR__ROUND_STILL_OPEN
   | typeof SPOTR_MARKETS_ERROR__SESSION_CLOSED
   | typeof SPOTR_MARKETS_ERROR__SESSION_NOT_JOINABLE
@@ -75,12 +104,15 @@ export type SpotrMarketsError =
   | typeof SPOTR_MARKETS_ERROR__SESSION_STILL_IN_PROGRESS
   | typeof SPOTR_MARKETS_ERROR__SIDE_FULL
   | typeof SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM
-  | typeof SPOTR_MARKETS_ERROR__VAULT_LOCKED;
+  | typeof SPOTR_MARKETS_ERROR__VAULT_LOCKED
+  | typeof SPOTR_MARKETS_ERROR__WRONG_SIDE;
 
 let spotrMarketsErrorMessages: Record<SpotrMarketsError, string> | undefined;
 if (process.env.NODE_ENV !== "production") {
   spotrMarketsErrorMessages = {
     [SPOTR_MARKETS_ERROR__ALREADY_CLAIMED]: `This position has already been claimed`,
+    [SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_EXISTS]: `This player has already deposited for the round`,
+    [SPOTR_MARKETS_ERROR__DEPOSIT_ALREADY_USED]: `The deposit has already been used or refunded`,
     [SPOTR_MARKETS_ERROR__INSUFFICIENT_ESCROW]: `There is not enough escrow left for this position`,
     [SPOTR_MARKETS_ERROR__INSUFFICIENT_TREASURY_BALANCE]: `Session treasury would drop below rent-exempt minimum`,
     [SPOTR_MARKETS_ERROR__INSUFFICIENT_VAULT_BALANCE]: `Vault has insufficient USDC balance for this withdrawal`,
@@ -89,9 +121,16 @@ if (process.env.NODE_ENV !== "production") {
     [SPOTR_MARKETS_ERROR__INVALID_MINT]: `Token mint or owner does not match expected USDC mint`,
     [SPOTR_MARKETS_ERROR__INVALID_ROUND_INDEX]: `The round index is invalid`,
     [SPOTR_MARKETS_ERROR__MATH_OVERFLOW]: `Math overflow`,
+    [SPOTR_MARKETS_ERROR__MISSING_WINNING_POSITIONS]: `Number of supplied winning positions does not match the round`,
     [SPOTR_MARKETS_ERROR__NOTHING_TO_CLAIM]: `There is nothing to claim`,
     [SPOTR_MARKETS_ERROR__ROUND_ALREADY_ENTERED]: `This player already entered the round`,
+    [SPOTR_MARKETS_ERROR__ROUND_ALREADY_RESOLVED]: `This round has already been resolved`,
+    [SPOTR_MARKETS_ERROR__ROUND_ALREADY_SETTLED]: `This round has already been settled`,
     [SPOTR_MARKETS_ERROR__ROUND_CLOSED]: `The round is already closed`,
+    [SPOTR_MARKETS_ERROR__ROUND_NOT_OPEN]: `The round is not in the predict phase`,
+    [SPOTR_MARKETS_ERROR__ROUND_NOT_PENDING]: `The round is not in the wait phase`,
+    [SPOTR_MARKETS_ERROR__ROUND_NOT_RESOLVED]: `This round has not been resolved yet`,
+    [SPOTR_MARKETS_ERROR__ROUND_NOT_SETTLED]: `This round has not been settled yet`,
     [SPOTR_MARKETS_ERROR__ROUND_STILL_OPEN]: `The round is still open`,
     [SPOTR_MARKETS_ERROR__SESSION_CLOSED]: `The session is already closed`,
     [SPOTR_MARKETS_ERROR__SESSION_NOT_JOINABLE]: `The session can no longer be joined`,
@@ -100,6 +139,7 @@ if (process.env.NODE_ENV !== "production") {
     [SPOTR_MARKETS_ERROR__SIDE_FULL]: `The side is full (per-side entry cap reached)`,
     [SPOTR_MARKETS_ERROR__STAKE_BELOW_MINIMUM]: `Per-position stake is below the minimum`,
     [SPOTR_MARKETS_ERROR__VAULT_LOCKED]: `Vault is locked while at least one session is active`,
+    [SPOTR_MARKETS_ERROR__WRONG_SIDE]: `This position is on the losing side`,
   };
 }
 

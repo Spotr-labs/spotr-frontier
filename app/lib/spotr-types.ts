@@ -16,6 +16,7 @@ export type SpotrPublicConfig = {
   sessionBuyInLamports: number;
   roundCount: number;
   roundDurationSeconds: number;
+  roundFillThreshold: number;
   protocolFeeBps: number;
   referralCutBps: number;
   defaultSessionStartHourUtc: number;
@@ -70,6 +71,12 @@ export type SessionRoundSummary = {
   stakeLamports: number | null;
   claimableLamports: number;
   claimedLamports: number;
+  // Wait-phase fields. `walletsDepositedForRound` mirrors the on-chain
+  // Round.deposits_count; `depositLamports` is the connected wallet's own
+  // RoundDeposit.amount_usdc_units (null if they haven't deposited yet).
+  walletsDepositedForRound: number;
+  depositLamports: number | null;
+  depositRefunded: boolean;
 };
 
 export type LiveSessionSnapshot = {
@@ -216,6 +223,21 @@ export type SessionPublicResults = {
   walletsJoined: number;
   totalEscrowLamports: number;
   rounds: SessionRoundResult[];
+};
+
+export type ProfileSessionHistoryRow = {
+  sessionId: string;
+  title: string;
+  status: SessionStatus;
+  joinedAtIso: string;
+  startsAtIso: string;
+  endsAtIso: string;
+  positionsEntered: number;
+  netPnlLamports: number;
+};
+
+export type ProfileSessionHistoryResponse = {
+  items: ProfileSessionHistoryRow[];
 };
 
 export type AdminCursor = string | null;

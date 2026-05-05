@@ -121,6 +121,7 @@ export type CreateSessionInstructionData = {
   referralCutBps: number;
   startTs: bigint;
   endTs: bigint;
+  roundFillThreshold: number;
 };
 
 export type CreateSessionInstructionDataArgs = {
@@ -132,6 +133,7 @@ export type CreateSessionInstructionDataArgs = {
   referralCutBps: number;
   startTs: number | bigint;
   endTs: number | bigint;
+  roundFillThreshold: number;
 };
 
 export function getCreateSessionInstructionDataEncoder(): FixedSizeEncoder<CreateSessionInstructionDataArgs> {
@@ -146,6 +148,7 @@ export function getCreateSessionInstructionDataEncoder(): FixedSizeEncoder<Creat
       ["referralCutBps", getU16Encoder()],
       ["startTs", getI64Encoder()],
       ["endTs", getI64Encoder()],
+      ["roundFillThreshold", getU8Encoder()],
     ]),
     (value) => ({ ...value, discriminator: CREATE_SESSION_DISCRIMINATOR }),
   );
@@ -162,6 +165,7 @@ export function getCreateSessionInstructionDataDecoder(): FixedSizeDecoder<Creat
     ["referralCutBps", getU16Decoder()],
     ["startTs", getI64Decoder()],
     ["endTs", getI64Decoder()],
+    ["roundFillThreshold", getU8Decoder()],
   ]);
 }
 
@@ -203,6 +207,7 @@ export type CreateSessionAsyncInput<
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
+  roundFillThreshold: CreateSessionInstructionDataArgs["roundFillThreshold"];
 };
 
 export async function getCreateSessionInstructionAsync<
@@ -356,6 +361,7 @@ export type CreateSessionInput<
   referralCutBps: CreateSessionInstructionDataArgs["referralCutBps"];
   startTs: CreateSessionInstructionDataArgs["startTs"];
   endTs: CreateSessionInstructionDataArgs["endTs"];
+  roundFillThreshold: CreateSessionInstructionDataArgs["roundFillThreshold"];
 };
 
 export function getCreateSessionInstruction<

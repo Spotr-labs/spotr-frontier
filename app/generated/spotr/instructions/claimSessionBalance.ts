@@ -31,6 +31,7 @@ import {
   type WritableSignerAccount,
 } from "@solana/kit";
 import {
+  findConfigPda,
   findPlayerSessionPda,
   findSessionTreasuryPda,
   findSessionTreasuryTokensPda,
@@ -56,6 +57,8 @@ export function getClaimSessionBalanceDiscriminatorBytes() {
 
 export type ClaimSessionBalanceInstruction<
   TProgram extends string = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
+  TAccountSponsor extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
   TAccountPlayer extends string | AccountMeta<string> = string,
   TAccountSession extends string | AccountMeta<string> = string,
   TAccountPlayerSession extends string | AccountMeta<string> = string,
@@ -70,9 +73,15 @@ export type ClaimSessionBalanceInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
+      TAccountSponsor extends string
+        ? WritableSignerAccount<TAccountSponsor> &
+            AccountSignerMeta<TAccountSponsor>
+        : TAccountSponsor,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
       TAccountPlayer extends string
-        ? WritableSignerAccount<TAccountPlayer> &
-            AccountSignerMeta<TAccountPlayer>
+        ? ReadonlyAccount<TAccountPlayer>
         : TAccountPlayer,
       TAccountSession extends string
         ? ReadonlyAccount<TAccountSession>
@@ -132,6 +141,8 @@ export function getClaimSessionBalanceInstructionDataCodec(): FixedSizeCodec<
 }
 
 export type ClaimSessionBalanceAsyncInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountPlayerSession extends string = string,
@@ -141,7 +152,10 @@ export type ClaimSessionBalanceAsyncInput<
   TAccountVaultTokens extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
-  player: TransactionSigner<TAccountPlayer>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config?: Address<TAccountConfig>;
+  /** land in the player's vault PDA derived from this key. */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   playerSession?: Address<TAccountPlayerSession>;
   sessionTreasury?: Address<TAccountSessionTreasury>;
@@ -152,6 +166,8 @@ export type ClaimSessionBalanceAsyncInput<
 };
 
 export async function getClaimSessionBalanceInstructionAsync<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountPlayerSession extends string,
@@ -163,6 +179,8 @@ export async function getClaimSessionBalanceInstructionAsync<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimSessionBalanceAsyncInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountPlayerSession,
@@ -176,6 +194,8 @@ export async function getClaimSessionBalanceInstructionAsync<
 ): Promise<
   ClaimSessionBalanceInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountPlayerSession,
@@ -192,7 +212,9 @@ export async function getClaimSessionBalanceInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    player: { value: input.player ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: false },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
     sessionTreasury: {
@@ -213,6 +235,9 @@ export async function getClaimSessionBalanceInstructionAsync<
   >;
 
   // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await findConfigPda();
+  }
   if (!accounts.playerSession.value) {
     accounts.playerSession.value = await findPlayerSessionPda({
       session: expectAddress(accounts.session.value),
@@ -247,6 +272,8 @@ export async function getClaimSessionBalanceInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.playerSession),
@@ -260,6 +287,8 @@ export async function getClaimSessionBalanceInstructionAsync<
     programAddress,
   } as ClaimSessionBalanceInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountPlayerSession,
@@ -272,6 +301,8 @@ export async function getClaimSessionBalanceInstructionAsync<
 }
 
 export type ClaimSessionBalanceInput<
+  TAccountSponsor extends string = string,
+  TAccountConfig extends string = string,
   TAccountPlayer extends string = string,
   TAccountSession extends string = string,
   TAccountPlayerSession extends string = string,
@@ -281,7 +312,10 @@ export type ClaimSessionBalanceInput<
   TAccountVaultTokens extends string = string,
   TAccountTokenProgram extends string = string,
 > = {
-  player: TransactionSigner<TAccountPlayer>;
+  sponsor: TransactionSigner<TAccountSponsor>;
+  config: Address<TAccountConfig>;
+  /** land in the player's vault PDA derived from this key. */
+  player: Address<TAccountPlayer>;
   session: Address<TAccountSession>;
   playerSession: Address<TAccountPlayerSession>;
   sessionTreasury: Address<TAccountSessionTreasury>;
@@ -292,6 +326,8 @@ export type ClaimSessionBalanceInput<
 };
 
 export function getClaimSessionBalanceInstruction<
+  TAccountSponsor extends string,
+  TAccountConfig extends string,
   TAccountPlayer extends string,
   TAccountSession extends string,
   TAccountPlayerSession extends string,
@@ -303,6 +339,8 @@ export function getClaimSessionBalanceInstruction<
   TProgramAddress extends Address = typeof SPOTR_MARKETS_PROGRAM_ADDRESS,
 >(
   input: ClaimSessionBalanceInput<
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountPlayerSession,
@@ -315,6 +353,8 @@ export function getClaimSessionBalanceInstruction<
   config?: { programAddress?: TProgramAddress },
 ): ClaimSessionBalanceInstruction<
   TProgramAddress,
+  TAccountSponsor,
+  TAccountConfig,
   TAccountPlayer,
   TAccountSession,
   TAccountPlayerSession,
@@ -330,7 +370,9 @@ export function getClaimSessionBalanceInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    player: { value: input.player ?? null, isWritable: true },
+    sponsor: { value: input.sponsor ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    player: { value: input.player ?? null, isWritable: false },
     session: { value: input.session ?? null, isWritable: false },
     playerSession: { value: input.playerSession ?? null, isWritable: true },
     sessionTreasury: {
@@ -359,6 +401,8 @@ export function getClaimSessionBalanceInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.sponsor),
+      getAccountMeta(accounts.config),
       getAccountMeta(accounts.player),
       getAccountMeta(accounts.session),
       getAccountMeta(accounts.playerSession),
@@ -372,6 +416,8 @@ export function getClaimSessionBalanceInstruction<
     programAddress,
   } as ClaimSessionBalanceInstruction<
     TProgramAddress,
+    TAccountSponsor,
+    TAccountConfig,
     TAccountPlayer,
     TAccountSession,
     TAccountPlayerSession,
@@ -389,14 +435,17 @@ export type ParsedClaimSessionBalanceInstruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    player: TAccountMetas[0];
-    session: TAccountMetas[1];
-    playerSession: TAccountMetas[2];
-    sessionTreasury: TAccountMetas[3];
-    sessionTreasuryTokens: TAccountMetas[4];
-    vault: TAccountMetas[5];
-    vaultTokens: TAccountMetas[6];
-    tokenProgram: TAccountMetas[7];
+    sponsor: TAccountMetas[0];
+    config: TAccountMetas[1];
+    /** land in the player's vault PDA derived from this key. */
+    player: TAccountMetas[2];
+    session: TAccountMetas[3];
+    playerSession: TAccountMetas[4];
+    sessionTreasury: TAccountMetas[5];
+    sessionTreasuryTokens: TAccountMetas[6];
+    vault: TAccountMetas[7];
+    vaultTokens: TAccountMetas[8];
+    tokenProgram: TAccountMetas[9];
   };
   data: ClaimSessionBalanceInstructionData;
 };
@@ -409,7 +458,7 @@ export function parseClaimSessionBalanceInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedClaimSessionBalanceInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 8) {
+  if (instruction.accounts.length < 10) {
     // TODO: Coded error.
     throw new Error("Not enough accounts");
   }
@@ -422,6 +471,8 @@ export function parseClaimSessionBalanceInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
+      sponsor: getNextAccount(),
+      config: getNextAccount(),
       player: getNextAccount(),
       session: getNextAccount(),
       playerSession: getNextAccount(),

@@ -15,7 +15,8 @@ export type SpotrSignedActionName =
   | "admin-expire-session"
   | "admin-finalize-session"
   | "admin-close-round"
-  | "admin-sweep-orphans"
+  | "admin-resolve-round"
+  | "admin-settle-round"
   | "admin-withdraw-protocol-fees"
   | "admin-assign-card-pack"
   | "admin-sync-sessions";
