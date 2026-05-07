@@ -47,6 +47,9 @@ importers:
       '@solana-program/token':
         specifier: ^0.13.0
         version: 0.13.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/codecs-strings':
+        specifier: ^6.9.0
+        version: 6.9.0(typescript@5.9.3)
       '@solana/kit':
         specifier: ^6.3.0
         version: 6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -56,6 +59,9 @@ importers:
       '@solana/kit-plugin-rpc':
         specifier: ^0.7.0
         version: 0.7.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/signers':
+        specifier: ^6.9.0
+        version: 6.9.0(typescript@5.9.3)
       '@solana/wallet-standard-features':
         specifier: ^1.3.0
         version: 1.3.0
