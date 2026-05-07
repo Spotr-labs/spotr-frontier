@@ -260,6 +260,7 @@ pub mod spotr_markets {
         player_session.remaining_escrow_usdc_units = buy_in;
         player_session.entered_round_mask = 0;
         player_session.deposited_round_mask = 0;
+        player_session.joined_at = clock.unix_timestamp;
         player_session.bump = ctx.bumps.player_session;
         player_session.round_choices = vec![u8::MAX; session.round_count as usize];
 
@@ -431,7 +432,18 @@ pub mod spotr_markets {
             clock.unix_timestamp <= session.end_ts,
             SpotrError::SessionClosed
         );
-        require!(round.state == RoundState::Pending, SpotrError::RoundNotPending);
+        // A player may deposit while the round is still `Pending`, or — as a
+        // session-late-but-round-early deposit — while the round is `Open`,
+        // but only if they joined the session before the round actually
+        // flipped open. `round.opens_at` is stamped to the flip moment below
+        // (and remains the scheduled `session.start_ts` until the flip), so a
+        // wallet that joined the session *after* the flip will be rejected.
+        require!(
+            round.state == RoundState::Pending
+                || (round.state == RoundState::Open
+                    && player_session.joined_at <= round.opens_at),
+            SpotrError::RoundNotPending
+        );
         require!(
             amount_usdc_units >= MIN_POSITION_USDC_UNITS,
             SpotrError::StakeBelowMinimum
@@ -485,11 +497,15 @@ pub mod spotr_markets {
             .checked_add(amount_usdc_units)
             .ok_or(SpotrError::MathOverflow)?;
 
-        if u8::try_from(round.deposits_count.min(u8::MAX as u16))
-            .map_err(|_| SpotrError::MathOverflow)?
-            >= session.round_fill_threshold
+        if round.state == RoundState::Pending
+            && u8::try_from(round.deposits_count.min(u8::MAX as u16))
+                .map_err(|_| SpotrError::MathOverflow)?
+                >= session.round_fill_threshold
         {
             round.state = RoundState::Open;
+            // Stamp the actual flip moment so future late deposits can be
+            // gated on `joined_at <= opens_at`.
+            round.opens_at = clock.unix_timestamp;
         }
 
         player_session.deposited_round_mask |= round_bit;
@@ -1025,6 +1041,11 @@ pub struct PlayerSession {
     /// round index `i`. Prevents double-deposit and pairs naturally with
     /// `entered_round_mask`.
     pub deposited_round_mask: u64,
+    /// Unix seconds when the player joined the session. Used by
+    /// `deposit_for_round` to gate late deposits: a player can only deposit
+    /// into a round that has already flipped `Open` if they joined the
+    /// session before that round opened.
+    pub joined_at: i64,
     pub bump: u8,
     #[max_len(64)]
     pub round_choices: Vec<u8>,

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { use, useMemo } from "react";
 import useSWR from "swr";
-import { ArrowLeft, FlagOff, Wallet, Wand2 } from "lucide-react";
+import { ArrowLeft, FlagOff, Rocket, Wallet, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { AdminSectionHeader } from "../../../components/admin/section-header";
 import { Button } from "../../../components/ui/button";
@@ -104,6 +104,7 @@ function SessionHeader({
     adminCloseSessionOnChain,
     submitSignedAction,
     withdrawProtocolFeesOnChain,
+    deployExistingSessionOnChain,
   } = useAdminDashboard();
   const openRounds = detail.rounds.filter((r) => r.status !== "closed");
   return (
@@ -127,6 +128,38 @@ function SessionHeader({
         }
       />
       <div className="flex flex-wrap items-center gap-2">
+        {!detail.chainSessionNumber && detail.status === "pending" ? (
+          <Button
+            size="sm"
+            onClick={async () => {
+              if (!walletAddress) {
+                toast.error("Connect an admin wallet first.");
+                return;
+              }
+              const pairIds = [...detail.rounds]
+                .sort((a, b) => a.index - b.index)
+                .map((r) => r.pairId);
+              try {
+                toast.info("Sign deploy transaction in your wallet…");
+                await deployExistingSessionOnChain({
+                  sessionId: detail.id,
+                  startsAtIso: detail.startsAtIso,
+                  endsAtIso: detail.endsAtIso,
+                  pairIds,
+                  buyInLamports: detail.buyInLamports,
+                });
+                toast.success("Session deployed on-chain.");
+                onRefresh();
+              } catch (error) {
+                toast.error(
+                  error instanceof Error ? error.message : "Deploy failed."
+                );
+              }
+            }}
+          >
+            <Rocket className="h-3 w-3" /> Deploy on-chain
+          </Button>
+        ) : null}
         {detail.chainSessionNumber && detail.status === "live" ? (
           <Button
             size="sm"

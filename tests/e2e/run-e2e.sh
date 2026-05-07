@@ -10,6 +10,7 @@ cd "$ROOT"
 
 RPC_URL=${SPOTR_E2E_RPC_URL:-http://127.0.0.1:8899}
 RPC_WS=${SPOTR_E2E_RPC_WS:-ws://127.0.0.1:8900}
+SURFPOOL_ARGS=${SPOTR_SURFPOOL_ARGS:---offline}
 SURFPOOL_PID_FILE="$HERE/.surfpool.pid"
 SURFPOOL_LOG="$HERE/.surfpool.log"
 PROGRAM_SO="$ROOT/anchor/target/deploy/spotr_markets.so"
@@ -35,7 +36,7 @@ trap cleanup EXIT INT TERM
 
 echo "[e2e] starting surfpool (log → $SURFPOOL_LOG)"
 rm -f "$SURFPOOL_LOG"
-surfpool start --ci --port 8899 --ws-port 8900 > "$SURFPOOL_LOG" 2>&1 &
+surfpool start --ci --port 8899 --ws-port 8900 ${SURFPOOL_ARGS} > "$SURFPOOL_LOG" 2>&1 &
 echo $! > "$SURFPOOL_PID_FILE"
 
 echo "[e2e] waiting for rpc readiness at $RPC_URL"

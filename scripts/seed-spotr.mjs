@@ -54,6 +54,7 @@ async function main() {
     ),
     roundCount: readInt("NEXT_PUBLIC_SPOTR_ROUND_COUNT"),
     roundDurationSeconds: readInt("NEXT_PUBLIC_SPOTR_ROUND_DURATION_SECONDS"),
+    roundFillThreshold: readInt("NEXT_PUBLIC_SPOTR_ROUND_FILL_THRESHOLD"),
     protocolFeeBps: readInt("NEXT_PUBLIC_SPOTR_PROTOCOL_FEE_BPS"),
     referralCutBps: readInt("NEXT_PUBLIC_SPOTR_REFERRAL_CUT_BPS"),
     defaultSessionEndHourUtc: readInt(
@@ -123,6 +124,7 @@ async function main() {
         endsAt,
         roundCount: config.roundCount,
         roundDurationSeconds: config.roundDurationSeconds,
+        roundFillThreshold: config.roundFillThreshold,
         buyInLamports: config.sessionBuyInLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,
@@ -163,6 +165,7 @@ async function main() {
         completedAt: null,
         roundCount: config.roundCount,
         roundDurationSeconds: config.roundDurationSeconds,
+        roundFillThreshold: config.roundFillThreshold,
         buyInLamports: config.sessionBuyInLamports,
         protocolFeeBps: config.protocolFeeBps,
         referralCutBps: config.referralCutBps,

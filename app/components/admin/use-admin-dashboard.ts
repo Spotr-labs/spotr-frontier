@@ -250,6 +250,44 @@ export function useAdminDashboard() {
     [cluster, signer]
   );
 
+  const deployExistingSessionOnChain = useCallback(
+    async (params: {
+      sessionId: string;
+      startsAtIso: string;
+      endsAtIso: string;
+      pairIds: string[];
+      buyInLamports: number;
+    }) => {
+      if (!signer) throw new Error("Connect an admin wallet that can sign.");
+      if (!walletAddress) throw new Error("Connect an admin wallet first.");
+      const sessionNumber =
+        BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
+      const { signature } = await submitDeploySessionOnChain({
+        cluster,
+        admin: signer,
+        sessionNumber,
+        startTsSeconds: BigInt(Math.floor(new Date(params.startsAtIso).getTime() / 1000)),
+        endTsSeconds: BigInt(Math.floor(new Date(params.endsAtIso).getTime() / 1000)),
+        pairIds: params.pairIds,
+        buyInUsdcUnits: BigInt(params.buyInLamports),
+      });
+      const response = await fetch(
+        `/api/admin/sessions/${params.sessionId}/deploy-chain`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            adminWalletAddress: walletAddress,
+            chainTxSignature: signature,
+            chainSessionNumber: sessionNumber.toString(),
+          }),
+        }
+      );
+      return readJson<{ ok: boolean; chainSessionAddress: string }>(response);
+    },
+    [cluster, signer, walletAddress]
+  );
+
   const fetchAdmin = useCallback(
     async <T>(path: string): Promise<T> => {
       if (!walletAddress) {
@@ -281,6 +319,7 @@ export function useAdminDashboard() {
     finalizeSessionOnChain,
     withdrawProtocolFeesOnChain,
     deploySessionOnChain,
+    deployExistingSessionOnChain,
     fetchAdmin,
   };
 }

@@ -53,6 +53,7 @@ import type {
   FaultLinePair,
   LiveSessionSnapshot,
   ProfileSessionHistoryRow,
+  ProfileSessionRoundRow,
   ProfileSummary,
   ReferredWalletContribution,
   RecentReward,
@@ -284,6 +285,7 @@ async function createSessionWithPairs(
       endsAt: input.endsAt,
       roundCount: publicSpotrConfig.roundCount,
       roundDurationSeconds: publicSpotrConfig.roundDurationSeconds,
+      roundFillThreshold: publicSpotrConfig.roundFillThreshold,
       buyInLamports: BigInt(input.buyInLamports ?? publicSpotrConfig.sessionBuyInLamports),
       protocolFeeBps: publicSpotrConfig.protocolFeeBps,
       referralCutBps: publicSpotrConfig.referralCutBps,
@@ -455,22 +457,37 @@ async function syncSessionState(tx: Tx, sessionId: string) {
   const writes: Array<Promise<unknown>> = [];
 
   if (activatedAt) {
-    // Rounds share the session's window: every round opens together when the
-    // session activates and every round closes together when the session ends.
-    const opensAt = activatedAt;
+    // closesAt mirrors the session window (rounds settle when the session
+    // ends). opensAt is stamped only at the moment the round actually flips
+    // Pending → Open in `recordRoundDeposit` — DO NOT overwrite it here, or
+    // the per-round countdown (`opensAt + roundDurationSeconds - now`) jumps
+    // straight to 0 because `activatedAt` is far in the past by then. We
+    // also seed opensAt = activatedAt for UPCOMING rounds so the late-deposit
+    // gate has a sane scheduled value to compare against until the flip.
     const closesAt = session.endsAt;
     const roundIdsToReschedule = session.rounds
       .filter(
         (round) =>
-          round.opensAt?.toISOString() !== opensAt.toISOString() ||
+          (round.status === "UPCOMING" &&
+            round.opensAt?.toISOString() !== activatedAt.toISOString()) ||
           round.closesAt?.toISOString() !== closesAt.toISOString()
       )
       .map((round) => round.id);
     if (roundIdsToReschedule.length > 0) {
       writes.push(
         tx.sessionRound.updateMany({
-          where: { id: { in: roundIdsToReschedule } },
-          data: { opensAt, closesAt },
+          where: { id: { in: roundIdsToReschedule }, status: "UPCOMING" },
+          data: { opensAt: activatedAt, closesAt },
+        })
+      );
+      // closesAt for already-OPEN rounds: keep the session-end value too.
+      writes.push(
+        tx.sessionRound.updateMany({
+          where: {
+            id: { in: roundIdsToReschedule },
+            status: { not: "UPCOMING" },
+          },
+          data: { closesAt },
         })
       );
       mutated = true;
@@ -511,6 +528,10 @@ async function syncSessionState(tx: Tx, sessionId: string) {
     const opensAt = activatedAt ?? round.opensAt;
     const closesAt = activatedAt ? session.endsAt : round.closesAt;
     const derivedStatus = deriveRoundStatus(nextStatus, opensAt, closesAt, now);
+    // Rounds transition UPCOMING → OPEN only via the deposit threshold in
+    // recordRoundDeposit — never by time alone. Only allow time-driven
+    // transitions away from OPEN (i.e. OPEN → CLOSED).
+    if (derivedStatus === "OPEN" && round.status === "UPCOMING") continue;
     if (round.status !== derivedStatus) {
       const list = roundStatusUpdates.get(derivedStatus) ?? [];
       list.push(round.id);
@@ -940,13 +961,30 @@ async function buildDashboardPayload(
     walletDeposits.map((deposit) => [deposit.roundId, deposit])
   );
 
+  // Fetch the last 7 depositors per round for the wait-screen player feed.
+  const allDeposits = await tx.roundDeposit.findMany({
+    where: { roundId: { in: session.rounds.map((r) => r.id) } },
+    orderBy: { depositedAt: "asc" },
+    select: { roundId: true, walletAddress: true },
+  });
+  const depositorsByRoundId = new Map<string, string[]>();
+  for (const d of allDeposits) {
+    const list = depositorsByRoundId.get(d.roundId) ?? [];
+    list.push(d.walletAddress);
+    depositorsByRoundId.set(d.roundId, list);
+  }
+
   const rounds: SessionRoundSummary[] = session.rounds.map((round) => {
-    const derivedStatus = deriveRoundStatus(
+    const timeStatus = deriveRoundStatus(
       session.status,
       round.opensAt,
       round.closesAt,
       now
     );
+    // Rounds open via deposit threshold, not by time — preserve the DB
+    // UPCOMING status until recordRoundDeposit flips it to OPEN.
+    const derivedStatus =
+      timeStatus === "OPEN" && round.status === "UPCOMING" ? "UPCOMING" : timeStatus;
     const probabilities = getProbabilities(
       round.sideATotalNetLamports,
       round.sideBTotalNetLamports,
@@ -981,6 +1019,7 @@ async function buildDashboardPayload(
       claimableLamports: toNumber(claimableLamports),
       claimedLamports: position ? toNumber(position.claimedLamports) : 0,
       walletsDepositedForRound: round.depositsCount,
+      depositorAddresses: depositorsByRoundId.get(round.id) ?? [],
       depositLamports: deposit ? toNumber(deposit.amountLamports) : null,
       depositRefunded: deposit?.refundedAt != null,
     };
@@ -1060,6 +1099,9 @@ async function buildDashboardPayload(
           ? null
           : session.chainSessionNumber.toString(),
       chainSessionAddress: session.chainSessionAddress ?? null,
+      participant: participant
+        ? { joinedAtIso: participant.joinedAt.toISOString() }
+        : null,
     },
     profile: normalizedWalletAddress
       ? await buildProfileSummary(tx, normalizedWalletAddress, now)
@@ -1744,7 +1786,7 @@ export async function recordRoundDeposit(input: {
 
     const newCount = round.depositsCount + 1;
     const newPool = round.depositPoolLamports + input.amountLamports;
-    const fillThreshold = await getRoundFillThreshold(session.id);
+    const fillThreshold = session.roundFillThreshold;
     const shouldOpen = newCount >= fillThreshold;
 
     await tx.sessionRound.update({
@@ -1752,8 +1794,13 @@ export async function recordRoundDeposit(input: {
       data: {
         depositsCount: newCount,
         depositPoolLamports: newPool,
+        // Stamp the actual flip moment so the client-side countdown
+        // (`opensAt + roundDurationSeconds - now`) starts a fresh window.
+        // We must overwrite any pre-existing `opensAt` (which `syncSessionState`
+        // seeds to `activatedAt` for the late-deposit gate) — keeping that
+        // stale value would make countdown 0 immediately on flip.
         ...(shouldOpen
-          ? { status: RoundStatus.OPEN, opensAt: round.opensAt ?? new Date() }
+          ? { status: RoundStatus.OPEN, opensAt: new Date() }
           : {}),
       },
     });
@@ -1967,12 +2014,6 @@ export async function recordChainSettleRound(input: {
   }, { timeout: 15_000 });
 }
 
-async function getRoundFillThreshold(sessionId: string): Promise<number> {
-  // Stored on-chain only — the client-passed config carries the default.
-  // For DB sync we fall back to the public config value (UI default).
-  void sessionId;
-  return Number(publicSpotrConfig.roundFillThreshold ?? 7);
-}
 
 export async function claimSpotrRoundProceeds(input: { walletAddress: string }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
@@ -2702,6 +2743,101 @@ export async function listProfileSessionHistory(
       netPnlLamports: toNumber(totalProceeds - totalStake),
     };
   });
+}
+
+/**
+ * Per-round detail for a single (wallet, session) pair. Drives the expanded
+ * row on /profile when the user clicks into a session. Includes every round
+ * the wallet either deposited or entered into; rounds the wallet sat out
+ * are omitted.
+ */
+export async function getProfileSessionRounds(
+  walletAddressInput: string,
+  sessionId: string,
+): Promise<ProfileSessionRoundRow[]> {
+  const walletAddress = normalizeWalletAddress(walletAddressInput);
+  if (!walletAddress) return [];
+
+  const participant = await prisma.sessionParticipant.findUnique({
+    where: {
+      sessionId_walletAddress: {
+        sessionId,
+        walletAddress,
+      },
+    },
+    include: {
+      deposits: {
+        include: {
+          round: {
+            include: { pair: true },
+          },
+        },
+      },
+      positions: {
+        include: {
+          round: {
+            include: { pair: true },
+          },
+        },
+      },
+    },
+  });
+  if (!participant) return [];
+
+  type RoundWithPair = (typeof participant.deposits)[number]["round"];
+  type Position = (typeof participant.positions)[number];
+  type Deposit = (typeof participant.deposits)[number];
+
+  const rounds = new Map<
+    string,
+    { round: RoundWithPair; deposit: Deposit | null; position: Position | null }
+  >();
+  for (const deposit of participant.deposits) {
+    rounds.set(deposit.roundId, {
+      round: deposit.round,
+      deposit,
+      position: null,
+    });
+  }
+  for (const position of participant.positions) {
+    const existing = rounds.get(position.roundId);
+    if (existing) {
+      existing.position = position;
+    } else {
+      rounds.set(position.roundId, {
+        round: position.round,
+        deposit: null,
+        position,
+      });
+    }
+  }
+
+  const sideToSpotr = (side: PositionSide | null): "A" | "B" | null =>
+    side === PositionSide.A ? "A" : side === PositionSide.B ? "B" : null;
+
+  return Array.from(rounds.values())
+    .sort((a, b) => a.round.roundIndex - b.round.roundIndex)
+    .map(({ round, deposit, position }) => {
+      const claimable = position
+        ? derivePositionClaimableLamports(round, position)
+        : 0n;
+      return {
+        roundId: round.id,
+        roundIndex: round.roundIndex,
+        pairCategory: round.pair.category,
+        sideA: round.pair.sideA,
+        sideB: round.pair.sideB,
+        status: mapRoundStatus(round.status),
+        depositMicroUsdc: deposit ? toNumber(deposit.amountLamports) : null,
+        depositRefunded: deposit ? deposit.refundedAt != null : false,
+        lockedSide: sideToSpotr(position?.side ?? null),
+        stakeMicroUsdc: position ? toNumber(position.stakeLamports) : 0,
+        claimableMicroUsdc: toNumber(claimable),
+        claimedMicroUsdc: position ? toNumber(position.claimedLamports) : 0,
+        winningSide: sideToSpotr(round.winningSide ?? null),
+        redistributeApplied: round.redistributeApplied,
+      };
+    });
 }
 
 const ADMIN_LIST_PAGE_SIZE = 50;

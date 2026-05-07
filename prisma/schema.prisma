@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "darwin"]
 }
 
 datasource db {
@@ -75,6 +76,7 @@ model Session {
   completedAt               DateTime?
   roundCount                Int
   roundDurationSeconds      Int
+  roundFillThreshold        Int                 @default(7)
   buyInLamports             BigInt
   protocolFeeBps            Int
   referralCutBps            Int

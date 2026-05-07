@@ -105,9 +105,35 @@ export async function submitSponsoredTx(
   const signed = await signTransactionMessageWithSigners(message);
   const encoded = getBase64EncodedWireTransaction(signed);
 
-  const signature = await rpc
-    .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
-    .send();
+  try {
+    const signature = await rpc
+      .sendTransaction(encoded, { encoding: "base64", skipPreflight: false })
+      .send();
+    return String(signature);
+  } catch (err) {
+    throw new Error(extractSimulationMessage(err));
+  }
+}
 
-  return String(signature);
+function extractSimulationMessage(err: unknown): string {
+  // Walk the cause chain to find preflight logs emitted by the program.
+  let current: unknown = err;
+  for (let depth = 0; depth < 6 && current != null; depth++) {
+    if (typeof current !== "object") break;
+    const obj = current as { cause?: unknown; context?: { logs?: unknown } };
+    const logs = obj.context?.logs;
+    if (Array.isArray(logs)) {
+      for (const line of logs) {
+        if (typeof line !== "string") continue;
+        // Anchor error: "AnchorError … Error Message: <msg>."
+        const anchor = line.match(/Error Message:\s*([^.]+(?:\.[^.]+)*)/);
+        if (anchor) return anchor[1].replace(/\.\s*$/, "").trim();
+        // Custom program error code
+        const custom = line.match(/custom program error:\s*(0x[0-9a-f]+)/i);
+        if (custom) return `Transaction rejected by program (code ${custom[1]}).`;
+      }
+    }
+    current = obj.cause;
+  }
+  return err instanceof Error ? err.message : "Transaction simulation failed.";
 }

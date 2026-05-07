@@ -4,7 +4,7 @@ export const generatedPublicSpotrConfig: SpotrPublicConfig = {
   "appName": "SPOTR Markets",
   "seasonLabel": "Season 1",
   "cluster": "localnet",
-  "launchIso": "2026-05-05T00:00:00.000Z",
+  "launchIso": "2026-05-07T00:00:00.000Z",
   "sessionBuyInLamports": 0,
   "roundCount": 7,
   "roundDurationSeconds": 30,

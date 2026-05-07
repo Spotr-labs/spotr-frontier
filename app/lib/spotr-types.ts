@@ -75,6 +75,7 @@ export type SessionRoundSummary = {
   // Round.deposits_count; `depositLamports` is the connected wallet's own
   // RoundDeposit.amount_usdc_units (null if they haven't deposited yet).
   walletsDepositedForRound: number;
+  depositorAddresses: string[];
   depositLamports: number | null;
   depositRefunded: boolean;
 };
@@ -98,6 +99,7 @@ export type LiveSessionSnapshot = {
   currentRoundIndex: number | null;
   chainSessionNumber: string | null;
   chainSessionAddress: string | null;
+  participant: { joinedAtIso: string } | null;
 };
 
 export type ProfileSummary = {
@@ -238,6 +240,33 @@ export type ProfileSessionHistoryRow = {
 
 export type ProfileSessionHistoryResponse = {
   items: ProfileSessionHistoryRow[];
+};
+
+export type ProfileSessionRoundRow = {
+  roundId: string;
+  roundIndex: number;
+  pairCategory: string;
+  sideA: string;
+  sideB: string;
+  status: SessionRoundStatus;
+  // Did the wallet stake into this round? Null when the deposit was
+  // refunded (round under-filled or position never entered).
+  depositMicroUsdc: number | null;
+  depositRefunded: boolean;
+  // Side the wallet locked on (null when only deposited, never entered).
+  lockedSide: SpotrSide | null;
+  // What the wallet's stake settled to: stake locked, claimable proceeds,
+  // already claimed.
+  stakeMicroUsdc: number;
+  claimableMicroUsdc: number;
+  claimedMicroUsdc: number;
+  // Final outcome at the round level.
+  winningSide: SpotrSide | null;
+  redistributeApplied: boolean;
+};
+
+export type ProfileSessionRoundsResponse = {
+  rounds: ProfileSessionRoundRow[];
 };
 
 export type AdminCursor = string | null;

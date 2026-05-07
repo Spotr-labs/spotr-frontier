@@ -1,6 +1,7 @@
 import "server-only";
 
 import { PrivyClient } from "@privy-io/server-auth";
+import { isValidSolanaAddress } from "./signed-action";
 
 let cachedClient: PrivyClient | null = null;
 
@@ -53,6 +54,15 @@ function extractAccessToken(request: Request): string {
 export async function getPlayerWalletFromRequest(
   request: Request,
 ): Promise<string> {
+  // On localnet the user may connect an external wallet without going through
+  // the Privy login flow, so the Privy access token is unavailable. Accept
+  // the wallet address directly from X-Dev-Wallet (no verification needed
+  // in local-only dev environments).
+  if (process.env.NEXT_PUBLIC_SPOTR_CLUSTER === "localnet") {
+    const devWallet = request.headers.get("x-dev-wallet");
+    if (isValidSolanaAddress(devWallet)) return devWallet;
+  }
+
   const privy = getPrivyClient();
   const token = extractAccessToken(request);
 

@@ -20,6 +20,7 @@ import { classifyTxError } from "../lib/wallet/tx-error";
 import { useUsdcBalance } from "../lib/hooks/use-usdc-balance";
 import { useVaultBalance } from "../lib/hooks/use-vault-balance";
 import { useToken } from "@privy-io/react-auth";
+import { useCluster } from "./cluster-context";
 
 const INSUFFICIENT_VAULT_ERROR = "INSUFFICIENT_VAULT";
 import { cn } from "../lib/utils";
@@ -36,17 +37,14 @@ import type {
   LiveSessionSnapshot,
   ProfileSessionHistoryResponse,
   ProfileSessionHistoryRow,
+  ProfileSessionRoundRow,
+  ProfileSessionRoundsResponse,
   ProfileSummary,
   SessionPublicResults,
   SpotrDashboardPayload,
   SpotrPublicConfig,
   SpotrSide,
 } from "../lib/spotr-types";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from "./ui/dialog";
 import { Button } from "./ui/button";
 import {
   MetricCard,
@@ -122,6 +120,14 @@ async function readJson<T>(response: Response): Promise<T> {
 function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboardPayload) {
   const { wallet, status } = useWallet();
   const { getAccessToken } = useToken();
+  const { cluster } = useCluster();
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const token = await getAccessToken();
+    if (token) return { Authorization: `Bearer ${token}` };
+    const addr = wallet?.account.address;
+    if (cluster === "localnet" && addr) return { "X-Dev-Wallet": String(addr) };
+    throw new Error("Privy session expired. Please log in again.");
+  }, [getAccessToken, cluster, wallet]);
   const [data, setData] = useState(initialData);
   const [flipState, setFlipState] = useState(() => ({
     roundId: initialData.session.currentRoundId,
@@ -146,14 +152,31 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     admin.sessionHistory.find((s) => s.id === selectedSessionId) ??
     null;
 
-  // All rounds open and close together with the session; pick the next one
-  // the player has not yet entered.
+  // activeRound: an OPEN round where the player can predict (already
+  // deposited) or late-deposit (joined the session before this round
+  // actually opened); else the next UPCOMING round; else nothing. A
+  // session-late-joiner — i.e. one that joined after the round flipped open
+  // — must skip the OPEN round and land in the next UPCOMING round's wait
+  // screen, since on-chain `deposit_for_round` will reject them.
+  const sessionJoinedAt = session.participant?.joinedAtIso
+    ? new Date(session.participant.joinedAtIso).getTime()
+    : null;
+  const playerCanLateDeposit = (round: typeof session.rounds[number]) => {
+    if (round.depositLamports != null) return true;
+    if (sessionJoinedAt == null || round.opensAtIso == null) return false;
+    return sessionJoinedAt <= new Date(round.opensAtIso).getTime();
+  };
   const activeRound =
     session.rounds.find(
-      (round) => round.status === "open" && !round.lockedSide && !dismissedRoundIds.has(round.id)
+      (round) =>
+        round.status === "open" &&
+        !round.lockedSide &&
+        playerCanLateDeposit(round) &&
+        !dismissedRoundIds.has(round.id)
     ) ??
-    session.rounds.find((round) => round.status === "open" && !dismissedRoundIds.has(round.id)) ??
-    session.rounds.find((round) => round.status === "upcoming" && !dismissedRoundIds.has(round.id)) ??
+    session.rounds.find(
+      (round) => round.status === "upcoming" && !dismissedRoundIds.has(round.id)
+    ) ??
     null;
   const activeFaultLine =
     faultLines.find((pair) => pair.roundId === activeRound?.id) ?? faultLines[0] ?? null;
@@ -181,19 +204,28 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     });
   }, [walletAddress]);
 
-  // Per-round countdown: each round gets a fresh `roundDurationSeconds`
-  // window that starts when the round becomes active for this player. The
-  // countdown is purely UI — on-chain the whole session shares one window —
-  // so it resets every time `activeRound.id` changes.
-  const [roundStartMs, setRoundStartMs] = useState(() => Date.now());
+  // While waiting for the round fill threshold, poll every 5 s so the client
+  // automatically transitions to the predict screen once enough players deposit.
+  const activeRoundIsWaiting =
+    activeRound != null &&
+    activeRound.status === "upcoming" &&
+    (activeRound.depositLamports ?? null) != null;
   useEffect(() => {
-    if (activeRound?.status !== "open") return;
-    setRoundStartMs(Date.now());
-    setClockMs(Date.now());
-  }, [activeRoundId, activeRound?.status]);
+    if (!activeRoundIsWaiting || !walletAddress) return;
+    const id = window.setInterval(() => {
+      void refreshDashboard(walletAddress).catch(() => undefined);
+    }, 1_000);
+    return () => window.clearInterval(id);
+  }, [activeRoundIsWaiting, walletAddress]);
 
+  // Per-round countdown: derived from `opensAtIso` (the moment the round
+  // flipped Pending→Open) plus `roundDurationSeconds`. We can't use
+  // `closesAtIso` because every round shares `session.end_ts` for that
+  // field. Late depositors naturally get the remaining slice because
+  // `opensAt` is the actual flip time, not when this client first saw it.
   useEffect(() => {
     if (!activeRoundId || activeRound?.status !== "open") return;
+    setClockMs(Date.now());
     const timer = window.setInterval(() => {
       setClockMs(Date.now());
     }, 1000);
@@ -201,14 +233,17 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   }, [activeRoundId, activeRound?.status]);
 
   const countdown = useMemo(() => {
-    if (!activeRoundId || activeRound?.status !== "open") return null;
-    const elapsed = Math.floor((clockMs - roundStartMs) / 1000);
+    if (!activeRound || activeRound.status !== "open" || !activeRound.opensAtIso) {
+      return null;
+    }
+    const opensAtMs = new Date(activeRound.opensAtIso).getTime();
+    const elapsed = Math.floor((clockMs - opensAtMs) / 1000);
     return Math.max(0, config.roundDurationSeconds - elapsed);
   }, [
-    activeRoundId,
+    activeRound?.id,
     activeRound?.status,
+    activeRound?.opensAtIso,
     clockMs,
-    roundStartMs,
     config.roundDurationSeconds,
   ]);
 
@@ -259,14 +294,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     startTransition(async () => {
       try {
         setNotice({ tone: "info", message: "Joining session…" });
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch("/api/session/join", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             referrerWallet: null,
             sessionId: selectedSession?.id ?? data.session.id,
@@ -324,14 +355,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     startTransition(async () => {
       try {
         setNotice({ tone: "info", message: "Submitting deposit…" });
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch("/api/rounds/deposit", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             roundId: activeRound.id,
             amountLamports: Number(amountMicro),
@@ -374,14 +401,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     startTransition(async () => {
       try {
         setNotice({ tone: "info", message: "Locking your position…" });
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch("/api/rounds/enter", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             roundId: activeRound.id,
             side: selectedSide,
@@ -405,6 +428,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
         setNotice({ tone: rejected ? "info" : "error", message });
         if (rejected) toast(message);
         else toast.error(message);
+        // Clear the selected side so the conviction useEffect does not
+        // immediately re-trigger and hammer the endpoint on failure.
+        setSelectedSide(null);
       }
     });
   };
@@ -414,14 +440,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     startTransition(async () => {
       try {
         setNotice({ tone: "info", message: "Refunding deposit…" });
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch("/api/rounds/refund-unused", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ roundId }),
         });
         const body = (await response.json()) as
@@ -449,11 +471,10 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     if (!walletAddress) return;
     startTransition(async () => {
       try {
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch(url, {
           method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: authHeaders,
         });
         const body = (await response.json()) as
           | (SpotrDashboardPayload & { error?: undefined })
@@ -769,13 +790,22 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     vault,
   ]);
 
-  // PnL trigger: countdown elapsed (no wager placed, or round timed out)
+  // PnL trigger: countdown elapsed (no wager placed, or round timed out).
+  // Only fires when the wallet actually had skin in the game (deposited but
+  // never locked a side). If the wallet had no deposit on this round, the
+  // round expiring is irrelevant to them — silently dismiss it so the next
+  // UPCOMING round becomes active without a "you sat this one out" screen.
   useEffect(() => {
     if (state.countdown !== 0 || !state.activeRound || showPnl) return;
-    const roundId = state.activeRound.id;
-    if (pnlShownRoundRef.current === roundId) return;
-    pnlShownRoundRef.current = roundId;
     const round = state.activeRound;
+    const roundId = round.id;
+    if (pnlShownRoundRef.current === roundId) return;
+    if (round.depositLamports == null) {
+      pnlShownRoundRef.current = roundId;
+      state.dismissRound(roundId);
+      return;
+    }
+    pnlShownRoundRef.current = roundId;
     setSettledRound(round);
     setShowPnl(true);
     const t = window.setTimeout(() => {
@@ -1375,11 +1405,13 @@ function DepositScreen({
   state,
   balanceMicro,
   rolloverLamports,
+  late,
 }: {
   config: SpotrPublicConfig;
   state: ReturnType<typeof useSpotrDashboard>;
   balanceMicro: bigint | null;
   rolloverLamports: bigint | null;
+  late: boolean;
 }) {
   const round = state.activeRound;
   const isFirst = !rolloverLamports || rolloverLamports === 0n;
@@ -1409,6 +1441,11 @@ function DepositScreen({
               ? "Deposits seed the round. Once 7 wallets are in, the predict phase opens."
               : `Rolling over ${microUsdcToDisplay(Number(rolloverLamports ?? 0n))} USDC. Adjust to add or reduce before confirming.`}
           </p>
+          {late ? (
+            <p className="mt-3 text-center text-[11px] uppercase tracking-[0.18em] text-amber-300/80">
+              Round in progress — less time to predict.
+            </p>
+          ) : null}
 
           <div className="mt-8 w-full max-w-[340px]">
             <WagerPicker
@@ -1577,17 +1614,20 @@ function PredictScreen({
 function RoundWaitScreen({
   state,
   config,
+  late,
 }: {
   state: ReturnType<typeof useSpotrDashboard>;
   config: SpotrPublicConfig;
+  late: boolean;
 }) {
   const round = state.activeRound;
-  const players = state.admin.participants.map((p) => ({
-    address: p.walletAddress,
-    status: "joined",
-  }));
   const threshold = config.roundFillThreshold;
   const current = round?.walletsDepositedForRound ?? 0;
+  // Use the actual round depositors so the feed matches the counter exactly.
+  const players = (round?.depositorAddresses ?? []).map((addr) => ({
+    address: addr,
+    status: "deposited",
+  }));
   return (
     <StageScaffold surface="navy">
       <WaitingRoom
@@ -1595,7 +1635,11 @@ function RoundWaitScreen({
         threshold={threshold}
         players={players}
         starting={current >= threshold}
-        caption={`Round fills at ${threshold} players`}
+        caption={
+          late
+            ? "Round in progress — less time to predict."
+            : `Round fills at ${threshold} players`
+        }
       />
     </StageScaffold>
   );
@@ -1625,6 +1669,10 @@ function LiveGameScreen({
     : 0n;
 
   const phase = deriveRoundPhase(state.activeRound);
+  // Late = the round is already Open. Surfaced on the deposit / wait
+  // screens so the player knows they have less time to predict than the
+  // full `roundDurationSeconds` window.
+  const late = state.activeRound.status === "open";
 
   if (phase === "deposit") {
     return (
@@ -1633,11 +1681,12 @@ function LiveGameScreen({
         state={state}
         balanceMicro={balanceMicro}
         rolloverLamports={rollover > 0n ? rollover : null}
+        late={late}
       />
     );
   }
   if (phase === "wait") {
-    return <RoundWaitScreen state={state} config={config} />;
+    return <RoundWaitScreen state={state} config={config} late={late} />;
   }
   // predict | locked → same screen, just different inner state.
   return <PredictScreen config={config} state={state} balanceMicro={balanceMicro} />;
@@ -2190,21 +2239,44 @@ export function SeasonScreen({
   );
 }
 
-function PredictionHistoryCard({ walletAddress }: { walletAddress: string }) {
+
+// ─── /profile sessions card ────────────────────────────────────────────────
+// Lists every session the wallet has joined; clicking a row expands to show
+// the wallet's per-round detail (stake, side picked, outcome, payout) loaded
+// lazily from /api/profile/sessions/[id]/rounds.
+
+function SessionsPlayedCard({ walletAddress }: { walletAddress: string }) {
   return (
-    <PredictionHistoryCardInner
-      key={walletAddress}
-      walletAddress={walletAddress}
-    />
+    <SessionsPlayedCardInner key={walletAddress} walletAddress={walletAddress} />
   );
 }
 
-function PredictionHistoryCardInner({ walletAddress }: { walletAddress: string }) {
+function formatJoinedDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function statusLabel(status: ProfileSessionHistoryRow["status"]) {
+  switch (status) {
+    case "completed":
+      return "Ended";
+    case "live":
+      return "Live";
+    case "expired":
+      return "Expired";
+    case "pending":
+    default:
+      return "Pending";
+  }
+}
+
+function SessionsPlayedCardInner({ walletAddress }: { walletAddress: string }) {
   const [items, setItems] = useState<ProfileSessionHistoryRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
-  const [results, setResults] = useState<SessionPublicResults | null>(null);
-  const [isLoadingResults, setIsLoadingResults] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2228,32 +2300,12 @@ function PredictionHistoryCardInner({ walletAddress }: { walletAddress: string }
     };
   }, [walletAddress]);
 
-  function openSession(sessionId: string) {
-    setOpenSessionId(sessionId);
-    setResults(null);
-    setIsLoadingResults(true);
-    fetch(`/api/play/${encodeURIComponent(sessionId)}/results`, {
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<SessionPublicResults>;
-      })
-      .then((payload) => {
-        setResults(payload);
-      })
-      .catch(() => {
-        setResults(null);
-      })
-      .finally(() => setIsLoadingResults(false));
-  }
-
   return (
     <SurfaceCard>
       <SectionHeading
-        eyebrow="Prediction history"
-        title="Your past sessions"
-        description="Tap any session to see the round-by-round results."
+        eyebrow="Sessions played"
+        title="Your SPOTR ledger"
+        description="Tap a session for the round-by-round breakdown."
       />
       <div className="mt-4 space-y-3">
         {error ? (
@@ -2270,18 +2322,7 @@ function PredictionHistoryCardInner({ walletAddress }: { walletAddress: string }
           </p>
         ) : (
           items.map((row) => {
-            const dateLabel = new Date(row.joinedAtIso).toLocaleDateString(
-              undefined,
-              { month: "short", day: "numeric", year: "numeric" }
-            );
-            const statusLabel =
-              row.status === "completed"
-                ? "Ended"
-                : row.status === "live"
-                  ? "Live"
-                  : row.status === "expired"
-                    ? "Expired"
-                    : "Pending";
+            const isOpen = openSessionId === row.sessionId;
             const pnlTone =
               row.netPnlLamports > 0
                 ? "text-success"
@@ -2289,58 +2330,227 @@ function PredictionHistoryCardInner({ walletAddress }: { walletAddress: string }
                   ? "text-destructive"
                   : "text-muted";
             return (
-              <button
+              <div
                 key={row.sessionId}
-                type="button"
-                onClick={() => openSession(row.sessionId)}
-                className="focus-ring flex w-full items-center justify-between gap-3 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-left transition hover:border-primary/40 hover:bg-white/5"
+                className={cn(
+                  "rounded-[1rem] border bg-black/16 transition",
+                  isOpen
+                    ? "border-primary/40"
+                    : "border-white/12 hover:border-primary/40"
+                )}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-foreground">
-                    {row.title}
-                  </p>
-                  <p className="mt-0.5 text-[11px] uppercase tracking-[0.18em] text-muted">
-                    {dateLabel} · {statusLabel} · {row.positionsEntered} round
-                    {row.positionsEntered === 1 ? "" : "s"}
-                  </p>
-                </div>
-                <span
-                  className={cn(
-                    "shrink-0 font-mono text-sm font-semibold tabular-nums",
-                    pnlTone
-                  )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenSessionId(isOpen ? null : row.sessionId)
+                  }
+                  aria-expanded={isOpen}
+                  className="focus-ring flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
                 >
-                  {formatSignedMicroUsdc(row.netPnlLamports)}
-                </span>
-              </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      {row.title}
+                    </p>
+                    <p className="mt-0.5 text-[11px] uppercase tracking-[0.18em] text-muted">
+                      {formatJoinedDate(row.joinedAtIso)} · {statusLabel(row.status)}{" "}
+                      · {row.positionsEntered} round
+                      {row.positionsEntered === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  <span
+                    className={cn(
+                      "shrink-0 font-mono text-sm font-semibold tabular-nums",
+                      pnlTone
+                    )}
+                  >
+                    {formatSignedMicroUsdc(row.netPnlLamports)}
+                  </span>
+                </button>
+                {isOpen ? (
+                  <div className="border-t border-white/10 px-4 pb-4 pt-3">
+                    <SessionRoundsBreakdown
+                      walletAddress={walletAddress}
+                      sessionId={row.sessionId}
+                    />
+                  </div>
+                ) : null}
+              </div>
             );
           })
         )}
       </div>
-
-      <Dialog
-        open={openSessionId != null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setOpenSessionId(null);
-            setResults(null);
-          }
-        }}
-      >
-        <DialogContent className="max-h-[85vh] max-w-[420px] overflow-y-auto bg-card p-4">
-          <DialogTitle className="sr-only">Session results</DialogTitle>
-          {isLoadingResults || !results ? (
-            <p className="px-2 py-6 text-center text-sm text-muted">
-              {isLoadingResults ? "Loading results…" : "Results unavailable."}
-            </p>
-          ) : (
-            <div className="space-y-4">
-              <SessionResultsBody results={results} showBackLink={false} />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </SurfaceCard>
+  );
+}
+
+function SessionRoundsBreakdown({
+  walletAddress,
+  sessionId,
+}: {
+  walletAddress: string;
+  sessionId: string;
+}) {
+  const [rounds, setRounds] = useState<ProfileSessionRoundRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRounds(null);
+    setError(null);
+    fetch(
+      `/api/profile/sessions/${encodeURIComponent(sessionId)}/rounds?wallet=${encodeURIComponent(walletAddress)}`,
+      { cache: "no-store" }
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<ProfileSessionRoundsResponse>;
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setRounds(payload.rounds);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(
+          err instanceof Error ? err.message : "Failed to load rounds."
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, sessionId]);
+
+  if (error) {
+    return (
+      <p className="rounded-[0.75rem] border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        {error}
+      </p>
+    );
+  }
+  if (rounds == null) {
+    return (
+      <p className="rounded-[0.75rem] border border-white/10 bg-black/16 px-3 py-2 text-xs text-muted">
+        Loading rounds…
+      </p>
+    );
+  }
+  if (rounds.length === 0) {
+    return (
+      <p className="rounded-[0.75rem] border border-white/10 bg-black/16 px-3 py-2 text-xs text-muted">
+        No round-level activity recorded for this wallet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {rounds.map((round) => (
+        <ProfileRoundRow key={round.roundId} round={round} />
+      ))}
+    </div>
+  );
+}
+
+function ProfileRoundRow({ round }: { round: ProfileSessionRoundRow }) {
+  const pnlMicro =
+    round.claimableMicroUsdc + round.claimedMicroUsdc - round.stakeMicroUsdc;
+  const sideCopy =
+    round.lockedSide === "A"
+      ? round.sideA
+      : round.lockedSide === "B"
+        ? round.sideB
+        : null;
+
+  let outcome: { label: string; tone: "success" | "destructive" | "muted" };
+  if (round.lockedSide == null) {
+    outcome = round.depositRefunded
+      ? { label: "Refunded", tone: "muted" }
+      : round.depositMicroUsdc != null
+        ? { label: "Sat out", tone: "muted" }
+        : { label: "—", tone: "muted" };
+  } else if (!round.redistributeApplied) {
+    outcome = { label: "Pending", tone: "muted" };
+  } else if (round.winningSide && round.winningSide === round.lockedSide) {
+    outcome = { label: "Win", tone: "success" };
+  } else if (round.winningSide && round.winningSide !== round.lockedSide) {
+    outcome = { label: "Loss", tone: "destructive" };
+  } else {
+    outcome = { label: "Settled", tone: "muted" };
+  }
+
+  const outcomeClass =
+    outcome.tone === "success"
+      ? "border-success/30 bg-success/15 text-success"
+      : outcome.tone === "destructive"
+        ? "border-destructive/30 bg-destructive/15 text-destructive"
+        : "border-white/12 bg-white/5 text-muted";
+
+  const pnlTone =
+    pnlMicro > 0
+      ? "text-success"
+      : pnlMicro < 0
+        ? "text-destructive"
+        : "text-muted";
+
+  return (
+    <div className="rounded-[0.75rem] border border-white/10 bg-black/24 px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+            Round {round.roundIndex + 1}
+            <span className="ml-2 font-normal text-muted">
+              · {round.pairCategory}
+            </span>
+          </p>
+          <p className="mt-1 truncate text-xs text-foreground">
+            {sideCopy ?? (
+              <span className="text-muted">No position locked</span>
+            )}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]",
+            outcomeClass
+          )}
+        >
+          {outcome.label}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <p className="uppercase tracking-[0.18em] text-muted">Stake</p>
+          <p className="mt-0.5 font-mono tabular-nums text-foreground">
+            {round.stakeMicroUsdc > 0
+              ? `${microUsdcToDisplay(round.stakeMicroUsdc)}`
+              : round.depositMicroUsdc != null
+                ? `${microUsdcToDisplay(round.depositMicroUsdc)}*`
+                : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="uppercase tracking-[0.18em] text-muted">Payout</p>
+          <p className="mt-0.5 font-mono tabular-nums text-foreground">
+            {round.lockedSide
+              ? microUsdcToDisplay(
+                  round.claimableMicroUsdc + round.claimedMicroUsdc
+                )
+              : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="uppercase tracking-[0.18em] text-muted">PnL</p>
+          <p
+            className={cn(
+              "mt-0.5 font-mono tabular-nums",
+              pnlTone
+            )}
+          >
+            {round.lockedSide ? formatSignedMicroUsdc(pnlMicro) : "—"}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2351,299 +2561,70 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
   return (
     <NarrowPageShell notice={state.notice}>
       {!state.walletAddress ? (
-        <div className="space-y-4">
-          <SurfaceCard>
-            <div className="space-y-5">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                Wallet dossier
-              </p>
-              <h2 className="font-display text-[2rem] font-extrabold leading-tight tracking-[-0.04em] text-balance text-foreground">
-                Connect a wallet to open your SPOTR ledger.
-              </h2>
-              <p className="text-sm leading-relaxed text-muted">
-                Claims, referral balances, assigned rewards, and paid-session history
-                are wallet-scoped and read from persisted backend state.
-              </p>
-            </div>
-            <div className="mt-6 rounded-[1rem] border border-white/12 bg-black/16 p-5">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                What unlocks
-              </p>
-              <div className="mt-4 space-y-4">
-                <WalletDataRow label="Claims" value="Round proceeds and returned escrow" />
-                <WalletDataRow label="Referrals" value="Pending balances and payout history" />
-                <WalletDataRow
-                  label="Rewards"
-                  value="Assigned inventory only"
-                  subvalue="Unimplemented claim execution remains unavailable."
-                />
-              </div>
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Access"
-              title="Wallet-gated view"
-              description="This route stays empty until a connected wallet resolves to a persisted SPOTR profile."
-            />
-            <div className="mt-6 flex flex-wrap gap-3">
-              <LedgerPill label="Profile source" value="Connected wallet address" tone="accent" />
-              <LedgerPill label="Claims mode" value="Signed requests only" />
-              <LedgerPill label="Rewards mode" value="Read-only if unimplemented" />
-            </div>
-          </SurfaceCard>
-        </div>
+        <SurfaceCard>
+          <SectionHeading
+            eyebrow="Profile"
+            title="Connect a wallet to open your SPOTR ledger."
+            description="Vault balance and session history load once a wallet is connected."
+          />
+        </SurfaceCard>
       ) : !state.profile ? (
-        <div className="space-y-4">
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Wallet dossier"
-              title="No SPOTR profile has been written for this wallet yet."
-              description="The wallet is connected, but there is no persisted profile record to read from sessions, referrals, rewards, or claims."
-            />
-            <div className="mt-8 grid gap-3 grid-cols-3">
-              <MetricCard label="Wallet" value="Connected" accent />
-              <MetricCard label="Profile" value="Missing" />
-              <MetricCard label="Claims" value="Unavailable" />
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Why this happens"
-              title="No paid-session footprint"
-              description="This route will populate after the wallet joins a session or receives persisted referral or reward state."
-            />
-          </SurfaceCard>
-        </div>
+        <SurfaceCard>
+          <SectionHeading
+            eyebrow="Profile"
+            title="No sessions yet."
+            description="Join a session to start building your SPOTR ledger."
+          />
+        </SurfaceCard>
       ) : (
         <div className="space-y-4">
           <SurfaceCard>
             <div className="space-y-4">
-              <div className="space-y-3">
+              <div className="space-y-2">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                  Wallet
+                  Vault
                 </p>
-                <p className="font-mono text-base tabular-nums break-all text-foreground">
+                <p className="font-mono text-xs tabular-nums break-all text-muted">
                   {state.profile.walletAddress}
                 </p>
-                <p className="text-sm leading-relaxed text-muted">
-                  Referral balances, claimable value, and reward inventory are read from
-                  the persisted SPOTR backend for this wallet.
-                </p>
               </div>
-
-              <div className="grid gap-3 grid-cols-2">
-                <LedgerPill label="Paid sessions" value={String(state.profile.paidSessions)} />
-                <LedgerPill
-                  label="Cumulative PnL"
-                  value={formatSignedMicroUsdc(state.profile.cumulativePnlLamports)}
-                  tone="accent"
-                />
-                <LedgerPill
-                  label="Referred wallets"
-                  value={String(state.profile.referredWallets)}
-                />
-                <LedgerPill
-                  label="Referral pending"
-                  value={`${microUsdcToDisplay(state.profile.referralPendingLamports)} USDC`}
-                />
-              </div>
-
-              <div className="rounded-[1rem] border border-white/12 bg-black/16 p-5">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                  Claim window
-                </p>
-                <div className="mt-4">
-                  <WalletDataRow
-                    label="Round proceeds"
-                    value={`${microUsdcToDisplay(state.profile.claimableRoundLamports)} USDC`}
-                  />
-                  <WalletDataRow
-                    label="Returned escrow"
-                    value={`${microUsdcToDisplay(state.profile.claimableSessionBalanceLamports)} USDC`}
-                  />
+              {vault.microUsdc === null && vault.activeSessions === null ? (
+                <div className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4 text-sm text-muted">
+                  Vault not initialized. It opens the first time this wallet
+                  joins a session.
                 </div>
-              </div>
-
-              <div className="space-y-3">
-                <ClaimRow
-                  label="Round proceeds"
-                  value={`${microUsdcToDisplay(state.profile.claimableRoundLamports)} USDC`}
-                  buttonLabel={state.isPending ? "Working..." : "Claim rounds"}
-                  disabled={
-                    !state.canSignActions ||
-                    state.isPending ||
-                    state.profile.claimableRoundLamports <= 0
-                  }
-                  onClick={state.handleClaimRounds}
-                />
-                <ClaimRow
-                  label="Returned escrow"
-                  value={`${microUsdcToDisplay(state.profile.claimableSessionBalanceLamports)} USDC`}
-                  buttonLabel={state.isPending ? "Working..." : "Claim escrow"}
-                  disabled={
-                    !state.canSignActions ||
-                    state.isPending ||
-                    state.profile.claimableSessionBalanceLamports <= 0
-                  }
-                  onClick={state.handleClaimSessionBalance}
-                />
-              </div>
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Program vault"
-              title="On-chain UserVault state"
-              description="The vault PDA holds USDC the program signs against when you join sessions. Active sessions block withdrawals."
-            />
-            {vault.microUsdc === null && vault.activeSessions === null ? (
-              <div className="mt-4 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4 text-sm text-muted">
-                Vault not initialized. The vault is created automatically the
-                first time this wallet joins a session, or via the Faucet.
-              </div>
-            ) : (
-              <>
-                <div className="mt-4 rounded-[1rem] border border-primary/25 bg-primary/10 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                    Vault USDC
-                  </p>
-                  <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
-                    {microUsdcToDisplay(Number(vault.microUsdc ?? 0n))} USDC
-                  </p>
-                </div>
-                <div className="mt-4 grid gap-3 grid-cols-2">
-                  <LedgerPill
-                    label="Active sessions"
-                    value={String(vault.activeSessions ?? 0)}
-                  />
-                  <LedgerPill
-                    label="Withdraw status"
-                    value={(vault.activeSessions ?? 0) > 0 ? "Locked" : "Available"}
-                    tone={(vault.activeSessions ?? 0) > 0 ? "accent" : undefined}
-                  />
-                  <LedgerPill
-                    label="Lifetime deposited"
-                    value={`${microUsdcToDisplay(Number(vault.totalDeposited ?? 0n))} USDC`}
-                  />
-                  <LedgerPill
-                    label="Lifetime withdrawn"
-                    value={`${microUsdcToDisplay(Number(vault.totalWithdrawn ?? 0n))} USDC`}
-                  />
-                </div>
-                <div className="mt-4 space-y-3">
-                  <WalletDataRow
-                    label="Vault PDA"
-                    value={
-                      vault.vaultAddress
-                        ? ellipsify(String(vault.vaultAddress), 6)
-                        : "—"
-                    }
-                    subvalue={
-                      vault.vaultAddress ? String(vault.vaultAddress) : undefined
-                    }
-                  />
-                  <WalletDataRow
-                    label="Vault tokens PDA"
-                    value={
-                      vault.vaultTokensAddress
-                        ? ellipsify(String(vault.vaultTokensAddress), 6)
-                        : "—"
-                    }
-                    subvalue={
-                      vault.vaultTokensAddress
-                        ? String(vault.vaultTokensAddress)
-                        : undefined
-                    }
-                  />
-                </div>
-                <p className="mt-4 text-xs leading-relaxed text-muted">
-                  Lifetime deposited counts only user-signed
-                  <code className="mx-1 rounded bg-white/8 px-1 py-0.5 font-mono text-[11px]">
-                    deposit_to_vault
-                  </code>
-                  calls. Faucet mints into the vault directly do not increment it.
-                </p>
-              </>
-            )}
-          </SurfaceCard>
-
-          <PredictionHistoryCard walletAddress={state.profile.walletAddress} />
-
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Referral ledger"
-              title="Wallet breakdown"
-              description="Admin payout batches settle referral balances; this view shows what is still due by referred wallet."
-            />
-            <div className="mt-4 rounded-[1rem] border border-primary/25 bg-primary/10 p-4">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
-                Pending total
-              </p>
-              <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">
-                {microUsdcToDisplay(state.profile.referralPendingLamports)} USDC
-              </p>
-            </div>
-            <div className="mt-4 space-y-3">
-              {state.profile.referredWalletBreakdown.length === 0 ? (
-                <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No referral relationships have generated fees yet.
-                </p>
               ) : (
-                state.profile.referredWalletBreakdown.map((wallet) => (
-                  <div
-                    key={wallet.walletAddress}
-                    className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4"
-                  >
-                    <p className="font-mono text-sm tabular-nums text-foreground break-all">
-                      {wallet.walletAddress}
+                <>
+                  <div className="rounded-[1rem] border border-primary/25 bg-primary/10 p-5">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-primary">
+                      Balance
                     </p>
-                    <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
-                      Referral relationship
+                    <p className="mt-3 font-mono text-[2.4rem] font-semibold tabular-nums leading-none text-foreground">
+                      {microUsdcToDisplay(Number(vault.microUsdc ?? 0n))}
+                      <span className="ml-2 text-base font-medium text-muted">
+                        USDC
+                      </span>
                     </p>
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted">
-                      <div>Due: {microUsdcToDisplay(wallet.balanceDueLamports)} USDC</div>
-                      <div>Earned: {microUsdcToDisplay(wallet.totalEarnedLamports)} USDC</div>
-                      <div>Paid: {microUsdcToDisplay(wallet.paidOutLamports)} USDC</div>
-                    </div>
                   </div>
-                ))
+                  <div className="grid gap-3 grid-cols-2">
+                    <LedgerPill
+                      label="Active sessions"
+                      value={String(vault.activeSessions ?? 0)}
+                    />
+                    <LedgerPill
+                      label="Withdraw"
+                      value={
+                        (vault.activeSessions ?? 0) > 0 ? "Locked" : "Available"
+                      }
+                      tone={(vault.activeSessions ?? 0) > 0 ? "accent" : undefined}
+                    />
+                  </div>
+                </>
               )}
             </div>
           </SurfaceCard>
 
-          <SurfaceCard>
-            <SectionHeading
-              eyebrow="Rewards"
-              title="Assigned inventory"
-              description="Wallet-visible reward state only. Claim execution remains unavailable until implemented."
-            />
-            <div className="mt-6 space-y-3">
-              {state.profile.rewards.length === 0 ? (
-                <p className="rounded-[1rem] border border-white/12 bg-black/16 px-4 py-3 text-sm text-muted">
-                  No rewards assigned yet.
-                </p>
-              ) : (
-                state.profile.rewards.map((reward) => (
-                  <div
-                    key={reward.id}
-                    className="rounded-[1rem] border border-white/12 bg-black/16 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-base font-semibold text-foreground">{reward.title}</p>
-                        <p className="mt-2 text-sm leading-relaxed text-muted">{reward.subtitle}</p>
-                      </div>
-                      <StatusBadge label={reward.status} tone="accent" />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </SurfaceCard>
+          <SessionsPlayedCard walletAddress={state.profile.walletAddress} />
         </div>
       )}
     </NarrowPageShell>
@@ -2758,7 +2739,15 @@ export function SpotrSessionDetailShell({
 }: SpotrShellProps & { sessionId: string }) {
   const { wallet, status } = useWallet();
   const { getAccessToken } = useToken();
+  const { cluster } = useCluster();
   const walletAddress = wallet?.account.address ?? null;
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const token = await getAccessToken();
+    if (token) return { Authorization: `Bearer ${token}` };
+    const addr = wallet?.account.address;
+    if (cluster === "localnet" && addr) return { "X-Dev-Wallet": String(addr) };
+    throw new Error("Privy session expired. Please log in again.");
+  }, [getAccessToken, cluster, wallet]);
   const [isPending, startTransition] = useTransition();
   const [notice, setNotice] = useState<Notice>(null);
   const [showGame, setShowGame] = useState(
@@ -2828,14 +2817,10 @@ export function SpotrSessionDetailShell({
     startTransition(async () => {
       try {
         setNotice({ tone: "info", message: "Joining session…" });
-        const accessToken = await getAccessToken();
-        if (!accessToken) throw new Error("Privy session expired. Please log in again.");
+        const authHeaders = await getAuthHeaders();
         const response = await fetch("/api/session/join", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ referrerWallet: null, sessionId }),
         });
         const body = (await response.json()) as
