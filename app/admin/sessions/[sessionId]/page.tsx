@@ -26,7 +26,16 @@ import type {
   AdminTransactionDetail,
 } from "../../../lib/spotr-types";
 
-const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      typeof body?.error === "string" ? body.error : `Request failed (${response.status}).`
+    );
+  }
+  return response.json();
+};
 
 type PageProps = {
   params: Promise<{ sessionId: string }>;
@@ -39,17 +48,21 @@ export default function AdminSessionDetailPage({ params }: PageProps) {
     walletAddress && sessionId
       ? `/api/admin/sessions/${sessionId}?wallet=${encodeURIComponent(walletAddress)}`
       : null;
-  const { data, mutate, isLoading } = useSWR<AdminSessionDetail>(swrKey, fetcher, {
-    refreshInterval: 15_000,
+  const { data, mutate, isLoading, error } = useSWR<AdminSessionDetail>(swrKey, fetcher, {
+    refreshInterval: 30_000,
   });
 
   if (!data && !isLoading) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "This session does not exist or you do not have access.";
     return (
       <div>
         <AdminSectionHeader
           eyebrow="Session"
-          title="Not found"
-          description="This session does not exist or you do not have access."
+          title={error ? "Failed to load session" : "Not found"}
+          description={message}
         />
         <Button asChild variant="secondary">
           <Link href="/admin/sessions">

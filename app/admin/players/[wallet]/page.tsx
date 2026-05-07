@@ -36,7 +36,7 @@ export default function AdminPlayerDetailPage({
     ? `/api/admin/players/${targetWallet}?wallet=${encodeURIComponent(walletAddress)}`
     : null;
   const { data, isLoading } = useSWR<AdminPlayerDetail>(swrKey, fetcher, {
-    refreshInterval: 15_000,
+    refreshInterval: 30_000,
   });
 
   const sessionsCols: ColumnDef<AdminPlayerSessionRow>[] = useMemo(

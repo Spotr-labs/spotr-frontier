@@ -114,10 +114,16 @@ export function WalletButton() {
   };
 
   const privyConnector = connectors.find((c) => c.id === PRIVY_ID);
-  const extensionConnectors = connectors.filter(
-    (c) => c.id !== EPHEMERAL_ID && c.id !== PRIVY_ID
-  );
-  const savedAddress = getSavedWalletAddress();
+  // Only localnet exposes the wallet-standard rows and the ephemeral
+  // "create new wallet" path. On devnet/mainnet the API requires a verified
+  // Privy session, so non-Privy connections produce a wallet that can't
+  // sign authenticated actions — funnel everyone through the Privy modal
+  // instead (it handles Phantom/Backpack/Solflare via SIWS).
+  const showNonPrivyPaths = cluster === "localnet" || !privyConnector;
+  const extensionConnectors = showNonPrivyPaths
+    ? connectors.filter((c) => c.id !== EPHEMERAL_ID && c.id !== PRIVY_ID)
+    : [];
+  const savedAddress = showNonPrivyPaths ? getSavedWalletAddress() : null;
 
   const handleConnectPrivy = async () => {
     cancelConnect();
@@ -242,34 +248,38 @@ export function WalletButton() {
                   </>
                 )}
 
-                {/* Ephemeral / no-extension option */}
-                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-muted">
-                  {extensionConnectors.length === 0
-                    ? "Choose a wallet"
-                    : "No extension?"}
-                </p>
-                {savedAddress ? (
-                  <button
-                    onClick={() => handleCreateWallet(false)}
-                    disabled={isPreparing || status === "connecting"}
-                    className="focus-ring flex min-h-11 w-full cursor-pointer flex-col items-start rounded-2xl border border-border-low px-3 py-3 text-left transition hover:bg-secondary disabled:opacity-50"
-                  >
-                    <span className="text-sm font-medium">Use saved browser wallet</span>
-                    <span className="mt-0.5 font-mono text-[11px] text-muted">
-                      {ellipsify(savedAddress, 6)}
-                    </span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => handleCreateWallet(false)}
-                    disabled={isPreparing || status === "connecting"}
-                    className="focus-ring flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-border px-3 py-3 text-left text-sm font-medium text-muted transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
-                  >
-                    <span className="flex h-5 w-5 items-center justify-center rounded text-base leading-none">
-                      +
-                    </span>
-                    <span>{isPreparing ? "Generating…" : "Create new wallet"}</span>
-                  </button>
+                {/* Ephemeral / no-extension option — localnet only. */}
+                {showNonPrivyPaths && (
+                  <>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-muted">
+                      {extensionConnectors.length === 0
+                        ? "Choose a wallet"
+                        : "No extension?"}
+                    </p>
+                    {savedAddress ? (
+                      <button
+                        onClick={() => handleCreateWallet(false)}
+                        disabled={isPreparing || status === "connecting"}
+                        className="focus-ring flex min-h-11 w-full cursor-pointer flex-col items-start rounded-2xl border border-border-low px-3 py-3 text-left transition hover:bg-secondary disabled:opacity-50"
+                      >
+                        <span className="text-sm font-medium">Use saved browser wallet</span>
+                        <span className="mt-0.5 font-mono text-[11px] text-muted">
+                          {ellipsify(savedAddress, 6)}
+                        </span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleCreateWallet(false)}
+                        disabled={isPreparing || status === "connecting"}
+                        className="focus-ring flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-border px-3 py-3 text-left text-sm font-medium text-muted transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+                      >
+                        <span className="flex h-5 w-5 items-center justify-center rounded text-base leading-none">
+                          +
+                        </span>
+                        <span>{isPreparing ? "Generating…" : "Create new wallet"}</span>
+                      </button>
+                    )}
+                  </>
                 )}
 
                 {status === "connecting" && (

@@ -30,7 +30,7 @@ export default function AdminOverviewPage() {
     ? `/api/admin/overview?wallet=${encodeURIComponent(walletAddress)}`
     : null;
   const { data, mutate, isLoading } = useSWR<AdminOverviewResponse>(swrKey, fetcher, {
-    refreshInterval: 15_000,
+    refreshInterval: 30_000,
   });
   const summary = data?.summary;
 

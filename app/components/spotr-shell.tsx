@@ -204,19 +204,53 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     });
   }, [walletAddress]);
 
-  // While waiting for the round fill threshold, poll every 5 s so the client
-  // automatically transitions to the predict screen once enough players deposit.
+  // While waiting for the round fill threshold, poll the lightweight
+  // heartbeat endpoint every 4 s. We only trigger a full dashboard refresh
+  // when depositsCount crosses the fill threshold or the round flips out of
+  // UPCOMING status — every other tick is a single Prisma read.
   const activeRoundIsWaiting =
     activeRound != null &&
     activeRound.status === "upcoming" &&
     (activeRound.depositLamports ?? null) != null;
+  const lastHeartbeatRef = useRef<{ depositsCount: number; status: string } | null>(null);
   useEffect(() => {
-    if (!activeRoundIsWaiting || !walletAddress) return;
+    if (!activeRoundIsWaiting || !walletAddress || !activeRoundId) return;
+    lastHeartbeatRef.current = null;
+    const threshold = config.roundFillThreshold;
     const id = window.setInterval(() => {
-      void refreshDashboard(walletAddress).catch(() => undefined);
-    }, 1_000);
+      void (async () => {
+        try {
+          const response = await fetch(
+            `/api/rounds/heartbeat?roundId=${encodeURIComponent(activeRoundId)}`,
+            { cache: "no-store" }
+          );
+          if (!response.ok) return;
+          const payload = (await response.json()) as {
+            depositsCount: number;
+            status: string;
+          };
+          const previous = lastHeartbeatRef.current;
+          lastHeartbeatRef.current = payload;
+          const crossedThreshold =
+            previous != null &&
+            previous.depositsCount < threshold &&
+            payload.depositsCount >= threshold;
+          const statusFlipped =
+            previous != null && previous.status === "UPCOMING" && payload.status !== "UPCOMING";
+          const initialAlreadyOpen =
+            previous == null && payload.status !== "UPCOMING";
+          const initialAlreadyFull =
+            previous == null && payload.depositsCount >= threshold;
+          if (crossedThreshold || statusFlipped || initialAlreadyOpen || initialAlreadyFull) {
+            void refreshDashboard(walletAddress).catch(() => undefined);
+          }
+        } catch {
+          // best-effort polling
+        }
+      })();
+    }, 4_000);
     return () => window.clearInterval(id);
-  }, [activeRoundIsWaiting, walletAddress]);
+  }, [activeRoundIsWaiting, walletAddress, activeRoundId, config.roundFillThreshold]);
 
   // Per-round countdown: derived from `opensAtIso` (the moment the round
   // flipped Pending→Open) plus `roundDurationSeconds`. We can't use

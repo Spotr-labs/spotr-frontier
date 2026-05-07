@@ -9,6 +9,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT"
 
+# Single source of truth — every downstream tool (prisma, seed, tsx, next)
+# inherits from here. No layering, no greps.
+set -a
+# shellcheck source=../.env.local
+source "$ROOT/.env.local"
+set +a
+
 RPC_URL="http://127.0.0.1:8899"
 RPC_WS="ws://127.0.0.1:8900"
 SURFPOOL_ARGS=${SPOTR_SURFPOOL_ARGS:---offline}
@@ -180,8 +187,7 @@ else
   echo "[dev-local] ✓  mock USDC mint: $USDC_MINT_ADDR"
 fi
 
-# ── on-chain env exports ─────────────────────────────────────────────────────
-export NEXT_PUBLIC_SPOTR_CLUSTER=localnet
+# ── runtime substitutions: surfpool-generated values that can't live in a static file ──
 export USDC_MINT_ADDRESS="$USDC_MINT_ADDR"
 export NEXT_PUBLIC_USDC_MINT_ADDRESS="$USDC_MINT_ADDR"
 export SOLANA_RPC_URL="$RPC_URL"
@@ -192,16 +198,9 @@ SPONSOR_PUBKEY="CChvxUR37fry8i2Gdvyrmwu2PH8vgZeTcFwtNqLxaHDW"
 echo "[dev-local] funding fee payer ($SPONSOR_PUBKEY) …"
 solana airdrop 100 "$SPONSOR_PUBKEY" --url "$RPC_URL" --keypair "$PAYER_KP" >/dev/null
 
-# Export threshold so generate-public-config and deploy-localnet-session read the right value.
-_fill_threshold=$(grep '^NEXT_PUBLIC_SPOTR_ROUND_FILL_THRESHOLD=' "$ROOT/.env.local" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-[ -n "$_fill_threshold" ] && export NEXT_PUBLIC_SPOTR_ROUND_FILL_THRESHOLD="$_fill_threshold"
-
-# Also fund every admin wallet so they can sign transactions from the browser.
-_admin_wallets=$(grep '^SPOTR_ADMIN_WALLETS=' "$ROOT/.env.local" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-[ -n "$_admin_wallets" ] && export SPOTR_ADMIN_WALLETS="$_admin_wallets"
-if [ -n "$_admin_wallets" ]; then
+if [ -n "${SPOTR_ADMIN_WALLETS:-}" ]; then
   echo "[dev-local] funding admin wallets …"
-  IFS=',' read -ra _admin_arr <<< "$_admin_wallets"
+  IFS=',' read -ra _admin_arr <<< "$SPOTR_ADMIN_WALLETS"
   for _admin in "${_admin_arr[@]}"; do
     _admin=$(echo "$_admin" | tr -d ' ')
     [ -n "$_admin" ] && solana airdrop 100 "$_admin" --url "$RPC_URL" --keypair "$PAYER_KP" >/dev/null && \
@@ -215,22 +214,15 @@ echo "[dev-local] ✓  on-chain config ready"
 
 # ── next dev ────────────────────────────────────────────────────────────────
 
-# Set launch ISO to today so the session activates immediately on first join.
-# The seed + generate scripts read this from process.env before loading .env files,
-# so this value wins over whatever is in .env.local.
+# Override LAUNCH_ISO to today so sessions activate immediately on first join.
+# This is a runtime substitution (not a config layering hack): the value depends
+# on when the dev session starts, so it can't be statically pinned in .env.local.
 export NEXT_PUBLIC_SPOTR_LAUNCH_ISO="$(date -u +'%Y-%m-%dT00:00:00.000Z')"
-export NEXT_PUBLIC_SPOTR_DEFAULT_SESSION_END_HOUR_UTC=23
 
 # ── db reset + seed ──────────────────────────────────────────────────────────
 echo "[dev-local] resetting database …"
-# Prisma CLI reads .env but not .env.local — load the local DATABASE_URL explicitly
-# so it hits the local postgres instance, not the cloud database in .env.
-if [ -f "$ROOT/.env.local" ]; then
-  _local_db=$(grep '^DATABASE_URL=' "$ROOT/.env.local" | head -1 | cut -d= -f2- | tr -d '"')
-  [ -n "$_local_db" ] && export DATABASE_URL="$_local_db"
-fi
 PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION="yes" npx prisma db push --force-reset --skip-generate
-node --env-file=.env --env-file=.env.local scripts/seed-spotr.mjs
+node scripts/seed-spotr.mjs
 npx tsx scripts/deploy-localnet-session.ts
 echo "[dev-local] ✓  database ready"
 

@@ -33,7 +33,7 @@ export default function AdminOperationsPage() {
     ? `/api/admin/operations?wallet=${encodeURIComponent(walletAddress)}`
     : null;
   const { data, mutate, isLoading } = useSWR<AdminOpsResponse>(swrKey, fetcher, {
-    refreshInterval: 15_000,
+    refreshInterval: 30_000,
   });
 
   return (

@@ -100,6 +100,8 @@ model Session {
 
   @@index([status])
   @@index([createdAt])
+  @@index([status, activatedAt])
+  @@index([status, startsAt])
 }
 
 model SessionCardPackTemplate {
@@ -148,6 +150,8 @@ model SessionRound {
   referralAccruals    ReferralAccrual[]
 
   @@unique([sessionId, roundIndex])
+  @@index([sessionId, status])
+  @@index([status, closesAt])
 }
 
 model RoundDeposit {
@@ -169,6 +173,7 @@ model RoundDeposit {
 
   @@unique([roundId, participantId])
   @@index([walletAddress])
+  @@index([roundId, depositedAt])
 }
 
 model SessionParticipant {
@@ -215,6 +220,9 @@ model RoundPosition {
   participant       SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
   @@unique([roundId, participantId])
+  @@index([walletAddress])
+  @@index([participantId])
+  @@index([submittedAt])
 }
 
 model ReferralAccrual {
