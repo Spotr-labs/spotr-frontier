@@ -99,3 +99,23 @@ test("Unknown Custom(99) → graceful fallback with hex", () => {
   assert.equal(report.code, "SPOTR_UNKNOWN_99");
   assert.match(report.message, /code 0x63 \/ 99/);
 });
+
+test("pending confirmation verifier message → retriable runtime classification", () => {
+  const err = new Error("Transaction is not confirmed yet; retry in a moment.");
+  const report = classifySolanaError(err);
+  assert.equal(report.category, "runtime");
+  assert.equal(report.code, "TX_NOT_CONFIRMED_YET");
+  assert.equal(report.retriable, true);
+});
+
+test("Custom(0) → opaque retryable failure instead of raw program rejection", () => {
+  const err = new SolanaError(SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM, {
+    code: 0,
+    index: 0,
+  });
+  const report = classifySolanaError(err);
+  assert.equal(report.category, "unknown");
+  assert.equal(report.code, "UNKNOWN_PROGRAM_REJECTION");
+  assert.equal(report.rawHex, "0x0");
+  assert.equal(report.retriable, true);
+});

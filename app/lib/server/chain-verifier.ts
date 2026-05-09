@@ -11,9 +11,19 @@ import { findPlayerSessionPda } from "../../generated/spotr/pdas/playerSession";
 const base58 = getBase58Codec();
 
 export class ChainVerificationError extends Error {
-  constructor(message: string) {
+  readonly retriable: boolean;
+
+  constructor(message: string, options: { retriable?: boolean } = {}) {
     super(message);
     this.name = "ChainVerificationError";
+    this.retriable = options.retriable ?? false;
+  }
+}
+
+export class PendingChainVerificationError extends ChainVerificationError {
+  constructor(message = "Transaction is not confirmed yet; retry in a moment.") {
+    super(message, { retriable: true });
+    this.name = "PendingChainVerificationError";
   }
 }
 
@@ -78,7 +88,12 @@ export async function verifyJoinSessionTx(params: {
   signature: string;
   expectedPlayer: string;
   expectedSessionNumber: bigint;
-}): Promise<{ sessionAddress: string; slot: number; blockTime: number | null }> {
+}): Promise<{
+  sessionAddress: string;
+  playerSessionAddress: string;
+  slot: number;
+  blockTime: number | null;
+}> {
   if (!params.signature || typeof params.signature !== "string") {
     throw new ChainVerificationError("Missing transaction signature.");
   }
@@ -90,18 +105,46 @@ export async function verifyJoinSessionTx(params: {
   // may not be exposed reliably, so call the public RPC endpoint directly.
   const rpcUrl = url ?? getDefaultRpcUrl(params.cluster);
 
-  const tx = await rpcCall<RpcTransactionResponse>(rpcUrl, "getTransaction", [
-    params.signature,
-    {
-      commitment: "confirmed",
-      encoding: "json",
-      maxSupportedTransactionVersion: 0,
-    },
-  ]);
+  const [expectedSessionAddress] = await findSpotrSessionPda(
+    params.expectedSessionNumber
+  );
+  const expectedSession = String(expectedSessionAddress);
+  const [expectedPlayerSessionAddress] = await findPlayerSessionPda({
+    session: expectedSessionAddress,
+    player: params.expectedPlayer as import("@solana/kit").Address,
+  });
+  const expectedPlayerSession = String(expectedPlayerSessionAddress);
+
+  let tx: RpcTransactionResponse = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    tx = await rpcCall<RpcTransactionResponse>(rpcUrl, "getTransaction", [
+      params.signature,
+      {
+        commitment: "confirmed",
+        encoding: "json",
+        maxSupportedTransactionVersion: 0,
+      },
+    ]);
+    if (tx) break;
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+  }
   if (!tx) {
-    throw new ChainVerificationError(
-      "Transaction is not confirmed yet; retry in a moment."
-    );
+    type AccountInfoResult = { value: unknown } | null;
+    const result = await rpcCall<AccountInfoResult>(rpcUrl, "getAccountInfo", [
+      expectedPlayerSession,
+      { encoding: "base64" },
+    ]);
+    if (result?.value) {
+      return {
+        sessionAddress: expectedSession,
+        playerSessionAddress: expectedPlayerSession,
+        slot: -1,
+        blockTime: null,
+      };
+    }
+    throw new PendingChainVerificationError();
   }
   if (tx.meta?.err) {
     throw new ChainVerificationError(
@@ -121,11 +164,6 @@ export async function verifyJoinSessionTx(params: {
     );
   }
 
-  const [expectedSessionAddress] = await findSpotrSessionPda(
-    params.expectedSessionNumber
-  );
-  const expectedSession = String(expectedSessionAddress);
-
   // Sponsored layout: accounts = [sponsor, config, player, session, ...]
   const match = joinInstructions.find((ix) => {
     const data = new Uint8Array(base58.encode(ix.data));
@@ -144,6 +182,7 @@ export async function verifyJoinSessionTx(params: {
 
   return {
     sessionAddress: expectedSession,
+    playerSessionAddress: expectedPlayerSession,
     slot: tx.slot,
     blockTime: tx.blockTime,
   };
@@ -244,7 +283,7 @@ export async function verifyPlayerSessionExists(params: {
   cluster: ClusterMoniker;
   expectedPlayer: string;
   expectedSessionNumber: bigint;
-}): Promise<{ sessionAddress: string }> {
+}): Promise<{ sessionAddress: string; playerSessionAddress: string }> {
   const rpcUrl = getDefaultRpcUrl(params.cluster);
   const [sessionAddress] = await findSpotrSessionPda(params.expectedSessionNumber);
   const [playerSessionPda] = await findPlayerSessionPda({
@@ -263,5 +302,8 @@ export async function verifyPlayerSessionExists(params: {
     );
   }
 
-  return { sessionAddress: String(sessionAddress) };
+  return {
+    sessionAddress: String(sessionAddress),
+    playerSessionAddress: String(playerSessionPda),
+  };
 }

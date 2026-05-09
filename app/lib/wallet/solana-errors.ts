@@ -85,6 +85,11 @@ const STALE_BLOCKHASH_NEEDLES = [
   "transaction was not confirmed",
 ];
 
+const PENDING_CONFIRMATION_NEEDLES = [
+  "transaction is not confirmed yet",
+  "retry in a moment",
+];
+
 // Human-readable labels for the most common Anchor framework error numbers
 // (codes 100..5999, which sit BELOW the 6000 #[error_code] custom range).
 // Anchor never publishes a JS-importable enum so we hand-pick the ones a
@@ -393,6 +398,18 @@ export function classifySolanaError(error: unknown): SolanaErrorReport {
   // 2. Spotr program error (custom program error code 6000+).
   const customCode = findCustomProgramCode(error);
   if (customCode != null) {
+    if (customCode === 0) {
+      return {
+        category: "unknown",
+        code: "UNKNOWN_PROGRAM_REJECTION",
+        title: "Transaction failed",
+        message: "The transaction was rejected before the program returned a useful error.",
+        hint: "Retry in a moment.",
+        retriable: true,
+        rawHex: "0x0",
+        logs: logs.length > 0 ? logs : undefined,
+      };
+    }
     const entry = getSpotrErrorEntry(customCode);
     if (entry) return spotrEntryReport(entry, customCode, logs);
     const anchorMessage = findAnchorMessage(logs);
@@ -476,6 +493,17 @@ function classifyRuntimeError(
       title: "Network slipped",
       message: "The transaction expired before confirmation.",
       hint: "Retry — this usually succeeds the second time.",
+      retriable: true,
+      logs: logs.length > 0 ? logs : undefined,
+    };
+  }
+  if (PENDING_CONFIRMATION_NEEDLES.some((n) => haystack.includes(n))) {
+    return {
+      category: "runtime",
+      code: "TX_NOT_CONFIRMED_YET",
+      title: "Confirmation pending",
+      message: "The transaction has not reached confirmed status yet.",
+      hint: "Retry in a moment.",
       retriable: true,
       logs: logs.length > 0 ? logs : undefined,
     };

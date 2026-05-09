@@ -67,6 +67,7 @@ import type {
 import { prisma } from "./db";
 import { launchFaultLineSeeds } from "./launch-seed";
 import { getSessionWindowForDate } from "../spotr-config/session-window";
+import { getJoinChainPersistence } from "./join-persistence";
 
 const REWARD_SCALE = 1_000_000_000n;
 
@@ -1432,6 +1433,7 @@ export async function joinSpotrSession(input: {
   const { verifyJoinSessionTx, verifyPlayerSessionExists } = await import("./chain-verifier");
 
   let verifiedSessionAddress: string;
+  let verifiedPlayerSessionAddress: string;
   let verifiedSlot: number | null = null;
 
   if (alreadyJoined) {
@@ -1441,6 +1443,7 @@ export async function joinSpotrSession(input: {
       expectedSessionNumber: sessionNumber,
     });
     verifiedSessionAddress = result.sessionAddress;
+    verifiedPlayerSessionAddress = result.playerSessionAddress;
   } else {
     const result = await verifyJoinSessionTx({
       cluster: publicSpotrConfig.cluster,
@@ -1449,8 +1452,14 @@ export async function joinSpotrSession(input: {
       expectedSessionNumber: sessionNumber,
     });
     verifiedSessionAddress = result.sessionAddress;
+    verifiedPlayerSessionAddress = result.playerSessionAddress;
     verifiedSlot = result.slot;
   }
+
+  const chainPersistence = getJoinChainPersistence({
+    chainTxSignature: input.chainTxSignature,
+    playerSessionAddress: verifiedPlayerSessionAddress,
+  });
 
   if (verifiedSessionAddress !== sessionForChain.chainSessionAddress) {
     throw new Error(
@@ -1493,10 +1502,14 @@ export async function joinSpotrSession(input: {
           "This wallet has already joined with a different on-chain transaction."
         );
       }
-      if (!existingParticipant.chainJoinTxSignature) {
+      if (
+        existingParticipant.chainJoinTxSignature !== chainPersistence.chainJoinTxSignature ||
+        existingParticipant.chainPlayerSessionAddress !==
+          chainPersistence.chainPlayerSessionAddress
+      ) {
         await tx.sessionParticipant.update({
           where: { id: existingParticipant.id },
-          data: { chainJoinTxSignature: input.chainTxSignature },
+          data: chainPersistence,
         });
       }
     } else {
@@ -1513,7 +1526,7 @@ export async function joinSpotrSession(input: {
           totalEscrowLamports: session.buyInLamports,
           remainingEscrowLamports: session.buyInLamports,
           referredByWallet,
-          chainJoinTxSignature: input.chainTxSignature,
+          ...chainPersistence,
         },
       });
 
@@ -1525,7 +1538,8 @@ export async function joinSpotrSession(input: {
           amountLamports: session.buyInLamports,
           metadataJson: JSON.stringify({
             referralCutBps: session.referralCutBps,
-            chainTxSignature: input.chainTxSignature,
+            chainTxSignature: chainPersistence.chainJoinTxSignature,
+            chainPlayerSessionAddress: chainPersistence.chainPlayerSessionAddress,
             chainSlot: verifiedSlot,
           }),
         },

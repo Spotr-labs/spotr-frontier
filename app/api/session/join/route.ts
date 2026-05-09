@@ -18,10 +18,15 @@ import { ValidationError } from "../../../lib/server/validators";
 import { SolanaTxError } from "../../../lib/wallet/solana-errors";
 import { prisma } from "../../../lib/server/db";
 import { findSpotrSessionPda } from "../../../lib/chain/session-pda";
+import { findPlayerSessionPda } from "../../../generated/spotr/pdas/playerSession";
 import { findVaultPda } from "../../../generated/spotr/pdas/vault";
 import { findVaultTokensPda } from "../../../generated/spotr/pdas/vaultTokens";
 import { getJoinSessionInstructionAsync } from "../../../generated/spotr/instructions/joinSession";
 import { publicSpotrConfig } from "../../../lib/spotr-config/public";
+import {
+  ChainVerificationError,
+  PendingChainVerificationError,
+} from "../../../lib/server/chain-verifier";
 
 export const dynamic = "force-dynamic";
 
@@ -122,46 +127,57 @@ export async function POST(request: Request) {
     const buyIn = BigInt(sessionRow.buyInLamports.toString());
     const playerAddr = address(walletAddress);
     const [sessionAddress] = await findSpotrSessionPda(sessionNumber);
+    const [playerSessionPda] = await findPlayerSessionPda({
+      session: sessionAddress,
+      player: playerAddr,
+    });
+    const playerSessionExists = await fetchAccountExists(
+      rpcUrl,
+      String(playerSessionPda),
+    );
 
-    // Vault must exist and have at least the buy-in. Surface a friendly
-    // error so the UI can route the player back to /airdrop.
-    const [vaultPda] = await findVaultPda({ player: playerAddr });
-    const [vaultTokensPda] = await findVaultTokensPda({ player: playerAddr });
+    let signature = "already-joined";
+    if (!playerSessionExists) {
+      // Vault must exist and have at least the buy-in. Surface a friendly
+      // error so the UI can route the player back to /airdrop.
+      const [vaultPda] = await findVaultPda({ player: playerAddr });
+      const [vaultTokensPda] = await findVaultTokensPda({ player: playerAddr });
 
-    const vaultExists = await fetchAccountExists(rpcUrl, String(vaultPda));
-    if (!vaultExists) {
-      return NextResponse.json(
-        {
-          error: INSUFFICIENT_VAULT_ERROR,
-          needed: buyIn.toString(),
-          have: "0",
-        },
-        { status: 400 },
-      );
-    }
-
-    if (buyIn > 0n) {
-      const balance = await fetchTokenBalance(rpcUrl, String(vaultTokensPda));
-      if (balance < buyIn) {
+      const vaultExists = await fetchAccountExists(rpcUrl, String(vaultPda));
+      if (!vaultExists) {
         return NextResponse.json(
           {
             error: INSUFFICIENT_VAULT_ERROR,
             needed: buyIn.toString(),
-            have: balance.toString(),
+            have: "0",
           },
           { status: 400 },
         );
       }
+
+      if (buyIn > 0n) {
+        const balance = await fetchTokenBalance(rpcUrl, String(vaultTokensPda));
+        if (balance < buyIn) {
+          return NextResponse.json(
+            {
+              error: INSUFFICIENT_VAULT_ERROR,
+              needed: buyIn.toString(),
+              have: balance.toString(),
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      const sponsor = await loadSponsorSigner();
+      const ix = await getJoinSessionInstructionAsync({
+        sponsor,
+        player: playerAddr,
+        session: sessionAddress,
+      });
+
+      signature = await submitSponsoredTx(cluster, [ix]);
     }
-
-    const sponsor = await loadSponsorSigner();
-    const ix = await getJoinSessionInstructionAsync({
-      sponsor,
-      player: playerAddr,
-      session: sessionAddress,
-    });
-
-    const signature = await submitSponsoredTx(cluster, [ix]);
 
     const responsePayload = await joinSpotrSession({
       walletAddress,
@@ -185,6 +201,18 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: error.report.message, code: error.code, hint: error.report.hint },
         { status: error.status },
+      );
+    }
+    if (error instanceof PendingChainVerificationError) {
+      return NextResponse.json(
+        { error: error.message, code: "JOIN_TX_PENDING", hint: "Retry in a moment." },
+        { status: 503 },
+      );
+    }
+    if (error instanceof ChainVerificationError) {
+      return NextResponse.json(
+        { error: error.message, code: "CHAIN_VERIFICATION_FAILED" },
+        { status: error.retriable ? 503 : 400 },
       );
     }
     return NextResponse.json(
