@@ -1398,6 +1398,7 @@ export async function joinSpotrSession(input: {
   referrerWallet?: string | null;
   chainTxSignature: string;
   sessionId?: string | null;
+  actor?: "player" | "bot";
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1541,6 +1542,7 @@ export async function joinSpotrSession(input: {
             chainTxSignature: chainPersistence.chainJoinTxSignature,
             chainPlayerSessionAddress: chainPersistence.chainPlayerSessionAddress,
             chainSlot: verifiedSlot,
+            botFill: input.actor === "bot",
           }),
         },
       });
@@ -1767,6 +1769,7 @@ export async function recordRoundDeposit(input: {
   roundId: string;
   amountLamports: bigint;
   chainTxSignature?: string | null;
+  actor?: "player" | "bot";
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1776,7 +1779,7 @@ export async function recordRoundDeposit(input: {
     throw new Error("Deposit amount must be positive.");
   }
 
-  await prisma.$transaction(async (tx) => {
+  const depositSummary = await prisma.$transaction(async (tx) => {
     const round = await tx.sessionRound.findUnique({
       where: { id: input.roundId },
       include: { session: true },
@@ -1825,6 +1828,7 @@ export async function recordRoundDeposit(input: {
     const newPool = round.depositPoolLamports + input.amountLamports;
     const fillThreshold = session.roundFillThreshold;
     const shouldOpen = newCount >= fillThreshold;
+    const statusAfter = shouldOpen ? RoundStatus.OPEN : round.status;
 
     await tx.sessionRound.update({
       where: { id: round.id },
@@ -1852,12 +1856,25 @@ export async function recordRoundDeposit(input: {
           roundId: round.id,
           newCount,
           fillThreshold,
+          botFill: input.actor === "bot",
         }),
       },
     });
+    return {
+      roundId: round.id,
+      sessionId: session.id,
+      previousStatus: round.status,
+      statusAfter,
+      previousDepositsCount: round.depositsCount,
+      newDepositsCount: newCount,
+      fillThreshold,
+    };
   }, { timeout: 15_000 });
 
-  return getSpotrDashboardPayload(walletAddress);
+  return {
+    payload: await getSpotrDashboardPayload(walletAddress),
+    summary: depositSummary,
+  };
 }
 
 /**

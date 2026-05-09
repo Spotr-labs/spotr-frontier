@@ -205,7 +205,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   }, [walletAddress]);
 
   // While waiting for the round fill threshold, poll the lightweight
-  // heartbeat endpoint every 4 s. We only trigger a full dashboard refresh
+  // heartbeat endpoint every 1 s. We patch the visible waiting-room count on
+  // each tick, and only do a full dashboard refresh when the threshold is hit
+  // or the round flips out of UPCOMING.
   // when depositsCount crosses the fill threshold or the round flips out of
   // UPCOMING status — every other tick is a single Prisma read.
   const activeRoundIsWaiting =
@@ -228,9 +230,35 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
           const payload = (await response.json()) as {
             depositsCount: number;
             status: string;
+            opensAtIso: string | null;
+            depositorAddresses: string[];
           };
           const previous = lastHeartbeatRef.current;
           lastHeartbeatRef.current = payload;
+          setData((current) => ({
+            ...current,
+            session: {
+              ...current.session,
+              rounds: current.session.rounds.map((round) =>
+                round.id !== activeRoundId
+                  ? round
+                  : {
+                      ...round,
+                      walletsDepositedForRound: payload.depositsCount,
+                      depositorAddresses: payload.depositorAddresses,
+                      opensAtIso: payload.opensAtIso,
+                      status:
+                        payload.status === "OPEN"
+                          ? "open"
+                          : payload.status === "CLOSED"
+                            ? "closed"
+                            : payload.status === "SKIPPED"
+                              ? "skipped"
+                              : "upcoming",
+                    },
+              ),
+            },
+          }));
           const crossedThreshold =
             previous != null &&
             previous.depositsCount < threshold &&
@@ -248,7 +276,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
           // best-effort polling
         }
       })();
-    }, 4_000);
+    }, 1_000);
     return () => window.clearInterval(id);
   }, [activeRoundIsWaiting, walletAddress, activeRoundId, config.roundFillThreshold]);
 
