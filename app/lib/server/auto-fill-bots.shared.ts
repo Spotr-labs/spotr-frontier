@@ -5,7 +5,18 @@ export type AutoFillBotsConfig = {
   initialDelayMs: number;
   trickleDelayMs: number;
   depositLamports: bigint;
+  botWallets: string[];
 };
+
+const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+function readCsv(raw: string | undefined) {
+  if (!raw?.trim()) return [] as string[];
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
 
 type EnvMap = Record<string, string | undefined>;
 
@@ -51,12 +62,24 @@ export function readAutoFillBotsConfig(
       "SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS must be at least 1000000.",
     );
   }
+  const botWallets = readCsv(env.SPOTR_AUTO_FILL_BOT_WALLETS);
+  for (const wallet of botWallets) {
+    if (!SOLANA_ADDRESS_PATTERN.test(wallet)) {
+      throw new Error(`Invalid SPOTR_AUTO_FILL_BOT_WALLETS entry: ${wallet}`);
+    }
+  }
+  if (enabled && botWallets.length === 0) {
+    throw new Error(
+      "SPOTR_AUTO_FILL_BOT_WALLETS must contain at least one wallet when bots are enabled.",
+    );
+  }
 
   return {
     enabled,
     initialDelayMs,
     trickleDelayMs,
     depositLamports,
+    botWallets,
   };
 }
 

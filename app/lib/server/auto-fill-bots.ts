@@ -1,4 +1,3 @@
-import { generateKeyPairSigner } from "@solana/kit";
 import { prisma } from "./db";
 import { publicSpotrConfig } from "../spotr-config/public";
 import { executeSessionJoin } from "./session-join";
@@ -73,6 +72,7 @@ export async function fillRoundWithBots(params: {
   const trickleDelayMs =
     params.trickleDelayMs ?? config.trickleDelayMs;
   const depositLamports = params.depositLamports ?? config.depositLamports;
+  const botWallets = config.botWallets;
 
   while (true) {
     const round = await prisma.sessionRound.findUnique({
@@ -83,6 +83,11 @@ export async function fillRoundWithBots(params: {
             id: true,
             buyInLamports: true,
             roundFillThreshold: true,
+          },
+        },
+        deposits: {
+          select: {
+            walletAddress: true,
           },
         },
       },
@@ -103,8 +108,13 @@ export async function fillRoundWithBots(params: {
       return;
     }
 
-    const signer = await generateKeyPairSigner();
-    const walletAddress = String(signer.address);
+    const depositedWallets = new Set(round.deposits.map((deposit) => deposit.walletAddress));
+    const walletAddress = botWallets.find((wallet) => !depositedWallets.has(wallet));
+    if (!walletAddress) {
+      throw new Error(
+        `Auto-fill bot wallet pool exhausted for round ${round.id}. Provide at least ${round.session.roundFillThreshold - 1} bot wallets in SPOTR_AUTO_FILL_BOT_WALLETS.`,
+      );
+    }
     const fundingLamports = round.session.buyInLamports + depositLamports;
 
     await ensureUserVaultInitialized(walletAddress);
