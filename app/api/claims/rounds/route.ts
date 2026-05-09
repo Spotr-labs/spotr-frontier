@@ -14,6 +14,7 @@ import {
   consumeSignedActionToken,
 } from "../../../lib/server/rate-limit";
 import { ValidationError } from "../../../lib/server/validators";
+import { SolanaTxError } from "../../../lib/wallet/solana-errors";
 import { prisma } from "../../../lib/server/db";
 import { findSpotrSessionPda } from "../../../lib/chain/session-pda";
 import { findSpotrRoundPda } from "../../../lib/chain/round-pda";
@@ -83,17 +84,18 @@ export async function POST(request: Request) {
         await submitSponsoredTx(cluster, [ix]);
         submitted += 1;
       } catch (err) {
-        // The on-chain program returns AlreadyClaimed (idempotent) and
-        // RoundStillOpen (round not closed yet on-chain). Both are benign
-        // — keep iterating and let the DB state reconcile via the next
-        // call.
-        const msg = err instanceof Error ? err.message : String(err);
+        // AlreadyClaimed and RoundStillOpen are benign here — the on-chain
+        // program is just telling us the position is already claimed or
+        // the round hasn't been closed yet on-chain. Keep iterating and
+        // let the DB state reconcile via the next call.
         if (
-          !msg.includes("AlreadyClaimed") &&
-          !msg.includes("RoundStillOpen")
+          err instanceof SolanaTxError &&
+          (err.code === "SPOTR_ALREADY_CLAIMED" ||
+            err.code === "SPOTR_ROUND_STILL_OPEN")
         ) {
-          throw err;
+          continue;
         }
+        throw err;
       }
     }
 
@@ -108,6 +110,12 @@ export async function POST(request: Request) {
     }
     if (error instanceof ValidationError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof SolanaTxError) {
+      return NextResponse.json(
+        { error: error.report.message, code: error.code, hint: error.report.hint },
+        { status: error.status },
+      );
     }
     return NextResponse.json(
       {

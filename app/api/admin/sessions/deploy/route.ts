@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deployAdminSessionWithChain } from "../../../../lib/server/spotr-store";
+import { SolanaTxError } from "../../../../lib/wallet/solana-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json(responsePayload);
   } catch (error) {
+    if (error instanceof SolanaTxError) {
+      return NextResponse.json(
+        { error: error.report.message, code: error.code, hint: error.report.hint },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
       {
         error:

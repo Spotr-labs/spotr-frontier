@@ -17,6 +17,7 @@ import {
   type KeyPairSigner,
 } from "@solana/kit";
 import type { ClusterMoniker } from "../solana-client";
+import { toSolanaTxError } from "../wallet/solana-errors";
 
 const RPC_URLS: Record<ClusterMoniker, string> = {
   localnet: "http://127.0.0.1:8899",
@@ -111,29 +112,8 @@ export async function submitSponsoredTx(
       .send();
     return String(signature);
   } catch (err) {
-    throw new Error(extractSimulationMessage(err));
+    // Re-throw as SolanaTxError so route handlers can branch on .code /
+    // .status without re-parsing the underlying SolanaError.
+    throw toSolanaTxError(err);
   }
-}
-
-function extractSimulationMessage(err: unknown): string {
-  // Walk the cause chain to find preflight logs emitted by the program.
-  let current: unknown = err;
-  for (let depth = 0; depth < 6 && current != null; depth++) {
-    if (typeof current !== "object") break;
-    const obj = current as { cause?: unknown; context?: { logs?: unknown } };
-    const logs = obj.context?.logs;
-    if (Array.isArray(logs)) {
-      for (const line of logs) {
-        if (typeof line !== "string") continue;
-        // Anchor error: "AnchorError … Error Message: <msg>."
-        const anchor = line.match(/Error Message:\s*([^.]+(?:\.[^.]+)*)/);
-        if (anchor) return anchor[1].replace(/\.\s*$/, "").trim();
-        // Custom program error code
-        const custom = line.match(/custom program error:\s*(0x[0-9a-f]+)/i);
-        if (custom) return `Transaction rejected by program (code ${custom[1]}).`;
-      }
-    }
-    current = obj.cause;
-  }
-  return err instanceof Error ? err.message : "Transaction simulation failed.";
 }

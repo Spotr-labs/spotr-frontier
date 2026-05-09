@@ -4,9 +4,8 @@ import {
   createContext,
   useContext,
   useCallback,
-  useEffect,
   useMemo,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { ClusterMoniker } from "../lib/solana-client";
@@ -25,19 +24,55 @@ const ClusterContext = createContext<ClusterContextValue | null>(null);
 
 export { CLUSTERS };
 
-export function ClusterProvider({ children }: { children: ReactNode }) {
-  const [cluster, setClusterState] = useState<ClusterMoniker>(DEFAULT_CLUSTER);
+// External store that bridges localStorage into React. Used via
+// `useSyncExternalStore` so we never need to mirror localStorage into
+// component state inside an effect (which trips react-hooks/set-state-in-effect
+// and is a recognised React-19 anti-pattern).
+const clusterListeners = new Set<() => void>();
 
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as ClusterMoniker | null;
-    if (stored && (CLUSTERS as string[]).includes(stored)) {
-      setClusterState(stored);
+function subscribeToClusterStore(callback: () => void): () => void {
+  clusterListeners.add(callback);
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY) callback();
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("storage", onStorage);
+  }
+  return () => {
+    clusterListeners.delete(callback);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("storage", onStorage);
     }
-  }, []);
+  };
+}
+
+function getClusterSnapshot(): ClusterMoniker {
+  if (typeof window === "undefined") return DEFAULT_CLUSTER;
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored && (CLUSTERS as readonly string[]).includes(stored)) {
+    return stored as ClusterMoniker;
+  }
+  return DEFAULT_CLUSTER;
+}
+
+function getClusterServerSnapshot(): ClusterMoniker {
+  return DEFAULT_CLUSTER;
+}
+
+function notifyClusterListeners() {
+  for (const cb of clusterListeners) cb();
+}
+
+export function ClusterProvider({ children }: { children: ReactNode }) {
+  const cluster = useSyncExternalStore(
+    subscribeToClusterStore,
+    getClusterSnapshot,
+    getClusterServerSnapshot,
+  );
 
   const setCluster = useCallback((next: ClusterMoniker) => {
-    setClusterState(next);
     localStorage.setItem(STORAGE_KEY, next);
+    notifyClusterListeners();
   }, []);
 
   const explorerUrl = useMemo(

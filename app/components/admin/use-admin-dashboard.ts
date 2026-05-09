@@ -18,6 +18,7 @@ import {
   submitWithdrawProtocolFeesOnChain,
 } from "../../lib/chain/spotr-ops";
 import type { SpotrSignedActionName } from "../../lib/spotr-signed-action";
+import { classifySolanaError } from "../../lib/wallet/solana-errors";
 
 export type AdminMutationOptions = {
   successMessage?: string;
@@ -92,11 +93,26 @@ export function useAdminDashboard() {
             }
             options?.onSuccess?.(response);
           } catch (error) {
-            const message =
-              error instanceof Error
-                ? error.message
-                : options?.errorMessage ?? "Admin action failed.";
-            toast.error(message);
+            // Funnel every admin action error through the unified Solana
+            // classifier so the toast carries the program error name +
+            // hint instead of a bare hex code.
+            const report = classifySolanaError(error);
+            const fallback =
+              options?.errorMessage ?? "Admin action failed.";
+            const description = report.hint
+              ? `${report.message} ${report.hint}`
+              : report.message;
+            toast.error(report.title || fallback, {
+              description: description || fallback,
+              duration: 8000,
+            });
+            if (report.logs && report.logs.length > 0) {
+              console.groupCollapsed(
+                `[spotr] admin action failed — ${report.code ?? report.category}`
+              );
+              for (const line of report.logs) console.log(line);
+              console.groupEnd();
+            }
           }
         })();
       });

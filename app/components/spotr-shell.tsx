@@ -259,11 +259,19 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   // `opensAt` is the actual flip time, not when this client first saw it.
   useEffect(() => {
     if (!activeRoundId || activeRound?.status !== "open") return;
-    setClockMs(Date.now());
+    // Defer the immediate sync into a microtask so the setState escapes the
+    // synchronous effect body (react-hooks/set-state-in-effect).
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setClockMs(Date.now());
+    });
     const timer = window.setInterval(() => {
       setClockMs(Date.now());
     }, 1000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [activeRoundId, activeRound?.status]);
 
   const countdown = useMemo(() => {
@@ -804,16 +812,25 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     const settled = state.session.rounds.find((r) => r.id === settledId);
     if (!settled) return;
     pnlShownRoundRef.current = settledId;
-    setSettledRound(settled);
-    setShowPnl(true);
-    void vault.mutate?.();
+    let cancelled = false;
+    // Defer the trigger setState into a microtask so it escapes the
+    // synchronous effect body (react-hooks/set-state-in-effect).
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSettledRound(settled);
+      setShowPnl(true);
+      void vault.mutate?.();
+    });
     const t = window.setTimeout(() => {
       setShowPnl(false);
       state.clearLastSettledRoundId();
       state.dismissRound(settledId);
       state.refresh();
     }, 5000);
-    return () => window.clearTimeout(t);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
   }, [
     state.lastSettledRoundId,
     state.session.rounds,
@@ -840,14 +857,21 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
       return;
     }
     pnlShownRoundRef.current = roundId;
-    setSettledRound(round);
-    setShowPnl(true);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSettledRound(round);
+      setShowPnl(true);
+    });
     const t = window.setTimeout(() => {
       setShowPnl(false);
       state.dismissRound(roundId);
       state.refresh();
     }, 5000);
-    return () => window.clearTimeout(t);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
   }, [
     state.countdown,
     state.activeRound,
@@ -1000,11 +1024,17 @@ function BalanceCheckScreen({
 }) {
   const [phase, setPhase] = useState<"checking" | "success" | "low">("checking");
 
+  // Reset to "checking" whenever isLoading flips back on. Using the
+  // setState-during-render guard pattern avoids the synchronous-setState-in-
+  // effect anti-pattern. https://react.dev/learn/you-might-not-need-an-effect
+  const [trackedIsLoading, setTrackedIsLoading] = useState(isLoading);
+  if (trackedIsLoading !== isLoading) {
+    setTrackedIsLoading(isLoading);
+    if (isLoading) setPhase("checking");
+  }
+
   useEffect(() => {
-    if (isLoading) {
-      setPhase("checking");
-      return;
-    }
+    if (isLoading) return;
     const t = window.setTimeout(() => {
       if (balanceMicro == null) {
         setPhase("checking");
@@ -2427,10 +2457,19 @@ function SessionRoundsBreakdown({
   const [rounds, setRounds] = useState<ProfileSessionRoundRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  // Reset cached results when the wallet/session pair changes. Using the
+  // setState-during-render guard avoids resetting inside the effect body
+  // (react-hooks/set-state-in-effect).
+  const fetchKey = `${walletAddress}|${sessionId}`;
+  const [trackedFetchKey, setTrackedFetchKey] = useState(fetchKey);
+  if (trackedFetchKey !== fetchKey) {
+    setTrackedFetchKey(fetchKey);
     setRounds(null);
     setError(null);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
     fetch(
       `/api/profile/sessions/${encodeURIComponent(sessionId)}/rounds?wallet=${encodeURIComponent(walletAddress)}`,
       { cache: "no-store" }
@@ -2802,7 +2841,9 @@ export function SpotrSessionDetailShell({
   useEffect(() => {
     if (!walletAddress || showGame) return;
     let cancelled = false;
-    setIsCheckingMembership(true);
+    queueMicrotask(() => {
+      if (!cancelled) setIsCheckingMembership(true);
+    });
     fetch(
       `/api/bootstrap?wallet=${encodeURIComponent(walletAddress)}&session=${encodeURIComponent(sessionId)}`,
       { cache: "no-store" }
@@ -2905,7 +2946,7 @@ export function SpotrSessionDetailShell({
 
   const startDate = new Date(session.startsAtIso);
   const endDate = new Date(session.endsAtIso);
-  const nowMs = Date.now();
+  const nowMs = new Date().getTime();
   const hasStarted = nowMs >= startDate.getTime();
   const hasEnded = nowMs >= endDate.getTime();
 

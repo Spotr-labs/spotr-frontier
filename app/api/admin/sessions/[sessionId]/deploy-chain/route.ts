@@ -4,6 +4,7 @@ import { prisma } from "../../../../../lib/server/db";
 import { AdminAuthError } from "../../../_lib/auth";
 import { serverSpotrConfig } from "../../../../../lib/spotr-config/server";
 import { publicSpotrConfig } from "../../../../../lib/spotr-config/public";
+import { SolanaTxError } from "../../../../../lib/wallet/solana-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -95,6 +96,12 @@ export async function POST(
   } catch (error) {
     if (error instanceof AdminAuthError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    if (error instanceof SolanaTxError) {
+      return NextResponse.json(
+        { error: error.report.message, code: error.code, hint: error.report.hint },
+        { status: error.status }
+      );
     }
     const message = error instanceof Error ? error.message : "Deploy failed.";
     return NextResponse.json({ error: message }, { status: 400 });

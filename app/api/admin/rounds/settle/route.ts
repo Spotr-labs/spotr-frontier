@@ -22,6 +22,7 @@ import { findPositionPda } from "../../../../generated/spotr/pdas/position";
 import { getSettleRoundInstructionAsync } from "../../../../generated/spotr/instructions/settleRound";
 import { redistributeFinalPayouts } from "../../../../lib/server/redistribute";
 import { publicSpotrConfig } from "../../../../lib/spotr-config/public";
+import { SolanaTxError } from "../../../../lib/wallet/solana-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -152,6 +153,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, signature, positionCount: winners.length });
   } catch (error) {
+    if (error instanceof SolanaTxError) {
+      return NextResponse.json(
+        { error: error.report.message, code: error.code, hint: error.report.hint },
+        { status: error.status }
+      );
+    }
     const status =
       error instanceof ValidationError
         ? 400

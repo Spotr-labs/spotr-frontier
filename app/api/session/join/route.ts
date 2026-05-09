@@ -15,6 +15,7 @@ import {
   consumeSignedActionToken,
 } from "../../../lib/server/rate-limit";
 import { ValidationError } from "../../../lib/server/validators";
+import { SolanaTxError } from "../../../lib/wallet/solana-errors";
 import { prisma } from "../../../lib/server/db";
 import { findSpotrSessionPda } from "../../../lib/chain/session-pda";
 import { findVaultPda } from "../../../generated/spotr/pdas/vault";
@@ -179,6 +180,12 @@ export async function POST(request: Request) {
     }
     if (error instanceof ValidationError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof SolanaTxError) {
+      return NextResponse.json(
+        { error: error.report.message, code: error.code, hint: error.report.hint },
+        { status: error.status },
+      );
     }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to join session." },

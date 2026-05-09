@@ -55,7 +55,12 @@ export function AutoAdvanceFooter({
 }) {
   const [secLeft, setSecLeft] = useState(durationSeconds);
   const onAdvanceRef = useRef(onAdvance);
-  onAdvanceRef.current = onAdvance;
+  // Keep the latest onAdvance available to the interval below without
+  // re-running the timer when the parent re-creates the callback. Updating a
+  // ref during render is flagged by react-hooks/refs, so do it in an effect.
+  useEffect(() => {
+    onAdvanceRef.current = onAdvance;
+  }, [onAdvance]);
 
   useEffect(() => {
     let remaining = durationSeconds;

@@ -24,7 +24,10 @@ import type {
 } from "../../lib/spotr-types";
 import { useAdminDashboard } from "./use-admin-dashboard";
 import { getNextDeployWindow } from "../../lib/spotr-config/session-window";
-import { classifyTxError } from "../../lib/wallet/tx-error";
+import {
+  classifySolanaError,
+  isWalletRejection,
+} from "../../lib/wallet/solana-errors";
 
 type CardPackItem = {
   kind: "nft" | "merch" | "gift-card" | "voucher";
@@ -69,8 +72,12 @@ export function DeploySessionDialog({
   const [cardPackItems, setCardPackItems] = useState<CardPackItem[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [allPairs, setAllPairs] = useState<AdminPairTableRow[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  // Pages appended via "Load more" — kept separate from the SWR-owned first
+  // page so we can derive `allPairs` instead of mirroring server state into
+  // local state (the latter trips react-hooks/set-state-in-effect).
+  const [extraItems, setExtraItems] = useState<AdminPairTableRow[]>([]);
+  const [extraCursor, setExtraCursor] = useState<string | null>(null);
+  const [hasExtra, setHasExtra] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
 
   useEffect(() => {
@@ -83,11 +90,20 @@ export function DeploySessionDialog({
     : null;
   const { data } = useSWR<AdminPairListResponse>(baseSwrKey, fetcher);
 
-  useEffect(() => {
-    if (!data) return;
-    setAllPairs(data.items);
-    setNextCursor(data.nextCursor ?? null);
-  }, [data]);
+  // Reset pagination state when the SWR key changes (search edited, dialog
+  // reopened). setState-during-render is the React-blessed pattern for
+  // "reset state when a prop changes" — see
+  // https://react.dev/learn/you-might-not-need-an-effect#resetting-all-state-when-a-prop-changes
+  const [pagedKey, setPagedKey] = useState<string | null>(null);
+  if (baseSwrKey !== pagedKey) {
+    setPagedKey(baseSwrKey);
+    setExtraItems([]);
+    setExtraCursor(null);
+    setHasExtra(false);
+  }
+
+  const allPairs = data ? [...data.items, ...extraItems] : [];
+  const nextCursor = hasExtra ? extraCursor : data?.nextCursor ?? null;
 
   const loadMore = useCallback(async () => {
     if (!nextCursor || !baseSwrKey || isFetchingMore) return;
@@ -95,8 +111,9 @@ export function DeploySessionDialog({
     try {
       const resp = await fetch(`${baseSwrKey}&cursor=${encodeURIComponent(nextCursor)}`, { cache: "no-store" });
       const page: AdminPairListResponse = await resp.json();
-      setAllPairs((prev) => [...prev, ...page.items]);
-      setNextCursor(page.nextCursor ?? null);
+      setExtraItems((prev) => [...prev, ...page.items]);
+      setExtraCursor(page.nextCursor ?? null);
+      setHasExtra(true);
     } catch {
       toast.error("Failed to load more pairs.");
     } finally {
@@ -113,13 +130,12 @@ export function DeploySessionDialog({
     }
     if (seededRef.current) return;
     if (pairIds.length !== 0) return;
-    if (allPairs.length === 0) return;
+    const items = data?.items ?? [];
+    if (items.length === 0) return;
     seededRef.current = true;
-    const next = allPairs
-      .slice(0, config.roundCount)
-      .map((pair) => pair.id);
+    const next = items.slice(0, config.roundCount).map((pair) => pair.id);
     queueMicrotask(() => setPairIds(next));
-  }, [allPairs, config.roundCount, open, pairIds.length]);
+  }, [data, config.roundCount, open, pairIds.length]);
 
   const togglePair = (id: string) => {
     setPairIds((current) => {
@@ -142,7 +158,10 @@ export function DeploySessionDialog({
   }
 
   function setStartIn(minutes: number) {
-    setOverrideStarts(toDatetimeLocalValue(new Date(Date.now() + minutes * 60_000)));
+    const base = new Date();
+    setOverrideStarts(
+      toDatetimeLocalValue(new Date(base.getTime() + minutes * 60_000)),
+    );
   }
 
   function setEndAfterStart(minutes: number) {
@@ -173,8 +192,9 @@ export function DeploySessionDialog({
     setCardPackItems([]);
     setSearch("");
     setDebouncedSearch("");
-    setAllPairs([]);
-    setNextCursor(null);
+    setExtraItems([]);
+    setExtraCursor(null);
+    setHasExtra(false);
   }
 
   async function submit() {
@@ -257,9 +277,27 @@ export function DeploySessionDialog({
       setOpen(false);
       onDeployed?.();
     } catch (error) {
-      const { rejected, message } = classifyTxError(error);
-      if (rejected) toast(message);
-      else toast.error(message);
+      if (isWalletRejection(error)) {
+        toast("Transaction cancelled in your wallet.");
+      } else {
+        const report = classifySolanaError(error);
+        const description = report.hint
+          ? `${report.message} ${report.hint}`
+          : report.message;
+        toast.error(report.title, {
+          description,
+          duration: 8000,
+        });
+        if (report.logs && report.logs.length > 0) {
+          // Admin-only debug aid: surface the raw preflight logs so the
+          // operator can diagnose unfamiliar errors without leaving the page.
+          console.groupCollapsed(
+            `[spotr] deploy failed — ${report.code ?? report.category}`,
+          );
+          for (const line of report.logs) console.log(line);
+          console.groupEnd();
+        }
+      }
       onDeployed?.();
     } finally {
       setIsSubmitting(false);
