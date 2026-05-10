@@ -139,6 +139,10 @@ model SessionRound {
   // Wait-phase counters mirroring the on-chain Round struct.
   depositsCount       Int             @default(0)
   depositPoolLamports BigInt          @default(0)
+  autoFillScheduledAt DateTime?
+  autoFillStartedAt   DateTime?
+  autoFillCompletedAt DateTime?
+  autoFillLastError   String?
   // Settlement (post-redistribute) state mirroring the on-chain Round.
   winningSide         PositionSide?
   totalPoolLamports   BigInt          @default(0)

@@ -10,7 +10,7 @@ export default async function SessionDetailPage({
   params: Promise<{ sessionId: string }>;
 }) {
   const { sessionId } = await params;
-  const initialData = await getSpotrDashboardPayload();
+  const initialData = await getSpotrDashboardPayload(null, sessionId);
   return (
     <SpotrSessionDetailShell
       config={publicSpotrConfig}

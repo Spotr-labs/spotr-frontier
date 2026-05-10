@@ -68,6 +68,7 @@ import { prisma } from "./db";
 import { launchFaultLineSeeds } from "./launch-seed";
 import { getSessionWindowForDate } from "../spotr-config/session-window";
 import { getJoinChainPersistence } from "./join-persistence";
+import { processDueAutoFillForSession } from "./auto-fill-bots";
 
 const REWARD_SCALE = 1_000_000_000n;
 
@@ -1380,6 +1381,7 @@ export async function getSpotrDashboardPayload(walletAddress?: string | null, se
     sessionStillExists && requestedSessionId
       ? requestedSessionId
       : await getPrimarySessionId(prisma);
+  await processDueAutoFillForSession(resolvedSessionId);
   // Write-side state advance runs in its own tx; bumping `maxWait` because
   // the hosted Prisma Postgres connection pool is small and the read-side
   // payload below also pulls connections — the default 2s `maxWait` causes

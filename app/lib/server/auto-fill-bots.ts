@@ -8,8 +8,6 @@ import {
   shouldScheduleAutoFill,
 } from "./auto-fill-bots.shared";
 
-const scheduledRounds = new Map<string, ReturnType<typeof setTimeout>>();
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -37,29 +35,22 @@ export function scheduleAutoFillForRound(summary: {
   ) {
     return false;
   }
-  if (scheduledRounds.has(summary.roundId)) {
-    return false;
-  }
+  const scheduledAt = new Date(Date.now() + config.initialDelayMs);
+  void prisma.sessionRound.update({
+    where: { id: summary.roundId },
+    data: {
+      autoFillScheduledAt: scheduledAt,
+      autoFillStartedAt: null,
+      autoFillCompletedAt: null,
+      autoFillLastError: null,
+    },
+  }).catch((error) => {
+    console.error("[SPOTR] failed to persist auto-fill schedule:", error);
+  });
 
   console.log(
-    `[SPOTR] scheduling auto-fill bots for round ${summary.roundId} on ${publicSpotrConfig.cluster} in ${config.initialDelayMs}ms`,
+    `[SPOTR] scheduled auto-fill for round ${summary.roundId} on ${publicSpotrConfig.cluster} at ${scheduledAt.toISOString()}`,
   );
-
-  const timer = setTimeout(async () => {
-    try {
-      await fillRoundWithBots({
-        roundId: summary.roundId,
-        trickleDelayMs: config.trickleDelayMs,
-        depositLamports: config.depositLamports,
-      });
-    } catch (error) {
-      console.error("[SPOTR] auto-fill bot run failed:", error);
-    } finally {
-      scheduledRounds.delete(summary.roundId);
-    }
-  }, config.initialDelayMs);
-
-  scheduledRounds.set(summary.roundId, timer);
   return true;
 }
 
@@ -137,6 +128,70 @@ export async function fillRoundWithBots(params: {
 
     if (trickleDelayMs > 0) {
       await sleep(trickleDelayMs);
+    }
+  }
+}
+
+export async function processDueAutoFillForSession(sessionId: string) {
+  const config = readAutoFillBotsConfig();
+  if (!config.enabled) return;
+
+  while (true) {
+    const dueRound = await prisma.sessionRound.findFirst({
+      where: {
+        sessionId,
+        status: "UPCOMING",
+        autoFillScheduledAt: { lte: new Date() },
+        autoFillCompletedAt: null,
+        autoFillStartedAt: null,
+      },
+      orderBy: { roundIndex: "asc" },
+      select: { id: true },
+    });
+
+    if (!dueRound) return;
+
+    const claim = await prisma.sessionRound.updateMany({
+      where: {
+        id: dueRound.id,
+        autoFillScheduledAt: { lte: new Date() },
+        autoFillCompletedAt: null,
+        autoFillStartedAt: null,
+      },
+      data: {
+        autoFillStartedAt: new Date(),
+        autoFillLastError: null,
+      },
+    });
+    if (claim.count === 0) continue;
+
+    try {
+      console.log(`[SPOTR] processing due auto-fill for round ${dueRound.id}`);
+      await fillRoundWithBots({
+        roundId: dueRound.id,
+        trickleDelayMs: config.trickleDelayMs,
+        depositLamports: config.depositLamports,
+      });
+      await prisma.sessionRound.update({
+        where: { id: dueRound.id },
+        data: {
+          autoFillCompletedAt: new Date(),
+          autoFillStartedAt: null,
+          autoFillLastError: null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[SPOTR] auto-fill job failed:", error);
+      await prisma.sessionRound.update({
+        where: { id: dueRound.id },
+        data: {
+          autoFillStartedAt: null,
+          autoFillScheduledAt: new Date(Date.now() + config.initialDelayMs),
+          autoFillLastError: message.slice(0, 500),
+        },
+      });
+      return;
     }
   }
 }
