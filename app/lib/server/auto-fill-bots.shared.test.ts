@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   readAutoFillBotsConfig,
+  shouldProcessAutoFillFromHeartbeat,
   shouldReturnMutationPayload,
   shouldScheduleAutoFill,
 } from "./auto-fill-bots.shared";
@@ -117,4 +118,70 @@ test("bot mutations skip dashboard payload refresh unless explicitly overridden"
   assert.equal(shouldReturnMutationPayload("bot"), false);
   assert.equal(shouldReturnMutationPayload("bot", true), true);
   assert.equal(shouldReturnMutationPayload("player", false), false);
+});
+
+test("heartbeat only processes due auto-fill rounds on supported clusters", () => {
+  const now = new Date("2026-05-11T12:00:00.000Z");
+  const due = new Date("2026-05-11T11:59:55.000Z");
+  const future = new Date("2026-05-11T12:00:05.000Z");
+
+  assert.equal(
+    shouldProcessAutoFillFromHeartbeat({
+      enabled: true,
+      cluster: "devnet",
+      status: "UPCOMING",
+      scheduledAt: due,
+      completedAt: null,
+      now,
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldProcessAutoFillFromHeartbeat({
+      enabled: true,
+      cluster: "devnet",
+      status: "UPCOMING",
+      scheduledAt: future,
+      completedAt: null,
+      now,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldProcessAutoFillFromHeartbeat({
+      enabled: true,
+      cluster: "devnet",
+      status: "OPEN",
+      scheduledAt: due,
+      completedAt: null,
+      now,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldProcessAutoFillFromHeartbeat({
+      enabled: true,
+      cluster: "mainnet",
+      status: "UPCOMING",
+      scheduledAt: due,
+      completedAt: null,
+      now,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldProcessAutoFillFromHeartbeat({
+      enabled: true,
+      cluster: "devnet",
+      status: "UPCOMING",
+      scheduledAt: due,
+      completedAt: new Date("2026-05-11T12:00:00.000Z"),
+      now,
+    }),
+    false
+  );
 });

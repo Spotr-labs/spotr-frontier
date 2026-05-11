@@ -128,6 +128,10 @@ async function readJson<T>(response: Response): Promise<T> {
   return payload;
 }
 
+function formatAutoFillFailureNotice(error: string) {
+  return `Auto-fill failed for this round: ${error}`;
+}
+
 function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboardPayload) {
   const { wallet, status } = useWallet();
   const { getAccessToken } = useToken();
@@ -162,6 +166,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const dataRef = useRef(data);
   const profileLoadStateRef = useRef(profileLoadState);
   const profileLoadErrorRef = useRef(profileLoadError);
+  const lastAutoFillErrorRef = useRef<string | null>(null);
   const canSignActions = Boolean(wallet?.signMessage);
   const { session, profile, admin, faultLines } = data;
 
@@ -280,10 +285,31 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
             depositsCount: number;
             status: string;
             opensAtIso: string | null;
+            autoFillScheduledAtIso: string | null;
+            autoFillStartedAtIso: string | null;
+            autoFillLastError: string | null;
             depositorAddresses: string[];
           };
           const previous = lastHeartbeatRef.current;
           lastHeartbeatRef.current = payload;
+          if (payload.autoFillLastError) {
+            if (lastAutoFillErrorRef.current !== payload.autoFillLastError) {
+              lastAutoFillErrorRef.current = payload.autoFillLastError;
+              setNotice({
+                tone: "error",
+                message: formatAutoFillFailureNotice(payload.autoFillLastError),
+              });
+            }
+          } else if (lastAutoFillErrorRef.current != null) {
+            const previousError = lastAutoFillErrorRef.current;
+            lastAutoFillErrorRef.current = null;
+            setNotice((current) =>
+              current?.tone === "error" &&
+              current.message === formatAutoFillFailureNotice(previousError)
+                ? null
+                : current
+            );
+          }
           setData((current) => ({
             ...current,
             session: {

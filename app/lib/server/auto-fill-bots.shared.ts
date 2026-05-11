@@ -110,6 +110,27 @@ export function shouldScheduleAutoFill(params: {
   );
 }
 
+export function shouldProcessAutoFillFromHeartbeat(params: {
+  enabled: boolean;
+  cluster: string;
+  status: string;
+  scheduledAt: Date | null;
+  completedAt: Date | null;
+  now?: Date;
+}) {
+  const now = params.now ?? new Date();
+  return (
+    params.enabled &&
+    AUTO_FILL_BOT_SUPPORTED_CLUSTERS.includes(
+      params.cluster as (typeof AUTO_FILL_BOT_SUPPORTED_CLUSTERS)[number]
+    ) &&
+    params.status === "UPCOMING" &&
+    params.completedAt == null &&
+    params.scheduledAt != null &&
+    params.scheduledAt.getTime() <= now.getTime()
+  );
+}
+
 export function shouldReturnMutationPayload(
   actor: "player" | "bot" | undefined,
   override?: boolean

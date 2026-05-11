@@ -3,6 +3,7 @@ import { processDueAutoFillForSession } from "../../../../lib/server/auto-fill-b
 
 export const dynamic = "force-dynamic";
 
+// Internal diagnostic endpoint. Production auto-fill runs from active heartbeat traffic.
 type ProcessBody = {
   sessionId?: string | null;
   maxRounds?: number | string | null;
