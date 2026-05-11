@@ -1907,6 +1907,7 @@ export function SessionEndedScreen({
   faultLines: FaultLinePair[];
   config: SpotrPublicConfig;
 }) {
+  const hasProfile = profile != null;
   const cumPnl = profile?.cumulativePnlLamports ?? 0;
   const pnlTone = cumPnl > 0 ? "text-[#22c55e]" : cumPnl < 0 ? "text-[#ef4444]" : "text-white";
 
@@ -1985,10 +1986,12 @@ export function SessionEndedScreen({
         </div>
         <div className="h-9" aria-hidden />
         <p className={cn("mt-5 font-mono text-[40px] font-bold tabular-nums tracking-[-0.02em] leading-none", pnlTone)}>
-          {formatSignedMicroUsdc(cumPnl).replace(" USDC", "")}
+          {hasProfile ? formatSignedMicroUsdc(cumPnl).replace(" USDC", "") : "\u2014"}
         </p>
         <p className="mt-2 text-[12px] text-white/50">
-          Season 1 · {roundCount} round{roundCount !== 1 ? "s" : ""} settled
+          {hasProfile
+            ? `Season 1 · ${roundCount} round${roundCount !== 1 ? "s" : ""} settled`
+            : "Loading recap..."}
         </p>
       </div>
 
@@ -2040,10 +2043,14 @@ export function SessionEndedScreen({
               <p className={cn("mt-0.5 font-mono text-[40px] font-bold tabular-nums leading-none tracking-[-0.03em]",
                 cumPnl > 0 ? "text-[#15803d]" : cumPnl < 0 ? "text-[#b91c1c]" : "text-[#1a1628]"
               )}>
-                {cumPnl > 0 ? "+" : ""}{microUsdcToDisplay(Math.abs(cumPnl))}
+                {hasProfile
+                  ? `${cumPnl > 0 ? "+" : ""}${microUsdcToDisplay(Math.abs(cumPnl))}`
+                  : "\u2014"}
               </p>
               <p className="mt-0.5 font-mono text-[10px] text-[#8a7f6e]">
-                = ${microUsdcToDisplay(Math.abs(cumPnl))} USD
+                {hasProfile
+                  ? `= $${microUsdcToDisplay(Math.abs(cumPnl))} USD`
+                  : "Syncing wallet recap"}
               </p>
             </div>
 

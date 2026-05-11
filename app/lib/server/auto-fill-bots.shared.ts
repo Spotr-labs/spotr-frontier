@@ -39,13 +39,13 @@ export function readAutoFillBotsConfig(
   const initialDelayMs = readInt(
     env,
     "SPOTR_AUTO_FILL_BOTS_INITIAL_DELAY_MS",
-    3_000,
+    1_500,
     0
   );
   const trickleDelayMs = readInt(
     env,
     "SPOTR_AUTO_FILL_BOTS_TRICKLE_DELAY_MS",
-    1_200,
+    600,
     0
   );
   const workerLeaseMs = readInt(

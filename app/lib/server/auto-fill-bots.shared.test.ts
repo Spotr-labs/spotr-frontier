@@ -11,8 +11,8 @@ import {
 test("auto-fill bot config defaults to disabled with expected timings", () => {
   const config = readAutoFillBotsConfig({});
   assert.equal(config.enabled, false);
-  assert.equal(config.initialDelayMs, 3000);
-  assert.equal(config.trickleDelayMs, 1200);
+  assert.equal(config.initialDelayMs, 1500);
+  assert.equal(config.trickleDelayMs, 600);
   assert.equal(config.workerLeaseMs, 120000);
   assert.equal(config.depositLamports, 1_000_000n);
   assert.deepEqual(config.botWallets, []);
