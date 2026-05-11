@@ -12,7 +12,11 @@ import {
   getSponsorRpcUrl,
 } from "./sponsor-tx";
 import { joinSpotrSession } from "./spotr-store";
-import { fetchAccountExists, fetchTokenBalance } from "./rpc-account";
+import {
+  fetchAccountExists,
+  fetchTokenBalance,
+  waitForAccountExists,
+} from "./rpc-account";
 import { shouldReturnMutationPayload } from "./auto-fill-bots.shared";
 
 export const INSUFFICIENT_VAULT_ERROR = "INSUFFICIENT_VAULT";
@@ -107,6 +111,16 @@ export async function executeSessionJoin(input: {
     });
 
     signature = await submitSponsoredTx(cluster, [ix]);
+    const created = await waitForAccountExists(
+      rpcUrl,
+      String(playerSessionPda),
+      { attempts: 12, delayMs: 350 }
+    );
+    if (!created) {
+      throw new Error(
+        `Player session PDA did not appear after join: ${String(playerSessionPda)}`
+      );
+    }
   }
 
   return joinSpotrSession({

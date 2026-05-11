@@ -2,6 +2,7 @@ import { prisma } from "./db";
 import { publicSpotrConfig } from "../spotr-config/public";
 import { executeSessionJoin } from "./session-join";
 import { executeRoundDeposit } from "./round-deposit";
+import { SolanaTxError } from "../wallet/solana-errors";
 import {
   ensureUserVaultInitialized,
   mintUsdcToVault,
@@ -14,6 +15,22 @@ import {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function describeAutoFillError(error: unknown) {
+  if (error instanceof SolanaTxError) {
+    return {
+      message: error.message,
+      code: error.code,
+      hint: error.report.hint,
+      logs: error.report.logs,
+      category: error.report.category,
+    };
+  }
+  if (error instanceof Error) {
+    return { message: error.message };
+  }
+  return { message: String(error) };
 }
 
 function isCurrentClusterSupported() {
@@ -310,7 +327,7 @@ export async function processDueAutoFillForSession(
       processed += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[SPOTR] auto-fill job failed:", error);
+      console.error("[SPOTR] auto-fill job failed:", describeAutoFillError(error));
       await prisma.sessionRound.update({
         where: { id: dueRound.id },
         data: {
