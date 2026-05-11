@@ -3,6 +3,7 @@ import { prisma } from "./db";
 import { publicSpotrConfig } from "../spotr-config/public";
 import { findSpotrSessionPda } from "../chain/session-pda";
 import { findSpotrRoundPda } from "../chain/round-pda";
+import { findRoundDepositPda } from "../../generated/spotr/pdas/roundDeposit";
 import { findVaultTokensPda } from "../../generated/spotr/pdas/vaultTokens";
 import { getDepositForRoundInstructionAsync } from "../../generated/spotr/instructions/depositForRound";
 import {
@@ -10,9 +11,10 @@ import {
   loadSponsorSigner,
   submitSponsoredTx,
 } from "./sponsor-tx";
-import { fetchTokenBalance } from "./rpc-account";
-import { recordRoundDeposit } from "./spotr-store";
+import { fetchAccountExists, fetchTokenBalance } from "./rpc-account";
+import { getSpotrDashboardPayload, recordRoundDeposit } from "./spotr-store";
 import { shouldReturnMutationPayload } from "./auto-fill-bots.shared";
+import { SolanaTxError } from "../wallet/solana-errors";
 
 export const INSUFFICIENT_VAULT_ERROR = "INSUFFICIENT_VAULT";
 export const MIN_DEPOSIT_USDC_UNITS = 1_000_000n;
@@ -27,6 +29,92 @@ export class InsufficientRoundVaultError extends Error {
     this.needed = needed.toString();
     this.have = have.toString();
   }
+}
+
+function isRoundDepositAlreadyOnChainError(error: unknown) {
+  return (
+    error instanceof SolanaTxError &&
+    error.report.logs?.some(
+      (line) =>
+        line.includes("Allocate: account") && line.includes("already in use")
+    ) === true
+  );
+}
+
+export async function reconcileExistingRoundDeposit(input: {
+  walletAddress: string;
+  roundId: string;
+  amountLamports: bigint;
+  actor?: "player" | "bot";
+  returnPayload?: boolean;
+}) {
+  const round = await prisma.sessionRound.findUnique({
+    where: { id: input.roundId },
+    include: {
+      session: {
+        select: {
+          id: true,
+          chainSessionNumber: true,
+          roundFillThreshold: true,
+        },
+      },
+    },
+  });
+  if (!round || round.session.chainSessionNumber == null) {
+    return null;
+  }
+
+  const cluster = publicSpotrConfig.cluster;
+  const rpcUrl = getSponsorRpcUrl(cluster);
+  const playerAddr = address(input.walletAddress);
+  const sessionNumber = BigInt(round.session.chainSessionNumber.toString());
+  const [sessionAddress] = await findSpotrSessionPda(sessionNumber);
+  const [roundAddress] = await findSpotrRoundPda({
+    session: sessionAddress,
+    index: round.roundIndex,
+  });
+  const [roundDepositPda] = await findRoundDepositPda({
+    round: roundAddress,
+    player: playerAddr,
+  });
+  const existsOnChain = await fetchAccountExists(rpcUrl, String(roundDepositPda));
+  if (!existsOnChain) {
+    return null;
+  }
+
+  const existingDbDeposit = await prisma.roundDeposit.findFirst({
+    where: {
+      roundId: input.roundId,
+      walletAddress: input.walletAddress,
+    },
+    select: { id: true },
+  });
+  if (existingDbDeposit) {
+    const payload =
+      input.returnPayload === false
+        ? null
+        : await getSpotrDashboardPayload(input.walletAddress, round.session.id);
+    return {
+      payload,
+      summary: {
+        roundId: round.id,
+        sessionId: round.session.id,
+        previousStatus: round.status,
+        statusAfter: round.status,
+        previousDepositsCount: round.depositsCount,
+        newDepositsCount: round.depositsCount,
+        fillThreshold: round.session.roundFillThreshold,
+      },
+    };
+  }
+
+  return recordRoundDeposit({
+    walletAddress: input.walletAddress,
+    roundId: input.roundId,
+    amountLamports: input.amountLamports,
+    actor: input.actor,
+    returnPayload: input.returnPayload,
+  });
 }
 
 export async function executeRoundDeposit(input: {
@@ -86,7 +174,18 @@ export async function executeRoundDeposit(input: {
     amountUsdcUnits: input.amountLamports,
   });
 
-  const signature = await submitSponsoredTx(cluster, [ix]);
+  let signature: string;
+  try {
+    signature = await submitSponsoredTx(cluster, [ix]);
+  } catch (error) {
+    if (isRoundDepositAlreadyOnChainError(error)) {
+      const reconciled = await reconcileExistingRoundDeposit(input);
+      if (reconciled) {
+        return reconciled;
+      }
+    }
+    throw error;
+  }
 
   return recordRoundDeposit({
     walletAddress: input.walletAddress,
