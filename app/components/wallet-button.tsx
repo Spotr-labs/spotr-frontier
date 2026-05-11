@@ -114,12 +114,10 @@ export function WalletButton() {
   };
 
   const privyConnector = connectors.find((c) => c.id === PRIVY_ID);
-  // Only localnet exposes the wallet-standard rows and the ephemeral
-  // "create new wallet" path. On devnet/mainnet the API requires a verified
-  // Privy session, so non-Privy connections produce a wallet that can't
-  // sign authenticated actions — funnel everyone through the Privy modal
-  // instead (it handles Phantom/Backpack/Solflare via SIWS).
-  const showNonPrivyPaths = cluster === "localnet" || !privyConnector;
+  // When Privy is enabled, every sign-in path must go through Privy so the
+  // app has a verified session for authenticated actions. Keep the direct
+  // wallet-standard and ephemeral fallback rows only for the no-Privy case.
+  const showNonPrivyPaths = !privyConnector;
   const extensionConnectors = showNonPrivyPaths
     ? connectors.filter((c) => c.id !== EPHEMERAL_ID && c.id !== PRIVY_ID)
     : [];

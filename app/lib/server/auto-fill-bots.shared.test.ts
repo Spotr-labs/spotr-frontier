@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   readAutoFillBotsConfig,
+  shouldReturnMutationPayload,
   shouldScheduleAutoFill,
 } from "./auto-fill-bots.shared";
 
@@ -11,6 +12,7 @@ test("auto-fill bot config defaults to disabled with expected timings", () => {
   assert.equal(config.enabled, false);
   assert.equal(config.initialDelayMs, 3000);
   assert.equal(config.trickleDelayMs, 1200);
+  assert.equal(config.workerLeaseMs, 120000);
   assert.equal(config.depositLamports, 1_000_000n);
   assert.deepEqual(config.botWallets, []);
 });
@@ -20,6 +22,7 @@ test("auto-fill bot config reads env overrides", () => {
     SPOTR_AUTO_FILL_BOTS_ENABLED: "true",
     SPOTR_AUTO_FILL_BOTS_INITIAL_DELAY_MS: "5000",
     SPOTR_AUTO_FILL_BOTS_TRICKLE_DELAY_MS: "2000",
+    SPOTR_AUTO_FILL_BOTS_WORKER_LEASE_MS: "90000",
     SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS: "2000000",
     SPOTR_AUTO_FILL_BOT_WALLETS:
       "11111111111111111111111111111112,11111111111111111111111111111113",
@@ -27,6 +30,7 @@ test("auto-fill bot config reads env overrides", () => {
   assert.equal(config.enabled, true);
   assert.equal(config.initialDelayMs, 5000);
   assert.equal(config.trickleDelayMs, 2000);
+  assert.equal(config.workerLeaseMs, 90000);
   assert.equal(config.depositLamports, 2_000_000n);
   assert.deepEqual(config.botWallets, [
     "11111111111111111111111111111112",
@@ -40,11 +44,11 @@ test("enabled bots require a fixed wallet list", () => {
       readAutoFillBotsConfig({
         SPOTR_AUTO_FILL_BOTS_ENABLED: "true",
       }),
-    /SPOTR_AUTO_FILL_BOT_WALLETS must contain at least one wallet/,
+    /SPOTR_AUTO_FILL_BOT_WALLETS must contain at least one wallet/
   );
 });
 
-test("should schedule auto-fill only after first real deposit into upcoming round", () => {
+test("should schedule auto-fill after real player deposits into upcoming unfilled round", () => {
   assert.equal(
     shouldScheduleAutoFill({
       enabled: true,
@@ -55,7 +59,7 @@ test("should schedule auto-fill only after first real deposit into upcoming roun
       newDepositsCount: 1,
       fillThreshold: 7,
     }),
-    true,
+    true
   );
   assert.equal(
     shouldScheduleAutoFill({
@@ -67,7 +71,19 @@ test("should schedule auto-fill only after first real deposit into upcoming roun
       newDepositsCount: 2,
       fillThreshold: 7,
     }),
-    false,
+    true
+  );
+  assert.equal(
+    shouldScheduleAutoFill({
+      enabled: false,
+      cluster: "devnet",
+      actor: "player",
+      previousStatus: "UPCOMING",
+      previousDepositsCount: 1,
+      newDepositsCount: 2,
+      fillThreshold: 7,
+    }),
+    false
   );
   assert.equal(
     shouldScheduleAutoFill({
@@ -79,7 +95,7 @@ test("should schedule auto-fill only after first real deposit into upcoming roun
       newDepositsCount: 1,
       fillThreshold: 7,
     }),
-    false,
+    false
   );
   assert.equal(
     shouldScheduleAutoFill({
@@ -91,6 +107,14 @@ test("should schedule auto-fill only after first real deposit into upcoming roun
       newDepositsCount: 1,
       fillThreshold: 7,
     }),
-    false,
+    false
   );
+});
+
+test("bot mutations skip dashboard payload refresh unless explicitly overridden", () => {
+  assert.equal(shouldReturnMutationPayload("player"), true);
+  assert.equal(shouldReturnMutationPayload(undefined), true);
+  assert.equal(shouldReturnMutationPayload("bot"), false);
+  assert.equal(shouldReturnMutationPayload("bot", true), true);
+  assert.equal(shouldReturnMutationPayload("player", false), false);
 });

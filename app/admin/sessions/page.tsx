@@ -10,10 +10,7 @@ import { DataTable } from "../../components/admin/data-table";
 import { DeploySessionDialog } from "../../components/admin/deploy-session-dialog";
 import { DateRangePicker } from "../../components/admin/date-range-picker";
 import { ExportCsvButton } from "../../components/admin/export-csv-button";
-import {
-  FilterSegment,
-  StatusBadge,
-} from "../../components/admin/filters";
+import { FilterSegment, StatusBadge } from "../../components/admin/filters";
 import {
   formatRelative,
   formatUsdc,
@@ -29,7 +26,8 @@ import type {
   SessionStatus,
 } from "../../lib/spotr-types";
 
-const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then((r) => r.json());
+const fetcher = (url: string) =>
+  fetch(url, { cache: "no-store" }).then((r) => r.json());
 
 const STATUS_FILTERS: Array<{ value: "all" | SessionStatus; label: string }> = [
   { value: "all", label: "All" },
@@ -41,7 +39,9 @@ const STATUS_FILTERS: Array<{ value: "all" | SessionStatus; label: string }> = [
 
 export default function AdminSessionsPage() {
   const { walletAddress } = useAdminDashboard();
-  const [statusFilter, setStatusFilter] = useState<"all" | SessionStatus>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | SessionStatus>(
+    "all"
+  );
   const [range, setRange] = useState({ from: "", to: "" });
 
   const swrKey = walletAddress
@@ -148,9 +148,12 @@ export default function AdminSessionsPage() {
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <Button asChild size="sm" variant="secondary">
-              <Link href={`/admin/sessions/${row.original.id}`}>Open</Link>
+              <Link href={`/admin/sessions/${row.original.id}`}>
+                View rounds
+              </Link>
             </Button>
-            {row.original.status !== "completed" ? (
+            {row.original.status === "pending" ||
+            row.original.status === "live" ? (
               <ExpireSessionButton
                 sessionId={row.original.id}
                 onSuccess={() => mutate()}
@@ -171,7 +174,10 @@ export default function AdminSessionsPage() {
         description="Drill down into rounds, participants, positions, and chain ops."
         actions={
           <>
-            <ExportCsvButton href="/api/admin/transactions/export" label="Export tx" />
+            <ExportCsvButton
+              href="/api/admin/transactions/export"
+              label="Export tx"
+            />
             <DeploySessionDialog
               config={publicSpotrConfig}
               onDeployed={() => mutate()}
@@ -191,11 +197,7 @@ export default function AdminSessionsPage() {
           value={statusFilter}
           onChange={(value) => setStatusFilter(value)}
         />
-        <DateRangePicker
-          from={range.from}
-          to={range.to}
-          onChange={setRange}
-        />
+        <DateRangePicker from={range.from} to={range.to} onChange={setRange} />
       </div>
       <DataTable
         columns={columns}
@@ -215,9 +217,12 @@ export default function AdminSessionsPage() {
             ? () => {
                 // simple "load more" replaces the page rather than infinite scroll
                 if (!swrKey || !walletAddress) return;
-                fetch(`${swrKey}&cursor=${encodeURIComponent(data.nextCursor!)}`, {
-                  cache: "no-store",
-                })
+                fetch(
+                  `${swrKey}&cursor=${encodeURIComponent(data.nextCursor!)}`,
+                  {
+                    cache: "no-store",
+                  }
+                )
                   .then((r) => r.json())
                   .then((next: AdminSessionListResponse) =>
                     mutate(

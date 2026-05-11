@@ -2,8 +2,8 @@
 
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
-import { PropsWithChildren } from "react";
-import { PrivyProvider } from "@privy-io/react-auth";
+import { useMemo, type PropsWithChildren } from "react";
+import { PrivyProvider, type WalletListEntry } from "@privy-io/react-auth";
 import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
 import { ClusterProvider } from "./cluster-context";
 import { WalletProvider } from "../lib/wallet/context";
@@ -11,8 +11,20 @@ import { PrivyConnectorBridge } from "../lib/wallet/privy-bridge";
 import { SolanaClientProvider } from "../lib/solana-client-context";
 import { publicSpotrConfig } from "../lib/spotr-config/public";
 
+const SOLANA_WALLET_LIST: WalletListEntry[] = [
+  "phantom",
+  "solflare",
+  "backpack",
+  "detected_solana_wallets",
+  "wallet_connect_qr_solana",
+];
+
 function ClusterAwarePrivy({ children }: PropsWithChildren) {
-  const solanaConnectors = toSolanaWalletConnectors();
+  const solanaConnectors = useMemo(
+    () => toSolanaWalletConnectors({ shouldAutoConnect: true }),
+    []
+  );
+
   return (
     <PrivyProvider
       appId={publicSpotrConfig.privyAppId}
@@ -20,6 +32,7 @@ function ClusterAwarePrivy({ children }: PropsWithChildren) {
         appearance: {
           theme: "dark",
           accentColor: "#f5c800",
+          walletList: SOLANA_WALLET_LIST,
           walletChainType: "solana-only",
           showWalletLoginFirst: false,
           landingHeader: "Sign in to SPOTR",

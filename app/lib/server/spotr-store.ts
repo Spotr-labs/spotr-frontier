@@ -68,7 +68,6 @@ import { prisma } from "./db";
 import { launchFaultLineSeeds } from "./launch-seed";
 import { getSessionWindowForDate } from "../spotr-config/session-window";
 import { getJoinChainPersistence } from "./join-persistence";
-import { processDueAutoFillForSession } from "./auto-fill-bots";
 
 const REWARD_SCALE = 1_000_000_000n;
 
@@ -936,7 +935,11 @@ async function buildDashboardPayload(
   tx: Tx,
   normalizedWalletAddress?: string | null,
   overrideSessionId?: string | null,
-  options?: { skipSync?: boolean }
+  options?: {
+    skipSync?: boolean;
+    includeAdminSummary?: boolean;
+    includeAvailableSessions?: boolean;
+  }
 ) {
   const sessionId = overrideSessionId ?? await getPrimarySessionId(tx);
   const session = options?.skipSync
@@ -1075,11 +1078,14 @@ async function buildDashboardPayload(
     rounds.find((round) => round.status === "upcoming") ??
     null;
 
-  const availableSessionRows = await tx.session.findMany({
-    where: { status: { in: ["PENDING", "LIVE"] } },
-    orderBy: [{ status: "asc" }, { startsAt: "asc" }],
-    take: 50,
-  });
+  const availableSessionRows =
+    options?.includeAvailableSessions === false
+      ? []
+      : await tx.session.findMany({
+          where: { status: { in: ["PENDING", "LIVE"] } },
+          orderBy: [{ status: "asc" }, { startsAt: "asc" }],
+          take: 50,
+        });
   const availableSessions: AdminSessionCard[] = availableSessionRows.map((row) => ({
     id: row.id,
     title: row.title,
@@ -1130,10 +1136,35 @@ async function buildDashboardPayload(
     profile: normalizedWalletAddress
       ? await buildProfileSummary(tx, normalizedWalletAddress, now)
       : null,
-    admin: await buildAdminSummary(tx, session.id, normalizedWalletAddress),
+    admin:
+      options?.includeAdminSummary === false
+        ? emptyAdminSummary()
+        : await buildAdminSummary(tx, session.id, normalizedWalletAddress),
     availableSessions,
     faultLines,
   } satisfies SpotrDashboardPayload;
+}
+
+function emptyAdminSummary(): AdminSummary {
+  return {
+    authorized: false,
+    lowPairAlert: false,
+    activePairs: 0,
+    availablePairs: 0,
+    liveSessions: 0,
+    pendingSessions: 0,
+    protocolFeesLamports: 0,
+    pendingReferralLamports: 0,
+    assignedRewards: 0,
+    claimableRewards: 0,
+    recentTransactions: [],
+    recentRewards: [],
+    participants: [],
+    pairLibrary: [],
+    sessionHistory: [],
+    nextSessionsCursor: null,
+    referralBalances: [],
+  };
 }
 
 function assertAdminWallet(walletAddress: string) {
@@ -1381,7 +1412,6 @@ export async function getSpotrDashboardPayload(walletAddress?: string | null, se
     sessionStillExists && requestedSessionId
       ? requestedSessionId
       : await getPrimarySessionId(prisma);
-  await processDueAutoFillForSession(resolvedSessionId);
   // Write-side state advance runs in its own tx; bumping `maxWait` because
   // the hosted Prisma Postgres connection pool is small and the read-side
   // payload below also pulls connections — the default 2s `maxWait` causes
@@ -1392,7 +1422,84 @@ export async function getSpotrDashboardPayload(walletAddress?: string | null, se
   );
   return buildDashboardPayload(prisma, normalizedWallet, resolvedSessionId, {
     skipSync: true,
+    includeAdminSummary: false,
   });
+}
+
+export async function getSpotrRecapPayload(
+  walletAddress: string | null | undefined,
+  sessionId: string
+): Promise<SpotrDashboardPayload | null> {
+  await syncFaultLineSeeds();
+  const normalizedWallet = normalizeWalletAddress(walletAddress);
+  const requestedSessionId = sessionId.trim();
+  if (!requestedSessionId) return null;
+
+  const exists = await prisma.$transaction(
+    async (tx) => {
+      const session = await tx.session.findUnique({
+        where: { id: requestedSessionId },
+        select: { id: true },
+      });
+      if (!session) return false;
+      await syncSessionState(tx, requestedSessionId);
+      return true;
+    },
+    { timeout: 15_000, maxWait: 10_000 }
+  );
+
+  if (!exists) return null;
+
+  return buildDashboardPayload(prisma, normalizedWallet, requestedSessionId, {
+    skipSync: true,
+    includeAdminSummary: false,
+    includeAvailableSessions: false,
+  });
+}
+
+export async function getSpotrSessionParticipation(input: {
+  walletAddress?: string | null;
+  sessionId: string;
+}) {
+  const sessionId = input.sessionId.trim();
+  if (!sessionId) {
+    throw new Error("A session id is required.");
+  }
+
+  const walletAddress = normalizeWalletAddress(input.walletAddress);
+  if (walletAddress) {
+    const participant = await prisma.sessionParticipant.findUnique({
+      where: {
+        sessionId_walletAddress: {
+          sessionId,
+          walletAddress,
+        },
+      },
+      select: { joinedAt: true },
+    });
+
+    if (participant) {
+      return {
+        sessionId,
+        walletAddress,
+        joined: true,
+        participant: { joinedAtIso: participant.joinedAt.toISOString() },
+      };
+    }
+  }
+
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { id: true },
+  });
+  if (!session) return null;
+
+  return {
+    sessionId,
+    walletAddress,
+    joined: false,
+    participant: null,
+  };
 }
 
 export async function joinSpotrSession(input: {
@@ -1401,6 +1508,7 @@ export async function joinSpotrSession(input: {
   chainTxSignature: string;
   sessionId?: string | null;
   actor?: "player" | "bot";
+  returnPayload?: boolean;
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1551,6 +1659,9 @@ export async function joinSpotrSession(input: {
     }
   }, { timeout: 30_000 });
 
+  if (input.returnPayload === false) {
+    return null;
+  }
   return getSpotrDashboardPayload(walletAddress, sessionId);
 }
 
@@ -1772,6 +1883,7 @@ export async function recordRoundDeposit(input: {
   amountLamports: bigint;
   chainTxSignature?: string | null;
   actor?: "player" | "bot";
+  returnPayload?: boolean;
 }) {
   const walletAddress = normalizeWalletAddress(input.walletAddress);
   if (!walletAddress) {
@@ -1873,8 +1985,13 @@ export async function recordRoundDeposit(input: {
     };
   }, { timeout: 15_000 });
 
+  const payload =
+    input.returnPayload === false
+      ? null
+      : await getSpotrDashboardPayload(walletAddress, depositSummary.sessionId);
+
   return {
-    payload: await getSpotrDashboardPayload(walletAddress),
+    payload,
     summary: depositSummary,
   };
 }

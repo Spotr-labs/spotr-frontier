@@ -2,8 +2,12 @@ import { prisma } from "./db";
 import { publicSpotrConfig } from "../spotr-config/public";
 import { executeSessionJoin } from "./session-join";
 import { executeRoundDeposit } from "./round-deposit";
-import { ensureUserVaultInitialized, mintUsdcToVault } from "./test-wallet-funding";
 import {
+  ensureUserVaultInitialized,
+  mintUsdcToVault,
+} from "./test-wallet-funding";
+import {
+  AUTO_FILL_BOT_SUPPORTED_CLUSTERS,
   readAutoFillBotsConfig,
   shouldScheduleAutoFill,
 } from "./auto-fill-bots.shared";
@@ -12,7 +16,13 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function scheduleAutoFillForRound(summary: {
+function isCurrentClusterSupported() {
+  return AUTO_FILL_BOT_SUPPORTED_CLUSTERS.includes(
+    publicSpotrConfig.cluster as (typeof AUTO_FILL_BOT_SUPPORTED_CLUSTERS)[number]
+  );
+}
+
+export async function scheduleAutoFillForRound(summary: {
   roundId: string;
   sessionId: string;
   previousStatus: string;
@@ -35,22 +45,74 @@ export function scheduleAutoFillForRound(summary: {
   ) {
     return false;
   }
-  const scheduledAt = new Date(Date.now() + config.initialDelayMs);
-  void prisma.sessionRound.update({
-    where: { id: summary.roundId },
-    data: {
-      autoFillScheduledAt: scheduledAt,
-      autoFillStartedAt: null,
-      autoFillCompletedAt: null,
-      autoFillLastError: null,
-    },
-  }).catch((error) => {
-    console.error("[SPOTR] failed to persist auto-fill schedule:", error);
-  });
+  const now = new Date();
+  const scheduledAt = new Date(now.getTime() + config.initialDelayMs);
+  const staleStartedBefore = new Date(now.getTime() - config.workerLeaseMs);
+  try {
+    const result = await prisma.sessionRound.updateMany({
+      where: {
+        id: summary.roundId,
+        autoFillCompletedAt: null,
+        OR: [
+          { autoFillScheduledAt: null },
+          { autoFillLastError: { not: null } },
+          { autoFillStartedAt: { lt: staleStartedBefore } },
+        ],
+      },
+      data: {
+        autoFillScheduledAt: scheduledAt,
+        autoFillStartedAt: null,
+        autoFillLastError: null,
+      },
+    });
+    if (result.count === 0) {
+      console.log(
+        `[SPOTR] auto-fill already scheduled/running for round ${summary.roundId}`
+      );
+      return true;
+    }
 
-  console.log(
-    `[SPOTR] scheduled auto-fill for round ${summary.roundId} on ${publicSpotrConfig.cluster} at ${scheduledAt.toISOString()}`,
-  );
+    console.log(
+      `[SPOTR] scheduled auto-fill for round ${summary.roundId} on ${publicSpotrConfig.cluster} at ${scheduledAt.toISOString()}`
+    );
+    return true;
+  } catch (error) {
+    console.error("[SPOTR] failed to persist auto-fill schedule:", error);
+    return false;
+  }
+}
+
+const queuedAutoFillTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function queueDueAutoFillForRound(params: {
+  roundId: string;
+  sessionId: string;
+  delayMs?: number;
+}) {
+  const config = readAutoFillBotsConfig();
+  if (
+    !config.enabled ||
+    !isCurrentClusterSupported() ||
+    queuedAutoFillTimers.has(params.roundId)
+  ) {
+    return false;
+  }
+
+  const timeout = setTimeout(() => {
+    void processDueAutoFillForSession(params.sessionId)
+      .catch((error) => {
+        console.error("[SPOTR] queued auto-fill processing failed:", error);
+      })
+      .finally(() => {
+        queuedAutoFillTimers.delete(params.roundId);
+      });
+  }, params.delayMs ?? config.initialDelayMs);
+
+  const maybeNodeTimeout = timeout as ReturnType<typeof setTimeout> & {
+    unref?: () => void;
+  };
+  maybeNodeTimeout.unref?.();
+  queuedAutoFillTimers.set(params.roundId, timeout);
   return true;
 }
 
@@ -60,13 +122,61 @@ export async function fillRoundWithBots(params: {
   depositLamports?: bigint;
 }) {
   const config = readAutoFillBotsConfig();
-  const trickleDelayMs =
-    params.trickleDelayMs ?? config.trickleDelayMs;
+  const trickleDelayMs = params.trickleDelayMs ?? config.trickleDelayMs;
   const depositLamports = params.depositLamports ?? config.depositLamports;
   const botWallets = config.botWallets;
 
-  while (true) {
-    const round = await prisma.sessionRound.findUnique({
+  const round = await prisma.sessionRound.findUnique({
+    where: { id: params.roundId },
+    include: {
+      session: {
+        select: {
+          id: true,
+          buyInLamports: true,
+          roundFillThreshold: true,
+        },
+      },
+      deposits: {
+        select: {
+          walletAddress: true,
+        },
+      },
+    },
+  });
+
+  if (!round) {
+    console.warn(`[SPOTR] auto-fill round missing: ${params.roundId}`);
+    return;
+  }
+
+  if (
+    round.status !== "UPCOMING" ||
+    round.depositsCount >= round.session.roundFillThreshold
+  ) {
+    console.log(
+      `[SPOTR] auto-fill complete/stopped for round ${params.roundId}: ${round.status} ${round.depositsCount}/${round.session.roundFillThreshold}`
+    );
+    return;
+  }
+
+  const needed = round.session.roundFillThreshold - round.depositsCount;
+  const depositedWallets = new Set(
+    round.deposits.map((deposit) => deposit.walletAddress)
+  );
+  const candidateWallets = botWallets
+    .filter((wallet) => !depositedWallets.has(wallet))
+    .slice(0, needed);
+  if (candidateWallets.length < needed) {
+    throw new Error(
+      `Auto-fill bot wallet pool exhausted for round ${round.id}. Provide at least ${needed} unused bot wallets in SPOTR_AUTO_FILL_BOT_WALLETS.`
+    );
+  }
+
+  for (const walletAddress of candidateWallets) {
+    console.log(
+      `[SPOTR] auto-fill wallet starting: round=${params.roundId} wallet=${walletAddress}`
+    );
+    const currentRound = await prisma.sessionRound.findUnique({
       where: { id: params.roundId },
       include: {
         session: {
@@ -76,54 +186,54 @@ export async function fillRoundWithBots(params: {
             roundFillThreshold: true,
           },
         },
-        deposits: {
-          select: {
-            walletAddress: true,
-          },
-        },
       },
     });
-
-    if (!round) {
+    if (!currentRound) {
       console.warn(`[SPOTR] auto-fill round missing: ${params.roundId}`);
       return;
     }
-
     if (
-      round.status !== "UPCOMING" ||
-      round.depositsCount >= round.session.roundFillThreshold
+      currentRound.status !== "UPCOMING" ||
+      currentRound.depositsCount >= currentRound.session.roundFillThreshold
     ) {
       console.log(
-        `[SPOTR] auto-fill complete/stopped for round ${params.roundId}: ${round.status} ${round.depositsCount}/${round.session.roundFillThreshold}`,
+        `[SPOTR] auto-fill complete/stopped for round ${params.roundId}: ${currentRound.status} ${currentRound.depositsCount}/${currentRound.session.roundFillThreshold}`
       );
       return;
     }
+    const fundingLamports =
+      currentRound.session.buyInLamports + depositLamports;
 
-    const depositedWallets = new Set(round.deposits.map((deposit) => deposit.walletAddress));
-    const walletAddress = botWallets.find((wallet) => !depositedWallets.has(wallet));
-    if (!walletAddress) {
-      throw new Error(
-        `Auto-fill bot wallet pool exhausted for round ${round.id}. Provide at least ${round.session.roundFillThreshold - 1} bot wallets in SPOTR_AUTO_FILL_BOT_WALLETS.`,
-      );
-    }
-    const fundingLamports = round.session.buyInLamports + depositLamports;
-
+    console.log(
+      `[SPOTR] auto-fill wallet vault init: round=${currentRound.id} wallet=${walletAddress}`
+    );
     await ensureUserVaultInitialized(walletAddress);
+    console.log(
+      `[SPOTR] auto-fill wallet mint: round=${currentRound.id} wallet=${walletAddress} amount=${fundingLamports.toString()}`
+    );
     await mintUsdcToVault(walletAddress, fundingLamports);
+    console.log(
+      `[SPOTR] auto-fill wallet join: round=${currentRound.id} wallet=${walletAddress}`
+    );
     await executeSessionJoin({
       walletAddress,
-      sessionId: round.session.id,
+      sessionId: currentRound.session.id,
       actor: "bot",
+      returnPayload: false,
     });
+    console.log(
+      `[SPOTR] auto-fill wallet deposit: round=${currentRound.id} wallet=${walletAddress} amount=${depositLamports.toString()}`
+    );
     await executeRoundDeposit({
       walletAddress,
-      roundId: round.id,
+      roundId: currentRound.id,
       amountLamports: depositLamports,
       actor: "bot",
+      returnPayload: false,
     });
 
     console.log(
-      `[SPOTR] bot deposited into round ${round.id}: wallet=${walletAddress} amount=${depositLamports.toString()}`,
+      `[SPOTR] bot deposited into round ${currentRound.id}: wallet=${walletAddress} amount=${depositLamports.toString()}`
     );
 
     if (trickleDelayMs > 0) {
@@ -132,38 +242,55 @@ export async function fillRoundWithBots(params: {
   }
 }
 
-export async function processDueAutoFillForSession(sessionId: string) {
+export async function processDueAutoFillForSession(
+  sessionId: string,
+  options: { maxRounds?: number } = {}
+) {
   const config = readAutoFillBotsConfig();
-  if (!config.enabled) return;
+  if (!config.enabled || !isCurrentClusterSupported()) {
+    return { processed: 0, claimed: 0 };
+  }
 
-  while (true) {
+  const maxRounds = Math.max(1, options.maxRounds ?? 1);
+  let processed = 0;
+  let claimed = 0;
+  for (let attempt = 0; attempt < maxRounds; attempt += 1) {
+    const now = new Date();
+    const staleStartedBefore = new Date(now.getTime() - config.workerLeaseMs);
     const dueRound = await prisma.sessionRound.findFirst({
       where: {
         sessionId,
         status: "UPCOMING",
-        autoFillScheduledAt: { lte: new Date() },
+        autoFillScheduledAt: { lte: now },
         autoFillCompletedAt: null,
-        autoFillStartedAt: null,
+        OR: [
+          { autoFillStartedAt: null },
+          { autoFillStartedAt: { lt: staleStartedBefore } },
+        ],
       },
       orderBy: { roundIndex: "asc" },
       select: { id: true },
     });
 
-    if (!dueRound) return;
+    if (!dueRound) return { processed, claimed };
 
     const claim = await prisma.sessionRound.updateMany({
       where: {
         id: dueRound.id,
-        autoFillScheduledAt: { lte: new Date() },
+        autoFillScheduledAt: { lte: now },
         autoFillCompletedAt: null,
-        autoFillStartedAt: null,
+        OR: [
+          { autoFillStartedAt: null },
+          { autoFillStartedAt: { lt: staleStartedBefore } },
+        ],
       },
       data: {
-        autoFillStartedAt: new Date(),
+        autoFillStartedAt: now,
         autoFillLastError: null,
       },
     });
-    if (claim.count === 0) continue;
+    if (claim.count === 0) return { processed, claimed };
+    claimed += 1;
 
     try {
       console.log(`[SPOTR] processing due auto-fill for round ${dueRound.id}`);
@@ -180,6 +307,7 @@ export async function processDueAutoFillForSession(sessionId: string) {
           autoFillLastError: null,
         },
       });
+      processed += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[SPOTR] auto-fill job failed:", error);
@@ -191,7 +319,8 @@ export async function processDueAutoFillForSession(sessionId: string) {
           autoFillLastError: message.slice(0, 500),
         },
       });
-      return;
+      return { processed, claimed };
     }
   }
+  return { processed, claimed };
 }

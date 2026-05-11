@@ -15,7 +15,10 @@ import {
   InsufficientRoundVaultError,
   MIN_DEPOSIT_USDC_UNITS,
 } from "../../../lib/server/round-deposit";
-import { scheduleAutoFillForRound } from "../../../lib/server/auto-fill-bots";
+import {
+  queueDueAutoFillForRound,
+  scheduleAutoFillForRound,
+} from "../../../lib/server/auto-fill-bots";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +37,10 @@ export async function POST(request: Request) {
     const amountRaw = body.amountLamports;
 
     if (!roundId) {
-      return NextResponse.json({ error: "roundId is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "roundId is required." },
+        { status: 400 }
+      );
     }
     let amount: bigint;
     try {
@@ -42,13 +48,15 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json(
         { error: "amountLamports must be a positive integer." },
-        { status: 400 },
+        { status: 400 }
       );
     }
     if (amount < MIN_DEPOSIT_USDC_UNITS) {
       return NextResponse.json(
-        { error: `deposit must be at least ${MIN_DEPOSIT_USDC_UNITS} USDC units.` },
-        { status: 400 },
+        {
+          error: `deposit must be at least ${MIN_DEPOSIT_USDC_UNITS} USDC units.`,
+        },
+        { status: 400 }
       );
     }
     const result = await executeRoundDeposit({
@@ -57,7 +65,16 @@ export async function POST(request: Request) {
       amountLamports: amount,
       actor: "player",
     });
-    scheduleAutoFillForRound({ ...result.summary, actor: "player" });
+    const scheduled = await scheduleAutoFillForRound({
+      ...result.summary,
+      actor: "player",
+    });
+    if (scheduled) {
+      queueDueAutoFillForRound({
+        roundId: result.summary.roundId,
+        sessionId: result.summary.sessionId,
+      });
+    }
 
     return NextResponse.json(result.payload);
   } catch (error) {
@@ -77,13 +94,17 @@ export async function POST(request: Request) {
           needed: error.needed,
           have: error.have,
         },
-        { status: 400 },
+        { status: 400 }
       );
     }
     if (error instanceof SolanaTxError) {
       return NextResponse.json(
-        { error: error.report.message, code: error.code, hint: error.report.hint },
-        { status: error.status },
+        {
+          error: error.report.message,
+          code: error.code,
+          hint: error.report.hint,
+        },
+        { status: error.status }
       );
     }
     if (error instanceof Error && error.message === "Round not found.") {
@@ -91,7 +112,7 @@ export async function POST(request: Request) {
     }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to deposit." },
-      { status: 400 },
+      { status: 400 }
     );
   }
 }

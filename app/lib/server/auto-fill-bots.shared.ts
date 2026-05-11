@@ -4,6 +4,7 @@ export type AutoFillBotsConfig = {
   enabled: boolean;
   initialDelayMs: number;
   trickleDelayMs: number;
+  workerLeaseMs: number;
   depositLamports: bigint;
   botWallets: string[];
 };
@@ -20,12 +21,7 @@ function readCsv(raw: string | undefined) {
 
 type EnvMap = Record<string, string | undefined>;
 
-function readInt(
-  env: EnvMap,
-  name: string,
-  fallback: number,
-  min: number,
-) {
+function readInt(env: EnvMap, name: string, fallback: number, min: number) {
   const raw = env[name];
   if (!raw) return fallback;
   const parsed = Number(raw);
@@ -36,30 +32,39 @@ function readInt(
 }
 
 export function readAutoFillBotsConfig(
-  env: EnvMap = process.env,
+  env: EnvMap = process.env
 ): AutoFillBotsConfig {
-  const enabled = (env.SPOTR_AUTO_FILL_BOTS_ENABLED ?? "false").trim() === "true";
+  const enabled =
+    (env.SPOTR_AUTO_FILL_BOTS_ENABLED ?? "false").trim() === "true";
   const initialDelayMs = readInt(
     env,
     "SPOTR_AUTO_FILL_BOTS_INITIAL_DELAY_MS",
     3_000,
-    0,
+    0
   );
   const trickleDelayMs = readInt(
     env,
     "SPOTR_AUTO_FILL_BOTS_TRICKLE_DELAY_MS",
     1_200,
-    0,
+    0
+  );
+  const workerLeaseMs = readInt(
+    env,
+    "SPOTR_AUTO_FILL_BOTS_WORKER_LEASE_MS",
+    120_000,
+    1_000
   );
   const depositLamportsRaw =
     env.SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS ?? "1000000";
   if (!/^\d+$/.test(depositLamportsRaw)) {
-    throw new Error("SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS must be a positive integer.");
+    throw new Error(
+      "SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS must be a positive integer."
+    );
   }
   const depositLamports = BigInt(depositLamportsRaw);
   if (depositLamports < 1_000_000n) {
     throw new Error(
-      "SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS must be at least 1000000.",
+      "SPOTR_AUTO_FILL_BOTS_DEPOSIT_LAMPORTS must be at least 1000000."
     );
   }
   const botWallets = readCsv(env.SPOTR_AUTO_FILL_BOT_WALLETS);
@@ -70,7 +75,7 @@ export function readAutoFillBotsConfig(
   }
   if (enabled && botWallets.length === 0) {
     throw new Error(
-      "SPOTR_AUTO_FILL_BOT_WALLETS must contain at least one wallet when bots are enabled.",
+      "SPOTR_AUTO_FILL_BOT_WALLETS must contain at least one wallet when bots are enabled."
     );
   }
 
@@ -78,6 +83,7 @@ export function readAutoFillBotsConfig(
     enabled,
     initialDelayMs,
     trickleDelayMs,
+    workerLeaseMs,
     depositLamports,
     botWallets,
   };
@@ -95,12 +101,18 @@ export function shouldScheduleAutoFill(params: {
   return (
     params.enabled &&
     AUTO_FILL_BOT_SUPPORTED_CLUSTERS.includes(
-      params.cluster as (typeof AUTO_FILL_BOT_SUPPORTED_CLUSTERS)[number],
+      params.cluster as (typeof AUTO_FILL_BOT_SUPPORTED_CLUSTERS)[number]
     ) &&
     params.actor === "player" &&
     params.previousStatus === "UPCOMING" &&
-    params.previousDepositsCount === 0 &&
-    params.newDepositsCount === 1 &&
+    params.newDepositsCount > params.previousDepositsCount &&
     params.newDepositsCount < params.fillThreshold
   );
+}
+
+export function shouldReturnMutationPayload(
+  actor: "player" | "bot" | undefined,
+  override?: boolean
+) {
+  return override ?? actor !== "bot";
 }

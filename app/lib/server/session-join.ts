@@ -6,9 +6,14 @@ import { findVaultPda } from "../../generated/spotr/pdas/vault";
 import { findVaultTokensPda } from "../../generated/spotr/pdas/vaultTokens";
 import { getJoinSessionInstructionAsync } from "../../generated/spotr/instructions/joinSession";
 import { publicSpotrConfig } from "../spotr-config/public";
-import { loadSponsorSigner, submitSponsoredTx, getSponsorRpcUrl } from "./sponsor-tx";
+import {
+  loadSponsorSigner,
+  submitSponsoredTx,
+  getSponsorRpcUrl,
+} from "./sponsor-tx";
 import { joinSpotrSession } from "./spotr-store";
 import { fetchAccountExists, fetchTokenBalance } from "./rpc-account";
+import { shouldReturnMutationPayload } from "./auto-fill-bots.shared";
 
 export const INSUFFICIENT_VAULT_ERROR = "INSUFFICIENT_VAULT";
 
@@ -29,6 +34,7 @@ export async function executeSessionJoin(input: {
   referrerWallet?: string | null;
   sessionId?: string | null;
   actor?: "player" | "bot";
+  returnPayload?: boolean;
 }) {
   const sessionId = input.sessionId?.trim() || null;
   const referrerWallet = input.referrerWallet?.trim() || null;
@@ -59,7 +65,7 @@ export async function executeSessionJoin(input: {
 
   if (!sessionRow || sessionRow.chainSessionNumber == null) {
     throw new Error(
-      "This session has not been deployed on-chain yet. Ask an admin to deploy it before joining.",
+      "This session has not been deployed on-chain yet. Ask an admin to deploy it before joining."
     );
   }
 
@@ -73,7 +79,7 @@ export async function executeSessionJoin(input: {
   });
   const playerSessionExists = await fetchAccountExists(
     rpcUrl,
-    String(playerSessionPda),
+    String(playerSessionPda)
   );
 
   let signature = "already-joined";
@@ -109,5 +115,9 @@ export async function executeSessionJoin(input: {
     chainTxSignature: signature,
     sessionId: sessionRow.id,
     actor: input.actor ?? "player",
+    returnPayload: shouldReturnMutationPayload(
+      input.actor,
+      input.returnPayload
+    ),
   });
 }

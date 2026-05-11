@@ -1,9 +1,6 @@
 import Link from "next/link";
 import { publicSpotrConfig } from "../../../lib/spotr-config/public";
-import {
-  getSpotrDashboardPayload,
-  sessionExists,
-} from "../../../lib/server/spotr-store";
+import { getSpotrRecapPayload } from "../../../lib/server/spotr-store";
 import { RecapClient } from "./recap-client";
 
 export const dynamic = "force-dynamic";
@@ -14,14 +11,16 @@ export default async function RecapPage({
   params: Promise<{ sessionId: string }>;
 }) {
   const { sessionId } = await params;
-
-  if (!(await sessionExists(sessionId))) {
+  const data = await getSpotrRecapPayload(null, sessionId);
+  if (!data) {
     return (
       <main className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-primary">
           Recap
         </p>
-        <h1 className="text-xl font-bold text-foreground">Session not found.</h1>
+        <h1 className="text-xl font-bold text-foreground">
+          Session not found.
+        </h1>
         <p className="text-sm text-muted">
           This session no longer exists. It may have been reset or removed.
         </p>
@@ -34,7 +33,11 @@ export default async function RecapPage({
       </main>
     );
   }
-
-  const data = await getSpotrDashboardPayload(null, sessionId);
-  return <RecapClient config={publicSpotrConfig} sessionId={sessionId} initialData={data} />;
+  return (
+    <RecapClient
+      config={publicSpotrConfig}
+      sessionId={sessionId}
+      initialData={data}
+    />
+  );
 }

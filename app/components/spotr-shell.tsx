@@ -2856,43 +2856,61 @@ export function SpotrSessionDetailShell({
   );
   const [joinedData, setJoinedData] = useState<SpotrDashboardPayload | null>(null);
   const [isCheckingMembership, setIsCheckingMembership] = useState(false);
+  const [isLoadingJoinedSession, setIsLoadingJoinedSession] = useState(false);
 
   const session =
     (initialData.availableSessions ?? []).find((s) => s.id === sessionId) ??
     initialData.admin.sessionHistory.find((s) => s.id === sessionId) ??
     null;
 
-  // Once the wallet hydrates client-side, re-fetch the dashboard scoped to
-  // this session so we can skip the join CTA if the wallet is already a
-  // participant. The SSR pass has no wallet, so it always returns
-  // joined: false.
+  // Once the wallet hydrates client-side, check membership with a narrow
+  // participant lookup. Only fetch the full dashboard if the wallet is already
+  // in this session.
   useEffect(() => {
     if (!walletAddress || showGame) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) setIsCheckingMembership(true);
     });
-    fetch(
-      `/api/bootstrap?wallet=${encodeURIComponent(walletAddress)}&session=${encodeURIComponent(sessionId)}`,
-      { cache: "no-store" }
-    )
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<SpotrDashboardPayload>;
-      })
-      .then((payload) => {
-        if (cancelled) return;
-        if (payload.session.id === sessionId && payload.session.joined) {
-          setJoinedData(payload);
-          setShowGame(true);
+
+    void (async () => {
+      try {
+        const participationResponse = await fetch(
+          `/api/play/sessions/${encodeURIComponent(sessionId)}/participation?wallet=${encodeURIComponent(walletAddress)}`,
+          { cache: "no-store" }
+        );
+        if (!participationResponse.ok) {
+          throw new Error(`HTTP ${participationResponse.status}`);
         }
-      })
-      .catch(() => {
+        const participation = (await participationResponse.json()) as {
+          joined: boolean;
+        };
+        if (cancelled || !participation.joined) return;
+
+        setIsCheckingMembership(false);
+        setIsLoadingJoinedSession(true);
+        const dashboardResponse = await fetch(
+          `/api/bootstrap?wallet=${encodeURIComponent(walletAddress)}&session=${encodeURIComponent(sessionId)}`,
+          { cache: "no-store" }
+        );
+        if (!dashboardResponse.ok) {
+          throw new Error(`HTTP ${dashboardResponse.status}`);
+        }
+        const payload = (await dashboardResponse.json()) as SpotrDashboardPayload;
+        if (!cancelled && payload.session.id === sessionId) {
+          setJoinedData(payload);
+          setShowGame(payload.session.joined);
+        }
+      } catch {
         // membership check is best-effort; if it fails, we just show the join CTA
-      })
-      .finally(() => {
-        if (!cancelled) setIsCheckingMembership(false);
-      });
+      } finally {
+        if (!cancelled) {
+          setIsCheckingMembership(false);
+          setIsLoadingJoinedSession(false);
+        }
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -3070,6 +3088,10 @@ export function SpotrSessionDetailShell({
       ) : isCheckingMembership ? (
         <SurfaceCard>
           <p className="text-sm text-muted">Checking your participation…</p>
+        </SurfaceCard>
+      ) : isLoadingJoinedSession ? (
+        <SurfaceCard>
+          <p className="text-sm text-muted">Loading your session…</p>
         </SurfaceCard>
       ) : (
         <SurfaceCard>

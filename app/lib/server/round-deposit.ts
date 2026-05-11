@@ -5,9 +5,14 @@ import { findSpotrSessionPda } from "../chain/session-pda";
 import { findSpotrRoundPda } from "../chain/round-pda";
 import { findVaultTokensPda } from "../../generated/spotr/pdas/vaultTokens";
 import { getDepositForRoundInstructionAsync } from "../../generated/spotr/instructions/depositForRound";
-import { getSponsorRpcUrl, loadSponsorSigner, submitSponsoredTx } from "./sponsor-tx";
+import {
+  getSponsorRpcUrl,
+  loadSponsorSigner,
+  submitSponsoredTx,
+} from "./sponsor-tx";
 import { fetchTokenBalance } from "./rpc-account";
 import { recordRoundDeposit } from "./spotr-store";
+import { shouldReturnMutationPayload } from "./auto-fill-bots.shared";
 
 export const INSUFFICIENT_VAULT_ERROR = "INSUFFICIENT_VAULT";
 export const MIN_DEPOSIT_USDC_UNITS = 1_000_000n;
@@ -29,9 +34,12 @@ export async function executeRoundDeposit(input: {
   roundId: string;
   amountLamports: bigint;
   actor?: "player" | "bot";
+  returnPayload?: boolean;
 }) {
   if (input.amountLamports < MIN_DEPOSIT_USDC_UNITS) {
-    throw new Error(`deposit must be at least ${MIN_DEPOSIT_USDC_UNITS} USDC units.`);
+    throw new Error(
+      `deposit must be at least ${MIN_DEPOSIT_USDC_UNITS} USDC units.`
+    );
   }
 
   const round = await prisma.sessionRound.findUnique({
@@ -86,5 +94,9 @@ export async function executeRoundDeposit(input: {
     amountLamports: input.amountLamports,
     chainTxSignature: signature,
     actor: input.actor ?? "player",
+    returnPayload: shouldReturnMutationPayload(
+      input.actor,
+      input.returnPayload
+    ),
   });
 }

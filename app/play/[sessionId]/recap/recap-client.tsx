@@ -3,7 +3,10 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "../../../lib/wallet/context";
 import { SessionEndedScreen } from "../../../components/spotr-shell";
-import type { SpotrDashboardPayload, SpotrPublicConfig } from "../../../lib/spotr-types";
+import type {
+  SpotrDashboardPayload,
+  SpotrPublicConfig,
+} from "../../../lib/spotr-types";
 
 export function RecapClient({
   config,
@@ -19,8 +22,9 @@ export function RecapClient({
   const [data, setData] = useState(initialData);
 
   useEffect(() => {
+    if (!walletAddress) return;
     const params = new URLSearchParams({ session: sessionId });
-    if (walletAddress) params.set("wallet", walletAddress);
+    params.set("wallet", walletAddress);
     fetch(`/api/bootstrap?${params}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((payload) => setData(payload as SpotrDashboardPayload))
