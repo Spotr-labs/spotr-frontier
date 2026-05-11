@@ -97,10 +97,12 @@ import {
   canPredictRound,
   deriveSpotrRoundPhase,
 } from "./spotr-round-flow";
+import { buildSpotrBootstrapPath } from "./spotr-bootstrap-path";
 
 type SpotrShellProps = {
   config: SpotrPublicConfig;
   initialData: SpotrDashboardPayload;
+  sessionId?: string;
 };
 
 type Notice =
@@ -133,7 +135,11 @@ function formatAutoFillFailureNotice(error: string) {
   return `Auto-fill failed for this round: ${error}`;
 }
 
-function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboardPayload) {
+function useSpotrDashboard(
+  config: SpotrPublicConfig,
+  initialData: SpotrDashboardPayload,
+  pinnedSessionId?: string
+) {
   const { wallet, status } = useWallet();
   const { getAccessToken } = useToken();
   const { cluster } = useCluster();
@@ -204,13 +210,16 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     latestDashboardRequestIdRef.current = requestId;
     setProfileLoadState(getDashboardProfileLoadState(requestedWalletAddress));
     setProfileLoadError(null);
-    const query = nextWalletAddress
-      ? `?wallet=${encodeURIComponent(nextWalletAddress)}`
-      : "";
     try {
-      const response = await fetch(`/api/bootstrap${query}`, {
+      const response = await fetch(
+        buildSpotrBootstrapPath({
+          walletAddress: requestedWalletAddress,
+          sessionId: pinnedSessionId,
+        }),
+        {
         cache: "no-store",
-      });
+        }
+      );
       const payload = await readJson<SpotrDashboardPayload>(response);
       const result = resolveDashboardBootstrapSuccess({
         latestRequestId: latestDashboardRequestIdRef.current,
@@ -242,7 +251,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       setProfileLoadError(result.profileLoadError);
       throw error;
     }
-  }, []);
+  }, [pinnedSessionId]);
 
   useEffect(() => {
     const previousWalletAddress = previousWalletAddressRef.current;
@@ -886,8 +895,8 @@ function Redirect({ to }: { to: string }) {
   );
 }
 
-export function SpotrShell({ config, initialData }: SpotrShellProps) {
-  const state = useSpotrDashboard(config, initialData);
+export function SpotrShell({ config, initialData, sessionId }: SpotrShellProps) {
+  const state = useSpotrDashboard(config, initialData, sessionId);
   const vault = useVaultBalance(state.walletAddress);
   const balance = { microUsdc: vault.microUsdc };
   const [introSeen, setIntroSeen] = useState(() => {
@@ -2973,7 +2982,7 @@ export function SpotrSessionDetailShell({
   }
 
   if (showGame) {
-    return <SpotrShell config={config} initialData={joinedData ?? initialData} />;
+    return <SpotrShell config={config} initialData={joinedData ?? initialData} sessionId={sessionId} />;
   }
 
   const isConnected = status === "connected" && !!walletAddress;
