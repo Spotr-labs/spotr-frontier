@@ -226,6 +226,37 @@ test("joined player with every round either locked or sat out goes to recap", ()
   assert.deepEqual(resolveSpotrSessionProgression(session), { kind: "recap" });
 });
 
+test("player who finished round 2 resumes round 3 instead of recap", () => {
+  const session = makeSession({
+    joined: true,
+    joinedAtIso: "2026-05-11T11:00:00.000Z",
+    rounds: [
+      makeRound({
+        id: "r1",
+        index: 0,
+        status: "closed",
+        depositLamports: 1_000_000,
+        lockedSide: "A",
+      }),
+      makeRound({
+        id: "r2",
+        index: 1,
+        status: "closed",
+        depositLamports: 1_000_000,
+        lockedSide: "B",
+      }),
+      makeRound({ id: "r3", index: 2, status: "upcoming" }),
+      makeRound({ id: "r4", index: 3, status: "upcoming" }),
+    ],
+  });
+
+  assert.deepEqual(resolveSpotrSessionProgression(session), {
+    kind: "resume_round",
+    roundId: "r3",
+    roundIndex: 2,
+  });
+});
+
 test("not joined stays in pre_join progression", () => {
   const session = makeSession({
     joined: false,

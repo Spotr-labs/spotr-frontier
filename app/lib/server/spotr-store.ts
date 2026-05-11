@@ -68,6 +68,7 @@ import { prisma } from "./db";
 import { launchFaultLineSeeds } from "./launch-seed";
 import { getSessionWindowForDate } from "../spotr-config/session-window";
 import { getJoinChainPersistence } from "./join-persistence";
+import { preserveUpcomingRoundStatus } from "./round-status.shared";
 
 const REWARD_SCALE = 1_000_000_000n;
 
@@ -528,11 +529,11 @@ async function syncSessionState(tx: Tx, sessionId: string) {
   for (const round of session.rounds) {
     const opensAt = activatedAt ?? round.opensAt;
     const closesAt = activatedAt ? session.endsAt : round.closesAt;
-    const derivedStatus = deriveRoundStatus(nextStatus, opensAt, closesAt, now);
-    // Rounds transition UPCOMING → OPEN only via the deposit threshold in
-    // recordRoundDeposit — never by time alone. Only allow time-driven
-    // transitions away from OPEN (i.e. OPEN → CLOSED).
-    if (derivedStatus === "OPEN" && round.status === "UPCOMING") continue;
+    const derivedStatus = preserveUpcomingRoundStatus(
+      round.status,
+      deriveRoundStatus(nextStatus, opensAt, closesAt, now),
+      nextStatus
+    );
     if (round.status !== derivedStatus) {
       const list = roundStatusUpdates.get(derivedStatus) ?? [];
       list.push(round.id);
@@ -1002,16 +1003,11 @@ async function buildDashboardPayload(
   }
 
   const rounds: SessionRoundSummary[] = session.rounds.map((round) => {
-    const timeStatus = deriveRoundStatus(
-      session.status,
-      round.opensAt,
-      round.closesAt,
-      now
+    const derivedStatus = preserveUpcomingRoundStatus(
+      round.status,
+      deriveRoundStatus(session.status, round.opensAt, round.closesAt, now),
+      session.status
     );
-    // Rounds open via deposit threshold, not by time — preserve the DB
-    // UPCOMING status until recordRoundDeposit flips it to OPEN.
-    const derivedStatus =
-      timeStatus === "OPEN" && round.status === "UPCOMING" ? "UPCOMING" : timeStatus;
     const probabilities = getProbabilities(
       round.sideATotalNetLamports,
       round.sideBTotalNetLamports,
@@ -2826,11 +2822,10 @@ export async function getSessionPublicResults(
     walletsJoined: session.joinedWallets,
     totalEscrowLamports: Number(session.totalEscrowLamports),
     rounds: session.rounds.map((round) => {
-      const derivedStatus = deriveRoundStatus(
-        session.status,
-        round.opensAt,
-        round.closesAt,
-        now
+      const derivedStatus = preserveUpcomingRoundStatus(
+        round.status,
+        deriveRoundStatus(session.status, round.opensAt, round.closesAt, now),
+        session.status
       );
       const probs = getProbabilities(
         round.sideATotalNetLamports,
