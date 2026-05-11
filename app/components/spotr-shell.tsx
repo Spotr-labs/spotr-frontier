@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -84,6 +83,18 @@ import {
   QuickAmountChips,
 } from "./spotr-ui/topup";
 import { WaitingRoom } from "./spotr-ui/waiting";
+import {
+  getDashboardProfileLoadState,
+  getSpotrProfileRouteState,
+  getSpotrProfileWalletAddress,
+  resolveDashboardBootstrapFailure,
+  resolveDashboardBootstrapSuccess,
+  type DashboardProfileLoadState,
+} from "./spotr-profile-state";
+import {
+  findFirstUnresolvedSpotrRound,
+  resolveSpotrSessionProgression,
+} from "./spotr-session-progression";
 
 type SpotrShellProps = {
   config: SpotrPublicConfig;
@@ -141,10 +152,30 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const [wagerMicro, setWagerMicro] = useState<bigint | null>(null);
   const [lastSettledRoundId, setLastSettledRoundId] = useState<string | null>(null);
   const [dismissedRoundIds, setDismissedRoundIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [profileLoadState, setProfileLoadState] =
+    useState<DashboardProfileLoadState>("idle");
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
 
   const walletAddress = wallet?.account.address ?? null;
+  const previousWalletAddressRef = useRef<string | null>(walletAddress);
+  const latestDashboardRequestIdRef = useRef(0);
+  const dataRef = useRef(data);
+  const profileLoadStateRef = useRef(profileLoadState);
+  const profileLoadErrorRef = useRef(profileLoadError);
   const canSignActions = Boolean(wallet?.signMessage);
   const { session, profile, admin, faultLines } = data;
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    profileLoadStateRef.current = profileLoadState;
+  }, [profileLoadState]);
+
+  useEffect(() => {
+    profileLoadErrorRef.current = profileLoadError;
+  }, [profileLoadError]);
 
   const availableSessions = data.availableSessions ?? [];
   const selectedSession =
@@ -152,49 +183,67 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     admin.sessionHistory.find((s) => s.id === selectedSessionId) ??
     null;
 
-  // activeRound: an OPEN round where the player can predict (already
-  // deposited) or late-deposit (joined the session before this round
-  // actually opened); else the next UPCOMING round; else nothing. A
-  // session-late-joiner — i.e. one that joined after the round flipped open
-  // — must skip the OPEN round and land in the next UPCOMING round's wait
-  // screen, since on-chain `deposit_for_round` will reject them.
-  const sessionJoinedAt = session.participant?.joinedAtIso
-    ? new Date(session.participant.joinedAtIso).getTime()
-    : null;
-  const playerCanLateDeposit = (round: typeof session.rounds[number]) => {
-    if (round.depositLamports != null) return true;
-    if (sessionJoinedAt == null || round.opensAtIso == null) return false;
-    return sessionJoinedAt <= new Date(round.opensAtIso).getTime();
-  };
   const activeRound =
-    session.rounds.find(
-      (round) =>
-        round.status === "open" &&
-        !round.lockedSide &&
-        playerCanLateDeposit(round) &&
-        !dismissedRoundIds.has(round.id)
-    ) ??
-    session.rounds.find(
-      (round) => round.status === "upcoming" && !dismissedRoundIds.has(round.id)
-    ) ??
-    null;
+    findFirstUnresolvedSpotrRound(session, { dismissedRoundIds }) ?? null;
+  const progression = resolveSpotrSessionProgression(session);
   const activeFaultLine =
     faultLines.find((pair) => pair.roundId === activeRound?.id) ?? faultLines[0] ?? null;
   const activeRoundId = activeRound?.id ?? null;
   const flipped = flipState.roundId === activeRoundId ? flipState.flipped : false;
 
-  const refreshDashboard = useEffectEvent(async (nextWalletAddress?: string | null) => {
+  const refreshDashboard = useCallback(async (nextWalletAddress?: string | null) => {
+    const requestedWalletAddress = nextWalletAddress ?? null;
+    const requestId = latestDashboardRequestIdRef.current + 1;
+    latestDashboardRequestIdRef.current = requestId;
+    setProfileLoadState(getDashboardProfileLoadState(requestedWalletAddress));
+    setProfileLoadError(null);
     const query = nextWalletAddress
       ? `?wallet=${encodeURIComponent(nextWalletAddress)}`
       : "";
-    const response = await fetch(`/api/bootstrap${query}`, {
-      cache: "no-store",
-    });
-    const payload = await readJson<SpotrDashboardPayload>(response);
-    setData(payload);
-  });
+    try {
+      const response = await fetch(`/api/bootstrap${query}`, {
+        cache: "no-store",
+      });
+      const payload = await readJson<SpotrDashboardPayload>(response);
+      const result = resolveDashboardBootstrapSuccess({
+        latestRequestId: latestDashboardRequestIdRef.current,
+        requestId,
+        requestedWalletAddress,
+        payload,
+        currentData: dataRef.current,
+        currentProfileLoadError: profileLoadErrorRef.current,
+        currentProfileLoadState: profileLoadStateRef.current,
+      });
+      if (!result.accepted) return;
+      setData(result.data);
+      setProfileLoadState(result.profileLoadState);
+      setProfileLoadError(result.profileLoadError);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to refresh SPOTR.";
+      const result = resolveDashboardBootstrapFailure({
+        latestRequestId: latestDashboardRequestIdRef.current,
+        requestId,
+        requestedWalletAddress,
+        errorMessage: message,
+        currentData: dataRef.current,
+        currentProfileLoadError: profileLoadErrorRef.current,
+        currentProfileLoadState: profileLoadStateRef.current,
+      });
+      if (!result.accepted) return;
+      setProfileLoadState(result.profileLoadState);
+      setProfileLoadError(result.profileLoadError);
+      throw error;
+    }
+  }, []);
 
   useEffect(() => {
+    const previousWalletAddress = previousWalletAddressRef.current;
+    previousWalletAddressRef.current = walletAddress;
+    const walletJustDisconnected =
+      previousWalletAddress != null && walletAddress == null;
+    const shouldRefresh = walletAddress != null || walletJustDisconnected;
+    if (!shouldRefresh) return;
     startTransition(() => {
       void refreshDashboard(walletAddress).catch((error) => {
         const message =
@@ -202,7 +251,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
         setNotice({ tone: "error", message });
       });
     });
-  }, [walletAddress]);
+  }, [walletAddress, refreshDashboard]);
 
   // While waiting for the round fill threshold, poll the lightweight
   // heartbeat endpoint every 1 s. We patch the visible waiting-room count on
@@ -278,7 +327,13 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
       })();
     }, 1_000);
     return () => window.clearInterval(id);
-  }, [activeRoundIsWaiting, walletAddress, activeRoundId, config.roundFillThreshold]);
+  }, [
+    activeRoundIsWaiting,
+    walletAddress,
+    activeRoundId,
+    config.roundFillThreshold,
+    refreshDashboard,
+  ]);
 
   // Per-round countdown: derived from `opensAtIso` (the moment the round
   // flipped Pending→Open) plus `roundDurationSeconds`. We can't use
@@ -575,17 +630,12 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const refresh = useCallback(() => {
     startTransition(async () => {
       try {
-        const query = walletAddress
-          ? `?wallet=${encodeURIComponent(walletAddress)}`
-          : "";
-        const response = await fetch(`/api/bootstrap${query}`, { cache: "no-store" });
-        const payload = await readJson<SpotrDashboardPayload>(response);
-        setData(payload);
+        await refreshDashboard(walletAddress);
       } catch {
         // silently ignore — UI keeps last good state
       }
     });
-  }, [walletAddress]);
+  }, [walletAddress, refreshDashboard]);
 
   return {
     walletAddress,
@@ -597,6 +647,7 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     profile,
     admin,
     faultLines,
+    progression,
     activeRound,
     activeFaultLine,
     activeDisplay,
@@ -605,6 +656,8 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     notice,
     setNotice,
     isPending,
+    profileLoadState,
+    profileLoadError,
     flipped,
     setFlipState,
     selectedSessionId,
@@ -910,11 +963,9 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
 
   const rewardList = state.profile?.rewards ?? [];
   let screen: PlayerScreen =
-    state.session.status === "completed" && state.session.joined
+    state.progression.kind === "recap"
       ? "season"
-      : state.session.joined && !state.activeRound
-        ? "season"
-      : state.session.joined
+      : state.progression.kind === "resume_round"
         ? "live"
         : !introSeen && showSplash
           ? "splash"
@@ -2657,11 +2708,20 @@ function ProfileRoundRow({ round }: { round: ProfileSessionRoundRow }) {
 
 export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
   const state = useSpotrDashboard(config, initialData);
-  const vault = useVaultBalance(state.walletAddress ?? null);
+  const profileRouteState = getSpotrProfileRouteState({
+    walletAddress: state.walletAddress,
+    profile: state.profile,
+    profileLoadState: state.profileLoadState,
+  });
+  const profileWalletAddress = getSpotrProfileWalletAddress({
+    walletAddress: state.walletAddress,
+    profile: state.profile,
+  });
+  const vault = useVaultBalance(profileWalletAddress);
 
   return (
     <NarrowPageShell notice={state.notice}>
-      {!state.walletAddress ? (
+      {profileRouteState === "disconnected" ? (
         <SurfaceCard>
           <SectionHeading
             eyebrow="Profile"
@@ -2669,13 +2729,29 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
             description="Vault balance and session history load once a wallet is connected."
           />
         </SurfaceCard>
-      ) : !state.profile ? (
+      ) : profileRouteState === "loading" ? (
         <SurfaceCard>
           <SectionHeading
             eyebrow="Profile"
-            title="No sessions yet."
-            description="Join a session to start building your SPOTR ledger."
+            title="Loading your SPOTR ledger."
+            description="Vault balance and session history are syncing for this wallet."
           />
+          <div className="mt-4 rounded-[1rem] border border-white/12 bg-black/16 px-4 py-4 text-sm text-muted">
+            <p className="font-mono text-xs tabular-nums break-all text-muted">
+              {profileWalletAddress}
+            </p>
+          </div>
+        </SurfaceCard>
+      ) : profileRouteState === "error" ? (
+        <SurfaceCard>
+          <SectionHeading
+            eyebrow="Profile"
+            title="Profile unavailable."
+            description={state.profileLoadError ?? "Failed to load this wallet profile."}
+          />
+          <div className="mt-4 rounded-[1rem] border border-destructive/30 bg-destructive/10 px-4 py-4 text-sm text-destructive">
+            Refresh the page or reconnect the wallet to retry.
+          </div>
         </SurfaceCard>
       ) : (
         <div className="space-y-4">
@@ -2686,7 +2762,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
                   Vault
                 </p>
                 <p className="font-mono text-xs tabular-nums break-all text-muted">
-                  {state.profile.walletAddress}
+                  {profileWalletAddress}
                 </p>
               </div>
               {vault.microUsdc === null && vault.activeSessions === null ? (
@@ -2725,7 +2801,7 @@ export function SpotrProfileShell({ config, initialData }: SpotrShellProps) {
             </div>
           </SurfaceCard>
 
-          <SessionsPlayedCard walletAddress={state.profile.walletAddress} />
+          <SessionsPlayedCard walletAddress={profileWalletAddress!} />
         </div>
       )}
     </NarrowPageShell>
@@ -2851,9 +2927,14 @@ export function SpotrSessionDetailShell({
   }, [getAccessToken, cluster, wallet]);
   const [isPending, startTransition] = useTransition();
   const [notice, setNotice] = useState<Notice>(null);
-  const [showGame, setShowGame] = useState(
-    initialData.session.id === sessionId && initialData.session.joined
-  );
+  const [showGame, setShowGame] = useState(() => {
+    if (initialData.session.id !== sessionId) return false;
+    return resolveSpotrSessionProgression(initialData.session).kind === "resume_round";
+  });
+  const [redirectToRecap, setRedirectToRecap] = useState(() => {
+    if (initialData.session.id !== sessionId) return false;
+    return resolveSpotrSessionProgression(initialData.session).kind === "recap";
+  });
   const [joinedData, setJoinedData] = useState<SpotrDashboardPayload | null>(null);
   const [isCheckingMembership, setIsCheckingMembership] = useState(false);
   const [isLoadingJoinedSession, setIsLoadingJoinedSession] = useState(false);
@@ -2898,8 +2979,10 @@ export function SpotrSessionDetailShell({
         }
         const payload = (await dashboardResponse.json()) as SpotrDashboardPayload;
         if (!cancelled && payload.session.id === sessionId) {
+          const progression = resolveSpotrSessionProgression(payload.session);
           setJoinedData(payload);
-          setShowGame(payload.session.joined);
+          setRedirectToRecap(progression.kind === "recap");
+          setShowGame(progression.kind === "resume_round");
         }
       } catch {
         // membership check is best-effort; if it fails, we just show the join CTA
@@ -2918,6 +3001,10 @@ export function SpotrSessionDetailShell({
 
   const alreadyJoined =
     initialData.session.id === sessionId && initialData.session.joined;
+
+  if (redirectToRecap) {
+    return <Redirect to={`/play/${sessionId}/recap`} />;
+  }
 
   if (showGame) {
     return <SpotrShell config={config} initialData={joinedData ?? initialData} />;
@@ -2964,7 +3051,9 @@ export function SpotrSessionDetailShell({
         }
         setJoinedData(body);
         toast.success("Session joined.");
-        setShowGame(true);
+        const progression = resolveSpotrSessionProgression(body.session);
+        setRedirectToRecap(progression.kind === "recap");
+        setShowGame(progression.kind === "resume_round");
       } catch (error) {
         console.error("[SPOTR] session detail join failed:", error);
         const { rejected, message } = classifyTxError(error);
