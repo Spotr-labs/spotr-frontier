@@ -138,6 +138,80 @@ test("late joiner does not get blocked by an already-open round they can no long
   });
 });
 
+test("joined player with a locked open round stays on that round until reveal", () => {
+  const session = makeSession({
+    joined: true,
+    joinedAtIso: "2026-05-11T11:55:00.000Z",
+    rounds: [
+      makeRound({
+        id: "r1",
+        index: 0,
+        status: "open",
+        depositLamports: 1_000_000,
+        lockedSide: "A",
+      }),
+      makeRound({ id: "r2", index: 1, status: "upcoming" }),
+    ],
+  });
+
+  assert.deepEqual(resolveSpotrSessionProgression(session), {
+    kind: "resume_round",
+    roundId: "r1",
+    roundIndex: 0,
+  });
+});
+
+test("dismissed locked round advances to the next unresolved round", () => {
+  const session = makeSession({
+    joined: true,
+    joinedAtIso: "2026-05-11T11:55:00.000Z",
+    rounds: [
+      makeRound({
+        id: "r1",
+        index: 0,
+        status: "open",
+        depositLamports: 1_000_000,
+        lockedSide: "A",
+      }),
+      makeRound({ id: "r2", index: 1, status: "upcoming" }),
+    ],
+  });
+
+  assert.deepEqual(
+    resolveSpotrSessionProgression(session, {
+      dismissedRoundIds: new Set(["r1"]),
+    }),
+    {
+      kind: "resume_round",
+      roundId: "r2",
+      roundIndex: 1,
+    }
+  );
+});
+
+test("dismissed final locked round goes to recap", () => {
+  const session = makeSession({
+    joined: true,
+    joinedAtIso: "2026-05-11T11:55:00.000Z",
+    rounds: [
+      makeRound({
+        id: "r1",
+        index: 0,
+        status: "open",
+        depositLamports: 1_000_000,
+        lockedSide: "A",
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    resolveSpotrSessionProgression(session, {
+      dismissedRoundIds: new Set(["r1"]),
+    }),
+    { kind: "recap" }
+  );
+});
+
 test("joined player with every round either locked or sat out goes to recap", () => {
   const session = makeSession({
     joined: true,

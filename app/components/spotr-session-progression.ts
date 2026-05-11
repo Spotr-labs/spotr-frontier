@@ -39,8 +39,8 @@ export function isSpotrRoundResolved(
   round: SessionRoundSummary,
   sessionJoinedAtMs: number | null
 ) {
-  if (round.lockedSide != null) return true;
   if (round.status === "closed" || round.status === "skipped") return true;
+  if (round.lockedSide != null) return false;
   if (round.status === "open") {
     return !canLateDeposit(round, sessionJoinedAtMs);
   }
@@ -63,10 +63,11 @@ export function findFirstUnresolvedSpotrRound(
 }
 
 export function resolveSpotrSessionProgression(
-  session: SessionProgressionInput
+  session: SessionProgressionInput,
+  options?: SessionProgressionOptions
 ): SpotrSessionProgression {
   if (!session.joined) return { kind: "pre_join" };
-  const round = findFirstUnresolvedSpotrRound(session);
+  const round = findFirstUnresolvedSpotrRound(session, options);
   if (!round) return { kind: "recap" };
   return {
     kind: "resume_round",

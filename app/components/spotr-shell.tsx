@@ -68,8 +68,6 @@ import {
 } from "./spotr-ui/cards";
 import {
   AutoAdvanceFooter,
-  OutcomeMessage,
-  PnlNumber,
 } from "./spotr-ui/results";
 import {
   CenteredHero,
@@ -95,6 +93,10 @@ import {
   findFirstUnresolvedSpotrRound,
   resolveSpotrSessionProgression,
 } from "./spotr-session-progression";
+import {
+  canPredictRound,
+  deriveSpotrRoundPhase,
+} from "./spotr-round-flow";
 
 type SpotrShellProps = {
   config: SpotrPublicConfig;
@@ -117,7 +119,6 @@ type PlayerScreen =
   | "sessions"
   | "confirming"
   | "live"
-  | "pnl"
   | "season";
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -154,7 +155,6 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedSide, setSelectedSide] = useState<"A" | "B" | null>(null);
   const [wagerMicro, setWagerMicro] = useState<bigint | null>(null);
-  const [lastSettledRoundId, setLastSettledRoundId] = useState<string | null>(null);
   const [dismissedRoundIds, setDismissedRoundIds] = useState<ReadonlySet<string>>(() => new Set());
   const [profileLoadState, setProfileLoadState] =
     useState<DashboardProfileLoadState>("idle");
@@ -190,7 +190,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
 
   const activeRound =
     findFirstUnresolvedSpotrRound(session, { dismissedRoundIds }) ?? null;
-  const progression = resolveSpotrSessionProgression(session);
+  const progression = resolveSpotrSessionProgression(session, {
+    dismissedRoundIds,
+  });
   const activeFaultLine =
     faultLines.find((pair) => pair.roundId === activeRound?.id) ?? faultLines[0] ?? null;
   const activeRoundId = activeRound?.id ?? null;
@@ -567,11 +569,9 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
         if (!response.ok || "error" in body) {
           throw new Error("error" in body ? body.error : "Wager failed.");
         }
-        const enteredRoundId = activeRound.id;
         setData(body);
         setSelectedSide(null);
         setWagerMicro(null);
-        setLastSettledRoundId(enteredRoundId);
         setNotice({ tone: "success", message: `Position locked on side ${selectedSide}.` });
         toast.success(`Position locked on side ${selectedSide}.`);
       } catch (error) {
@@ -701,8 +701,6 @@ function useSpotrDashboard(config: SpotrPublicConfig, initialData: SpotrDashboar
     setSelectedSide,
     wagerMicro,
     setWagerMicro,
-    lastSettledRoundId,
-    clearLastSettledRoundId: () => setLastSettledRoundId(null),
     dismissRound: (id: string) => setDismissedRoundIds((prev) => new Set([...prev, id])),
   };
 }
@@ -900,8 +898,6 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("spotr-player-intro-v1") !== "seen";
   });
-  const [settledRound, setSettledRound] = useState<typeof state.activeRound>(null);
-  const [showPnl, setShowPnl] = useState(false);
   const pnlShownRoundRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -912,49 +908,13 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     return () => window.clearTimeout(timer);
   }, [showSplash]);
 
-  // PnL trigger: wager confirmed
-  useEffect(() => {
-    const settledId = state.lastSettledRoundId;
-    if (!settledId || pnlShownRoundRef.current === settledId || showPnl) return;
-    const settled = state.session.rounds.find((r) => r.id === settledId);
-    if (!settled) return;
-    pnlShownRoundRef.current = settledId;
-    let cancelled = false;
-    // Defer the trigger setState into a microtask so it escapes the
-    // synchronous effect body (react-hooks/set-state-in-effect).
-    queueMicrotask(() => {
-      if (cancelled) return;
-      setSettledRound(settled);
-      setShowPnl(true);
-      void vault.mutate?.();
-    });
-    const t = window.setTimeout(() => {
-      setShowPnl(false);
-      state.clearLastSettledRoundId();
-      state.dismissRound(settledId);
-      state.refresh();
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
-  }, [
-    state.lastSettledRoundId,
-    state.session.rounds,
-    state.refresh,
-    state.clearLastSettledRoundId,
-    state.dismissRound,
-    showPnl,
-    vault,
-  ]);
-
-  // PnL trigger: countdown elapsed (no wager placed, or round timed out).
+  // Reveal trigger: countdown elapsed (no wager placed, or round timed out).
   // Only fires when the wallet actually had skin in the game (deposited but
   // never locked a side). If the wallet had no deposit on this round, the
   // round expiring is irrelevant to them — silently dismiss it so the next
   // UPCOMING round becomes active without a "you sat this one out" screen.
   useEffect(() => {
-    if (state.countdown !== 0 || !state.activeRound || showPnl) return;
+    if (state.countdown !== 0 || !state.activeRound) return;
     const round = state.activeRound;
     const roundId = round.id;
     if (pnlShownRoundRef.current === roundId) return;
@@ -964,31 +924,17 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
       return;
     }
     pnlShownRoundRef.current = roundId;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      setSettledRound(round);
-      setShowPnl(true);
-    });
-    const t = window.setTimeout(() => {
-      setShowPnl(false);
-      state.dismissRound(roundId);
-      state.refresh();
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
+    void vault.mutate?.();
+    return undefined;
   }, [
     state.countdown,
     state.activeRound,
     state.dismissRound,
-    state.refresh,
-    showPnl,
+    vault,
   ]);
 
   const rewardList = state.profile?.rewards ?? [];
-  let screen: PlayerScreen =
+  const screen: PlayerScreen =
     state.progression.kind === "recap"
       ? "season"
       : state.progression.kind === "resume_round"
@@ -998,8 +944,6 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
           : !introSeen
             ? "howto"
             : "entry";
-
-  if (showPnl && settledRound) screen = "pnl";
 
   if (screen === "splash") return <SplashScreen />;
   if (screen === "howto") {
@@ -1016,21 +960,6 @@ export function SpotrShell({ config, initialData }: SpotrShellProps) {
     );
   }
   if (screen === "entry") return <EntryScreen />;
-  if (screen === "pnl" && settledRound) {
-    return (
-      <PnlScreen
-        round={settledRound}
-        totalRounds={config.roundCount}
-        activeFaultLine={state.activeFaultLine}
-        onContinue={() => {
-          setShowPnl(false);
-          state.clearLastSettledRoundId();
-          state.dismissRound(settledRound.id);
-          state.refresh();
-        }}
-      />
-    );
-  }
   if (screen === "season") {
     return <Redirect to={`/play/${state.session.id}/recap`} />;
   }
@@ -1557,18 +1486,6 @@ function WagerPicker({
   );
 }
 
-type RoundPhase = "deposit" | "wait" | "predict" | "locked" | "settled";
-
-function deriveRoundPhase(
-  round: NonNullable<ReturnType<typeof useSpotrDashboard>["activeRound"]>
-): RoundPhase {
-  if (round.lockedSide) return "locked";
-  if (round.status === "closed") return "settled";
-  if (round.depositLamports == null) return "deposit";
-  if (round.status === "open") return "predict";
-  return "wait";
-}
-
 function DepositScreen({
   config,
   state,
@@ -1647,7 +1564,7 @@ function PredictScreen({
   const round = state.activeRound;
   const isLocked = Boolean(round?.lockedSide);
   const sideSelected = !isLocked && Boolean(state.selectedSide);
-  const roundOpen = round?.status === "open";
+  const roundOpen = round ? canPredictRound(round, config.roundFillThreshold) : false;
   const roundId = round?.id ?? null;
 
   // After picking a side, fire the on-chain enter_position. The wager is
@@ -1762,7 +1679,7 @@ function PredictScreen({
                   state.isPending ||
                   !state.session.joined ||
                   !state.canSignActions ||
-                  round.status !== "open"
+                  !roundOpen
                 }
               >
                 {state.isPending
@@ -1804,7 +1721,6 @@ function RoundWaitScreen({
         joined={current}
         threshold={threshold}
         players={players}
-        starting={current >= threshold}
         caption={
           late
             ? "Round in progress — less time to predict."
@@ -1838,7 +1754,10 @@ function LiveGameScreen({
     ? BigInt(previous.claimableLamports + previous.claimedLamports)
     : 0n;
 
-  const phase = deriveRoundPhase(state.activeRound);
+  const phase = deriveSpotrRoundPhase(state.activeRound, {
+    fillThreshold: config.roundFillThreshold,
+    countdown: state.countdown,
+  });
   // Late = the round is already Open. Surfaced on the deposit / wait
   // screens so the player knows they have less time to predict than the
   // full `roundDurationSeconds` window.
@@ -1857,6 +1776,19 @@ function LiveGameScreen({
   }
   if (phase === "wait") {
     return <RoundWaitScreen state={state} config={config} late={late} />;
+  }
+  if (phase === "reveal" || phase === "settled") {
+    return (
+      <PnlScreen
+        round={state.activeRound}
+        totalRounds={config.roundCount}
+        activeFaultLine={state.activeFaultLine}
+        onContinue={() => {
+          state.dismissRound(state.activeRound!.id);
+          state.refresh();
+        }}
+      />
+    );
   }
   // predict | locked → same screen, just different inner state.
   return <PredictScreen config={config} state={state} balanceMicro={balanceMicro} />;
@@ -1899,11 +1831,7 @@ function PnlScreen({
   activeFaultLine: ReturnType<typeof useSpotrDashboard>["activeFaultLine"];
   onContinue: () => void;
 }) {
-  const pnl = round.claimableLamports - (round.stakeLamports ?? 0);
   const faultLine = activeFaultLine;
-  const isSkip = !round.lockedSide;
-  const isWin = !isSkip && pnl > 0;
-
   const finalPct =
     round.lockedSide === "A"
       ? round.sideAProbabilityPct
@@ -1936,12 +1864,16 @@ function PnlScreen({
 
         <div className="mb-6 rounded-[16px] border border-white/12 bg-black/16 p-5">
           <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-primary">
-            PNL
+            Round result
           </p>
-          <PnlNumber deltaLamports={pnl} isSkip={isSkip} />
-          <div className="mt-2">
-            <OutcomeMessage won={isWin} isSkip={isSkip} />
-          </div>
+          <h2 className="font-display text-[1.6rem] font-bold text-white">
+            {lockedCopy ? "Opinion locked" : "Round skipped"}
+          </h2>
+          <p className="mt-2 text-sm leading-relaxed text-white/55">
+            {lockedCopy
+              ? "The round timer is complete. Final payout appears after settlement."
+              : "No side was locked before the timer ended."}
+          </p>
         </div>
 
         <BottomAction
