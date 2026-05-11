@@ -1676,6 +1676,7 @@ function PredictScreen({
               sideB={state.activeFaultLine.sideB}
               sideAPct={round.sideAProbabilityPct}
               sideBPct={round.sideBProbabilityPct}
+              hideOdds
               flipped={state.flipped}
               onFlip={
                 isLocked

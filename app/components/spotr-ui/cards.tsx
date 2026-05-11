@@ -12,6 +12,7 @@ export function FaultLineCard({
   sideB,
   sideAPct,
   sideBPct,
+  hideOdds = false,
   flipped,
   onFlip,
   locked,
@@ -22,6 +23,7 @@ export function FaultLineCard({
   sideB: string;
   sideAPct: number;
   sideBPct: number;
+  hideOdds?: boolean;
   flipped: boolean;
   onFlip: () => void;
   locked: boolean;
@@ -53,23 +55,27 @@ export function FaultLineCard({
                 <SideBadge side="A" />
                 {locked && lockedSide === "A" ? <TokenBoughtBadge /> : null}
               </div>
-              <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
-                {sideAPct}%
-              </div>
+              {!hideOdds ? (
+                <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
+                  {sideAPct}%
+                </div>
+              ) : null}
             </div>
             <div className="flex flex-1 items-center justify-center py-8">
               <p className="max-w-full text-center font-bold leading-[1.22] text-balance text-[clamp(20px,5.5vw,26px)]">
                 {sideA}
               </p>
             </div>
-            <div className="mt-auto">
-              <MomentumBar
-                leftPct={sideAPct}
-                rightPct={sideBPct}
-                leftAccent="blue"
-                caption={`${sideAPct}% of players spotted this take`}
-              />
-            </div>
+            {!hideOdds ? (
+              <div className="mt-auto">
+                <MomentumBar
+                  leftPct={sideAPct}
+                  rightPct={sideBPct}
+                  leftAccent="blue"
+                  caption={`${sideAPct}% of players spotted this take`}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -89,23 +95,27 @@ export function FaultLineCard({
                 <SideBadge side="B" />
                 {locked && lockedSide === "B" ? <TokenBoughtBadge /> : null}
               </div>
-              <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
-                {sideBPct}%
-              </div>
+              {!hideOdds ? (
+                <div className="rounded-full border border-black/10 bg-black/5 px-3 py-1 text-sm font-bold text-[#1a1a1a]">
+                  {sideBPct}%
+                </div>
+              ) : null}
             </div>
             <div className="flex flex-1 items-center justify-center py-8">
               <p className="max-w-full text-center font-bold leading-[1.22] text-balance text-[clamp(20px,5.5vw,26px)]">
                 {sideB}
               </p>
             </div>
-            <div className="mt-auto">
-              <MomentumBar
-                leftPct={sideBPct}
-                rightPct={sideAPct}
-                leftAccent="gold"
-                caption={`${sideBPct}% of players spotted this take`}
-              />
-            </div>
+            {!hideOdds ? (
+              <div className="mt-auto">
+                <MomentumBar
+                  leftPct={sideBPct}
+                  rightPct={sideAPct}
+                  leftAccent="gold"
+                  caption={`${sideBPct}% of players spotted this take`}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
